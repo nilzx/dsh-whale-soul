@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { apply, runtimeFor } from '../src/memory/plugin.js'
@@ -10,7 +10,9 @@ function fakeContext() {
   const contexts = []
   const disposers = []
   const listeners = new Map()
+  const services = new Map()
   return {
+    services,
     systemPrompt: {
       context(definition) {
         contexts.push(definition)
@@ -33,8 +35,8 @@ function fakeContext() {
       return () => listeners.delete(event)
     },
     emit() {},
-    get() {
-      return undefined
+    get(key) {
+      return services.get(key)
     },
     contexts,
     toolsMap: tools,
@@ -99,6 +101,48 @@ test('memory plugin does not surface maintenance state or counts in the L0 conte
     runtime.store.saveState()
     const text = ctx.contexts[0].text()
     assert.doesNotMatch(text, /maintenance|maintained|整理|dream|睡眠|compressed|archive/i)
+    for (const dispose of ctx.disposers) if (typeof dispose === 'function') await dispose()
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('saves the last chat image only when the model explicitly asks', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-whale-soul-image-'))
+  try {
+    const ctx = fakeContext()
+    const png = Buffer.from(
+      '89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000a49444154789c6360000002000100ffff03000006000557bfabd40000000049454e44ae426082',
+      'hex',
+    )
+    ctx.services.set('attachments', {
+      readImage: async (ref) => ({ ref, data: png }),
+    })
+    apply(ctx, { root, autoDream: false, watch: false })
+    const listener = ctx.listeners.get('session/event')
+    assert.equal(typeof listener, 'function')
+    listener(
+      { header: { id: 'session-image' } },
+      {
+        type: 'user/message',
+        data: {
+          content: [
+            {
+              type: 'image',
+              attachment: { attachmentId: 'sha256:test', mediaType: 'image/png', width: 1, height: 1, bytes: png.length },
+            },
+          ],
+        },
+      },
+    )
+    const saved = await ctx.toolsMap.get('soul_meme_save').execute(
+      { recent_image: true, description: '开心的表情', tags: ['mood:happy'] },
+      { agent: { session: { id: 'session-image' } } },
+    )
+    assert.match(saved.text, /收进贝壳/)
+    const files = readdirSync(join(root, 'assets'))
+    assert.ok(files.some((file) => file.endsWith('.png')))
+    assert.ok(files.some((file) => file.endsWith('.json')))
     for (const dispose of ctx.disposers) if (typeof dispose === 'function') await dispose()
   } finally {
     rmSync(root, { recursive: true, force: true })

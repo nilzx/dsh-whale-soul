@@ -77,8 +77,12 @@ export function findAsset(store, { id, tag, query } = {}) {
 export async function saveAsset(store, input = {}) {
   let bytes
   let extension = ''
-  let source = 'file'
-  if (input.filePath) {
+  let source = input.source || 'file'
+  if (input.bytes) {
+    bytes = Buffer.from(input.bytes)
+    if (bytes.byteLength > MAX_BYTES) throw new Error('image is larger than 8 MiB')
+    extension = input.extension || Object.entries(MIME).find(([, mime]) => mime === input.mediaType)?.[0] || ''
+  } else if (input.filePath) {
     const path = String(input.filePath)
     const stat = statSync(path)
     if (stat.size > MAX_BYTES) throw new Error('image is larger than 8 MiB')
@@ -97,7 +101,7 @@ export async function saveAsset(store, input = {}) {
     bytes = buffer
     source = url.href
   } else {
-    throw new Error('filePath or url is required')
+    throw new Error('filePath, url, or bytes is required')
   }
   if (!MIME[extension]) throw new Error('supported image types: png, jpg, jpeg, webp, gif')
   const hash = createHash('sha256').update(bytes).digest('hex')
@@ -112,7 +116,7 @@ export async function saveAsset(store, input = {}) {
     schema_version: 1,
     id,
     file: `${hash}${extension}`,
-    mime: MIME[extension],
+    mime: input.mediaType || MIME[extension],
     bytes: bytes.byteLength,
     description,
     tags,

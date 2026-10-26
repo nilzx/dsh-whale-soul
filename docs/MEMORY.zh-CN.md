@@ -69,7 +69,7 @@ tags 使用命名空间（`who:master`、`topic:food/rice`、`mood:warm`、`kind
 
 ## 图片资产
 
-图片按 SHA-256 内容寻址存放在 `assets/`，旁边有 JSON 元数据（tags、来源、描述、使用次数）。`soul_meme_save` 是显式动作。身体适配器可以通过本地 `/whale-soul-assets/` 路由把图片 URL 交给 dsh-pet 的 `broadcast`。聊天附件自动捕获属于后续扩展，不在 0.1.0 中。
+图片按 SHA-256 内容寻址存放在 `assets/`，旁边有 JSON 元数据（tags、来源、描述、使用次数）。`soul_meme_save` 是显式动作：`recent_image: true` 会通过 `ctx.attachments` 读取当前会话最近一张图片；也支持本地路径或 URL。身体适配器可以通过本地 `/whale-soul-assets/` 路由把图片 URL 交给 dsh-pet 的 `broadcast`。不会自动捕获任何图片。
 
 ## 迁移旧记忆
 

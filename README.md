@@ -19,7 +19,7 @@ If `dsh-pet` is installed, the bundled body adapter can make the pet yawn, sleep
 - **Memory decay** — details move to cold storage, gists can fade to an index line, and very old low-value entries are archived. Pinned and user-edited memories are protected. This is inspired by gist/verbatim memory research and the forgetting curve, not a claim to simulate a brain.
 - **Dream-like maintenance** — consolidation runs in the background when due and idle. It writes a dream journal instead of a chat report. With dsh-pet, it plays a sleep/wake animation.
 - **User-editable memory** — Markdown/JSON files are the source of truth. The index is derived and rebuildable. There are no per-entry hashes; external edits are detected with file metadata, validated, and treated as user corrections.
-- **Optional memes** — save an image the user explicitly agrees to keep, tag it, and (when a body exists) send it back as a pet bubble.
+- **Optional memes** — save an image the user explicitly agrees to keep (the latest chat attachment with `recent_image`, a local path, or a URL), tag it, and (when a body exists) send it back as a pet bubble.
 - **Local-first** — memory and image assets live under `$DSH_HOME`; no cloud storage.
 
 ## Requirements
@@ -126,7 +126,7 @@ The body row accepts:
 - Memory is stored locally under `$DSH_HOME` and is not uploaded.
 - The persona is all-ages and non-sexual. It refuses harmful or sexualized content in character.
 - The Agent does not record passwords, tokens, bank details, or identity numbers. Users can ask to forget a memory.
-- Image saving is explicit (`soul_meme_save`); do not save private photos without consent. Automatic chat-attachment capture is not part of 0.1.0.
+- Image saving is explicit (`soul_meme_save` with `recent_image`, a path, or a URL); do not save private photos without consent. Nothing is captured automatically.
 - Memory files are user-editable. The system treats user edits as corrections, validates them, and quarantines malformed files rather than crashing the memory garden.
 - No per-entry cryptographic hashes: authority comes from a single source of truth, atomic writes, rebuildable indexes, provenance, and versioning.
 

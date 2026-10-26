@@ -90,7 +90,31 @@ export function apply(ctx, config = {}) {
   const maintenanceDays = option(options, 'maintenanceDays', 7)
   const maintenanceWrites = option(options, 'maintenanceWrites', 40)
   const autoDream = options.autoDream !== false
+  const latestImages = new Map()
   let dreaming = false
+
+  const attachments = (() => {
+    try {
+      return typeof ctx.get === 'function' ? ctx.get('attachments') : undefined
+    } catch {
+      return undefined
+    }
+  })()
+
+  const recentImage = async (sessionId) => {
+    if (!sessionId || !attachments || typeof attachments.readImage !== 'function') return null
+    const ref = latestImages.get(sessionId)
+    if (!ref) return null
+    try {
+      const stored = await attachments.readImage(
+        ref,
+        typeof AbortSignal?.timeout === 'function' ? AbortSignal.timeout(10_000) : undefined,
+      )
+      return { bytes: stored.data, mediaType: ref.mediaType, source: 'chat-attachment' }
+    } catch {
+      return null
+    }
+  }
 
   const runDreamNow = (trigger = 'timer') => {
     if (dreaming) return
@@ -146,15 +170,27 @@ export function apply(ctx, config = {}) {
     'whale-soul.memory.context()',
   )
 
-  for (const definition of createMemoryTools(store)) {
+  for (const definition of createMemoryTools(store, { recentImage })) {
     ctx.effect(() => ctx.tools.register(definition), `whale-soul.memory.tool(${definition.name})`)
   }
 
   // Keep dreams out of active chat. Any user turn resets the idle clock; the
   // maintenance pass itself runs only when the house is quiet.
   if (typeof ctx.on === 'function') {
-    const activityDispose = ctx.on('session/event', (_session, event) => {
+    const activityDispose = ctx.on('session/event', (session, event) => {
       if (event?.type === 'user/message' || event?.type === 'turn/start') store.touchActivity()
+      if (event?.type !== 'user/message') return
+      const sessionId = session?.header?.id ?? session?.id
+      if (!sessionId) return
+      const images = Array.isArray(event.data?.content)
+        ? event.data.content.filter((part) => part?.type === 'image' && part.attachment)
+        : []
+      if (images.length === 0) return
+      latestImages.set(sessionId, images[images.length - 1].attachment)
+      if (latestImages.size > 64) {
+        const oldest = latestImages.keys().next().value
+        if (oldest !== undefined) latestImages.delete(oldest)
+      }
     })
     ctx.effect(() => () => activityDispose(), 'whale-soul.memory.activity()')
   }

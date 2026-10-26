@@ -30,8 +30,8 @@ function makeTool({ name, description, parameters, execute, presentTitle }) {
           }),
         }
       : {}),
-    async execute(args) {
-      return { text: String(await execute(args ?? {})) }
+    async execute(args, exec) {
+      return { text: String(await execute(args ?? {}, exec)) }
     },
   }
 }
@@ -49,7 +49,7 @@ function forgetReply(mode) {
   return '好，这件事我不再留着了。'
 }
 
-export function createMemoryTools(store) {
+export function createMemoryTools(store, { recentImage } = {}) {
   const remember = makeTool({
     name: 'soul_remember',
     description:
@@ -264,6 +264,10 @@ export function createMemoryTools(store) {
       properties: {
         file_path: { type: 'string', description: '本地图片路径（png/jpg/jpeg/webp/gif）。' },
         url: { type: 'string', description: 'http(s) 图片地址。' },
+        recent_image: {
+          type: 'boolean',
+          description: '主人刚在对话里发来一张图，并且同意收下时，用 true 从当前会话取最近一张。',
+        },
         description: { type: 'string', description: '这张图的简短描述。' },
         tags: {
           type: 'array',
@@ -273,9 +277,23 @@ export function createMemoryTools(store) {
       },
     },
     presentTitle: '收进贝壳',
-    async execute(args) {
-      if (!args.file_path && !args.url) return '我还没看到要收下的那张图。'
+    async execute(args, exec) {
+      if (!args.file_path && !args.url && args.recent_image !== true) {
+        return '我还没看到要收下的那张图。'
+      }
       try {
+        if (args.recent_image === true && typeof recentImage === 'function') {
+          const image = await recentImage(exec?.agent?.session?.id)
+          if (!image) return '我还没看到要收下的那张图。'
+          await saveAsset(store, {
+            bytes: image.bytes,
+            mediaType: image.mediaType,
+            description: args.description,
+            tags: args.tags,
+            source: image.source ?? 'chat-attachment',
+          })
+          return '这张图我收进贝壳里了。'
+        }
         await saveAsset(store, {
           filePath: args.file_path,
           url: args.url,
