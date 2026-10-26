@@ -23,6 +23,28 @@ function rawLine(text, source = 'agent') {
   return `${JSON.stringify({ at: nowIso(), source, content: String(text) })}\n`
 }
 
+function normalizedRaw(...parts) {
+  const lines = parts.flatMap((part) => String(part ?? '').split(/\r?\n/)).filter((line) => line.trim())
+  for (const line of lines) {
+    try {
+      const record = JSON.parse(line)
+      if (!record || typeof record !== 'object' || Array.isArray(record)) throw new Error('invalid record')
+    } catch {
+      throw new Error('RAW_EVIDENCE_INVALID: existing evidence requires repair before merging')
+    }
+  }
+  return lines.length ? `${lines.join('\n')}\n` : ''
+}
+
+function sameScope(left, right) {
+  for (const key of ['subject_id', 'memory_space_id', 'agent_identity_id', 'persona_id']) {
+    if ((left[key] || right[key]) && left[key] !== right[key]) return false
+  }
+  const leftWho = (left.tags ?? []).filter((tag) => tag.startsWith('who:'))
+  const rightWho = (right.tags ?? []).filter((tag) => tag.startsWith('who:'))
+  return !leftWho.length || !rightWho.length || leftWho.some((tag) => rightWho.includes(tag))
+}
+
 export function buildCandidate(input = {}) {
   const type = normalizeType(input.type)
   const content = String(input.content ?? '').trim()
@@ -66,6 +88,9 @@ export function buildCandidate(input = {}) {
     supersedes: typeof input.supersedes === 'string' ? input.supersedes : null,
     superseded_by: null,
     canonical_key: canonicalKey,
+    ...Object.fromEntries(['subject_id', 'memory_space_id', 'agent_identity_id', 'persona_id']
+      .filter((key) => typeof input[key] === 'string' && input[key].trim())
+      .map((key) => [key, input[key].trim()])),
     layers: { gist: true, detail: true, raw: true },
     assets: Array.isArray(input.assets) ? input.assets.filter((item) => typeof item === 'string').slice(0, 32) : [],
     archived_at: null,
@@ -92,19 +117,16 @@ export function findMergeCandidate(entries, candidate) {
   for (const entry of entries) {
     if (entry.id === candidate.meta.id) continue
     if (entry.status !== 'active' || entry.superseded_by) continue
+    if (entry.type !== candidate.meta.type || !sameScope(entry, candidate.meta)) continue
+    if (entry.canonical_key && candidate.meta.canonical_key && entry.canonical_key === candidate.meta.canonical_key) {
+      return { entry, kind: 'canonical', score: 1 }
+    }
     const overlap = tagOverlap(entry.tags, candidate.meta.tags)
     if (overlap < 2) continue
     const meaningfulOverlap = tagOverlap(
       (entry.tags ?? []).filter((tag) => tag !== 'topic:general' && !tag.startsWith('kind:')),
       (candidate.meta.tags ?? []).filter((tag) => tag !== 'topic:general' && !tag.startsWith('kind:')),
     )
-    if (entry.type !== candidate.meta.type) {
-      // Different types can still be related, but not auto-merged.
-      continue
-    }
-    if (entry.canonical_key && candidate.meta.canonical_key && entry.canonical_key === candidate.meta.canonical_key) {
-      return { entry, kind: 'canonical', score: 1 }
-    }
     const titleSimilarity = jaccard(tokenize(entry.title), tokenize(candidate.meta.title))
     const gistSimilarity = jaccard(tokenize(entry.summary ?? ''), candidateTokens)
     const timeDistance = Number.isFinite(candidateTime)
@@ -124,6 +146,9 @@ export function findMergeCandidate(entries, candidate) {
 
 export function mergeCandidate(existing, candidate, { existingDetail = '', existingRaw = '' } = {}) {
   if (existing.user_edited) return { action: 'link', entry: candidate.meta, reason: 'user-edited' }
+  if (existing.type !== candidate.meta.type || !sameScope(existing, candidate.meta)) {
+    return { action: 'link', entry: candidate.meta, reason: 'different-scope' }
+  }
   const oldGist = existing.summary ?? existing.gist ?? ''
   const newGist = candidate.layers.gist
   const combinedTokens = tokenize(`${oldGist}\n${newGist}`)
@@ -138,6 +163,7 @@ export function mergeCandidate(existing, candidate, { existingDetail = '', exist
   }
 
   const timestamp = nowIso()
+  const raw = normalizedRaw(existingRaw, candidate.layers.raw)
   const detail = [existingDetail.trim(), `---\n[${timestamp}] ${candidate.layers.detail.trim()}`]
     .filter(Boolean)
     .join('\n\n')
@@ -177,7 +203,7 @@ export function mergeCandidate(existing, candidate, { existingDetail = '', exist
     layers: {
       gist,
       detail,
-      raw: `${existingRaw}${candidate.layers.raw}`,
+      raw,
     },
   }
 }

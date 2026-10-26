@@ -44,7 +44,7 @@ function rememberReply(action) {
 }
 
 function forgetReply(mode) {
-  if (mode === 'fade') return '好，我把那些细枝末节放回海里了，只留下一点影子。'
+  if (mode === 'fade') return '详细经过和原始片段已经收起，要旨仍然保留。这次没有从要旨中去掉指定细节，也没有永久删除。'
   if (mode === 'archive') return '我把这件事收进深海了。'
   return '好，这件事我不再留着了。'
 }
@@ -97,6 +97,7 @@ export function createMemoryTools(store, { recentImage } = {}) {
     },
     presentTitle: '记在心里',
     async execute(args) {
+      store.reload({ writeIndex: false })
       const candidate = buildCandidate({
         content: args.content,
         title: args.title,
@@ -121,7 +122,7 @@ export function createMemoryTools(store, { recentImage } = {}) {
         }
         const merged = mergeCandidate(existing, candidate, {
           existingDetail: store.readDetail(existing),
-          existingRaw: store.readRaw(existing, 80),
+          existingRaw: store.readRaw(existing, Infinity),
         })
         if (merged.action === 'merge') {
           store.updateEntry(existing, merged.layers)
@@ -179,6 +180,7 @@ export function createMemoryTools(store, { recentImage } = {}) {
     },
     presentTitle: '想了想',
     async execute(args) {
+      store.reload({ writeIndex: false })
       const depth = ['index', 'gist', 'detail', 'raw'].includes(args.depth) ? args.depth : 'gist'
       const results = searchEntries(store.active(), {
         query: args.query,
@@ -195,7 +197,7 @@ export function createMemoryTools(store, { recentImage } = {}) {
   const forget = makeTool({
     name: 'soul_forget',
     description:
-      '按主人的明确要求忘掉一件事。mode=fade 只让细节变模糊，archive 收进深海，delete 彻底不留。只有主人明确说“忘掉/删掉”时才调用；pinned 或主人亲手改过的条目需要 confirm=true。不要向主人播报条数或工具名。',
+      '按主人的明确要求忘掉一件事。mode=fade 仅冷藏详细经过和原始片段，保留要旨，不能保证某个指定细节消失；若主人只想去掉某个细节，传 detail_to_forget，当前版本会明确说明暂不支持且不改变记忆。archive 收进深海，delete 删除条目及冷藏层。只有主人明确说“忘掉/删掉”时才调用；pinned 或主人亲手改过的条目需要 confirm=true。不要向主人播报条数或工具名，但必须如实说明实际保留范围。',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -206,6 +208,10 @@ export function createMemoryTools(store, { recentImage } = {}) {
           type: 'array',
           items: { type: 'string' },
           description: '用标签定位。',
+        },
+        detail_to_forget: {
+          type: 'string',
+          description: '主人要求只去掉某个具体细节时填写；当前版本不支持定点移除，会拒绝并保持原内容。',
         },
         mode: {
           type: 'string',
@@ -220,17 +226,31 @@ export function createMemoryTools(store, { recentImage } = {}) {
     },
     presentTitle: '放进海里',
     async execute(args) {
-      let entry = args.id ? store.find(String(args.id)) : null
+      const id = typeof args.id === 'string' ? args.id.trim() : ''
+      const query = typeof args.query === 'string' ? args.query.trim() : ''
+      const tags = Array.isArray(args.tags)
+        ? args.tags.filter((tag) => typeof tag === 'string' && tag.trim()).map((tag) => tag.trim())
+        : []
+      if (!id && !query && tags.length === 0) return '请先说清楚要忘掉哪件事；这次没有改动。'
+      if (args.mode !== undefined && !['fade', 'archive', 'delete'].includes(args.mode)) {
+        return '没有识别出要怎样处理这件事；这次没有改动。'
+      }
+      if (typeof args.detail_to_forget === 'string' && args.detail_to_forget.trim()) {
+        return '我现在还不能只去掉其中某个细节；这次没有改动，也没有把它当成整件事淡忘。'
+      }
+      store.reload({ writeIndex: false })
+      let entry = id ? store.find(id) : null
+      if (id && !entry) return '唔，我找不到这件事；这次没有改动。'
       let matches = entry ? [{ entry }] : []
       if (!entry) {
         matches = searchEntries(store.active(), {
-          query: args.query,
-          tags: args.tags,
+          query,
+          tags,
           limit: 4,
         })
       }
       if (matches.length === 0) return '唔，我找不到这件事。'
-      if (matches.length > 1 && !args.id) {
+      if (matches.length > 1 && !id) {
         const titles = matches.map(({ entry }) => entry.title).join('、')
         return `我记得几件有点像的事：${titles}。主人说的是哪一件？`
       }
@@ -249,6 +269,9 @@ export function createMemoryTools(store, { recentImage } = {}) {
       }
       store.removeLayer(entry, 'detail')
       store.removeLayer(entry, 'raw')
+      if (entry.layers.detail || entry.layers.raw) {
+        return '这次没能收起全部经过和原始片段；仍有内容留在原处，要旨也保留着，没有永久删除。'
+      }
       store.updateEntry(entry, { summary: summarize(entry.summary ?? entry._gist ?? entry.title, 160) })
       return forgetReply('fade')
     },
