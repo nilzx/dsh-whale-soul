@@ -59,7 +59,8 @@ export function apply(ctx, config = {}) {
         ref,
         typeof AbortSignal?.timeout === 'function' ? AbortSignal.timeout(10_000) : undefined,
       )
-      return { bytes: stored.data, mediaType: ref.mediaType, source: 'chat-attachment' }
+      if (latestImages.get(sessionId) !== ref) return null
+      return { bytes: stored.data, mediaType: stored.ref.mediaType, source: 'chat-attachment' }
     } catch {
       return null
     }
@@ -141,7 +142,14 @@ export function apply(ctx, config = {}) {
         if (oldest !== undefined) latestImages.delete(oldest)
       }
     })
-    ctx.effect(() => () => activityDispose(), 'whale-soul.memory.activity()')
+    const sessionDispose = ctx.on('session/disposed', (session) => {
+      latestImages.delete(session?.header?.id ?? session?.id)
+    })
+    ctx.effect(() => () => {
+      activityDispose()
+      sessionDispose()
+      latestImages.clear()
+    }, 'whale-soul.memory.activity()')
   }
 
   if (autoDream && checkIntervalMs > 0) {
