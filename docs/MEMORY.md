@@ -1,6 +1,6 @@
 # Memory design
 
-Whale-chan's memory is a file-backed, layered memory garden. It is designed to be **inspectable, editable, and rebuildable**, not to be an immutable database.
+Whale Chan's memory is a file-backed, layered memory garden. It is designed to be **inspectable, editable, and rebuildable**, not to be an immutable database.
 
 ## Source of truth
 

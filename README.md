@@ -1,16 +1,16 @@
 <p align="center">
-  <img src="assets/icon.png" alt="Whale-chan" width="128" height="128">
+  <img src="assets/icon.png" alt="Whale Chan" width="128" height="128">
 </p>
 
 # dsh-whale-soul
 
-An in-character **Whale-chan (鲸鱼娘)** Agent mode for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness), with long-term memory that settles like a dream.
+An in-character **Whale Chan (鲸鱼娘)** Agent mode for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness), with long-term memory that settles like a dream.
 
 [中文文档](README.zh-CN.md)
 
 ## What it is
 
-`dsh-whale-soul` adds a new Agent mode called **鲸鱼娘** to DSH. She chats, helps with normal Agent work, and quietly remembers the things that matter. The conversation stays in DSH; the plugin only owns the persona and the memory.
+`dsh-whale-soul` adds a new Agent mode called **Whale Chan** (**鲸鱼娘** in Chinese) to DSH. She chats, helps with normal Agent work, and quietly remembers the things that matter. The conversation stays in DSH; the plugin only owns the persona and the memory.
 
 ## Features
 
@@ -42,11 +42,11 @@ dsh plugin --profile web add dsh-whale-soul
 
 Use `--profile desktop` instead of `web` if you use the desktop profile.
 
-After installation, start a new session and choose **鲸鱼娘** in the Agent mode selector. Existing sessions keep the preset they started with.
+After installation, start a new session and choose **Whale Chan** (shown as **鲸鱼娘** when DSH is in Chinese) in the Agent mode selector. Existing sessions keep the preset they started with.
 
 ## Use
 
-- Choose **鲸鱼娘** and chat normally. She can still do normal Agent work: files, shell, web, schedules, skills, and so on.
+- Choose **Whale Chan** and chat normally. She can still do normal Agent work: files, shell, web, schedules, skills, and so on.
 - Memory maintenance is automatic. To inspect or edit memory files, switch to a work mode; the character mode deliberately has no memory dashboard.
 
 ## Privacy and safety

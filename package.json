@@ -1,7 +1,7 @@
 {
   "name": "dsh-whale-soul",
-  "version": "0.1.4",
-  "description": "A soul for DeepSeek Harness: an in-character Whale-chan agent preset with layered long-term memory and dream-like consolidation.",
+  "version": "0.1.5",
+  "description": "A soul for DeepSeek Harness: an in-character Whale Chan agent preset with layered long-term memory and dream-like consolidation.",
   "type": "module",
   "license": "MIT",
   "author": "Nilzx",
@@ -17,7 +17,8 @@
   "exports": {
     ".": "./src/index.js",
     "./body": "./src/body/index.js",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./locale": "./src/locale.js"
   },
   "files": [
     "src",
@@ -64,7 +65,7 @@
   },
   "dsh-plugin": {
     "category": "identity",
-    "displayName": "Whale-chan Soul"
+    "displayName": "Whale Chan Soul"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.5",
