@@ -338,6 +338,30 @@ export class PersonaGrowth {
     } catch (error) { return failure(error, operationId) }
   }
 
+  async listCandidates(context, { limit = 20 } = {}) {
+    try {
+      this.#authorize(context, 'self.evaluate')
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20) throw new MemoryError('INVALID_GROWTH_LIMIT')
+      return await this.#store.managedRead(this.#hostContext(context), async () => {
+        this.#authorize(context, 'self.evaluate')
+        const manifest = this.#manifest()
+        const proposals = []
+        for (const proposalId of Object.keys(manifest.proposals)) {
+          const proposal = this.#checkedFile('proposals', proposalId, manifest)
+          if (proposal.state !== 'candidate' || proposal.core_version !== this.#core.version) continue
+          try {
+            await this.#evidence(proposal.evidence_refs)
+            if (proposal.counterevidence_refs.length) await this.#evidence(proposal.counterevidence_refs)
+          } catch { continue }
+          proposals.push(proposal)
+        }
+        this.#authorize(context, 'self.evaluate')
+        return { status: 'ok', ...this.#identity,
+          proposals: clone(proposals.sort((a, b) => a.created_at.localeCompare(b.created_at) || a.proposal_id.localeCompare(b.proposal_id)).slice(0, limit)) }
+      })
+    } catch (error) { return failure(error) }
+  }
+
   async loadGrowth(context, { maxTraits = 12, maxChars = 1200 } = {}) {
     try {
       this.#authorize(context, 'memory.read')
