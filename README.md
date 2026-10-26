@@ -1,14 +1,16 @@
+<p align="center">
+  <img src="assets/icon.png" alt="Whale-chan" width="128" height="128">
+</p>
+
 # dsh-whale-soul
 
-A soul for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness): an in-character **Whale-chan (鲸鱼娘)** Agent preset with layered long-term memory, dream-like consolidation, and optional body reactions from [`dsh-pet`](https://www.npmjs.com/package/dsh-pet).
+A soul for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness): an in-character **Whale-chan (鲸鱼娘)** Agent preset with layered long-term memory and dream-like consolidation.
 
 [中文文档](README.zh-CN.md)
 
 ## What it is
 
-`dsh-whale-soul` is an official DSH bundle. Installing it adds a new Agent preset named **鲸鱼娘** to the Agent mode selector. The preset owns the persona and the memory engine; the chat surface stays in DSH.
-
-If `dsh-pet` is installed, the bundled body adapter can make the pet yawn, sleep, wake, react, and show short in-character bubbles. If `dsh-pet` is not installed — the default for most users — nothing breaks and the soul works exactly the same without a body. The adapter only calls dsh-pet's local HTTP routes; it does not import, patch, or modify dsh-pet.
+`dsh-whale-soul` is a DSH bundle built on the official plugin interface. Installing it adds a new Agent preset named **鲸鱼娘** to the Agent mode selector. The preset owns the persona and the memory engine; the chat surface stays in DSH. It works on its own and does not require a companion app.
 
 ## Features
 
@@ -17,16 +19,15 @@ If `dsh-pet` is installed, the bundled body adapter can make the pet yawn, sleep
 - **Tags on every entry** — stable namespaces such as `who:`, `topic:`, `mood:`, `kind:` plus free tags. `kind:` and `topic:` are filled automatically when missing.
 - **Category-aware de-duplication** — similar entries merge; contradictory facts become versions instead of silent overwrites. Related entries are linked.
 - **Memory decay** — details move to cold storage, gists can fade to an index line, and very old low-value entries are archived. Pinned and user-edited memories are protected. This is inspired by gist/verbatim memory research and the forgetting curve, not a claim to simulate a brain.
-- **Dream-like maintenance** — consolidation runs in the background when due and idle. It writes a dream journal instead of a chat report. With dsh-pet, it plays a sleep/wake animation.
+- **Dream-like maintenance** — consolidation runs in the background when due and idle. It writes a dream journal instead of a chat report. When a body is connected, the adapter can play a short sleep/wake performance.
 - **User-editable memory** — Markdown/JSON files are the source of truth. The index is derived and rebuildable. There are no per-entry hashes; external edits are detected with file metadata, validated, and treated as user corrections.
-- **Optional memes** — save an image the user explicitly agrees to keep (the latest chat attachment with `recent_image`, a local path, or a URL), tag it, and (when a body exists) send it back as a pet bubble.
+- **Optional memes** — save an image the user explicitly agrees to keep (the latest chat attachment with `recent_image`, a local path, or a URL), tag it, and send it back as a body bubble when one is available.
 - **Local-first** — memory and image assets live under `$DSH_HOME`; no cloud storage.
 
 ## Requirements
 
 - DSH `0.2.1-rc.3` (the bundle declares this compatibility).
 - Node.js `>=22.12.0`.
-- Optional: `dsh-pet` (tested with `0.3.8`). The plugin works without it.
 
 ## Install
 
@@ -43,7 +44,7 @@ After installation, create a new session and choose **鲸鱼娘** in the Agent m
 
 - **Chat in DSH.** The Agent does normal Agent work: files, shell, web, schedules, skills, compaction, and so on.
 - **Memory maintenance is not a chat command.** It happens automatically as a dream. To inspect or edit memory files, switch to a work/maintenance Agent mode; this mode intentionally does not expose a memory dashboard.
-- **Pet reactions are optional.** If `dsh-pet` is running on the same loopback host, the adapter detects it and registers `soul_react` / `soul_meme_use`. Without it, those tools are absent.
+- **Body reactions are optional.** The preset can add small reactions when a compatible local companion is present, and stays quiet otherwise. See [Optional body reactions](#optional-body-reactions).
 
 ## Memory layout
 
@@ -79,21 +80,6 @@ Only a compact directory: pinned/identity/promise items, a few recent items, top
 - Decay moves `detail`/`raw` to `cold/`, can reduce an entry to an index line, and archives very old low-salience entries. `pinned` and `user_edited` entries are protected.
 - Automatic permanent deletion is off by default. Set `autoPurgeArchived: true` to purge archived, low-salience entries after `purgeAfterDays` (default 730).
 
-## Optional dsh-pet body
-
-The adapter is enabled only when `dsh-pet` is present:
-
-1. Discover the DSH origin from `webApp` / `webServer` / `DSH_WEB_URL`.
-2. Probe `GET /dsh-pet-7340/state` and `GET /dsh-pet-7340/config` on loopback.
-3. Use only the existing routes:
-   - `POST /dsh-pet-7340/broadcast?pet=main&surface=any`
-   - `POST /dsh-pet-7340/anim?pet=main&surface=any`
-   - `POST /dsh-pet-7340/lock` / `lock/release`
-   - `POST /dsh-pet-7340/bubble/clear`
-4. For dream maintenance, play a short sleep sequence (`哈欠连天` → `原地小憩沉眠` → `打瞌睡被惊醒`) and release the lock.
-
-The adapter never calls dsh-pet's `/chat` or `/whisper`; those use dsh-pet's own persona and model. It does not change dsh-pet's config. If dsh-pet's own whisper is enabled, its voice may still be heard; disable it in dsh-pet if you want a single voice.
-
 ## Configuration
 
 The preset passes these options to the memory row:
@@ -110,16 +96,11 @@ The preset passes these options to the memory row:
 | `autoPurgeArchived` | `false` | Allow automatic purge of old archived entries. |
 | `purgeAfterDays` | `730` | Archive age before `autoPurgeArchived` may remove it. |
 
-The body row accepts:
+## Optional body reactions
 
-| Option | Default | Meaning |
-|---|---:|---|
-| `baseUrl` | auto | Override the dsh-pet host origin. |
-| `petId` | `main` | Which dsh-pet instance to drive. |
-| `surface` | `any` | `web`, `desktop`, `both`, or `any`. |
-| `maxBubbleChars` | `100` | Maximum bubble text. |
-| `rateLimitMs` | `4000` | Minimum gap between explicit reactions. |
-| `minSleepMs` | `8000` | Minimum length of the sleep performance. |
+The bundled body adapter is a small, one-way bridge. If a compatible local companion is already running, it can add short reactions, bubbles, and a sleep animation. It is disabled automatically when no bridge answers; the soul works exactly the same without it. It never imports or modifies the other app.
+
+Integration details and options: [docs/BODY.md](docs/BODY.md).
 
 ## Privacy and safety
 
@@ -151,9 +132,26 @@ npm test
 npm run pack:check
 ```
 
-Tests cover the memory store, layered recall, de-duplication, decay, dream journal, asset store, body adapter probing, and the no-dsh-pet path.
+Tests cover the memory store, layered recall, de-duplication, decay, dream journal, asset store, body adapter probing, and the no-body path.
 
-More detail: [docs/MEMORY.md](docs/MEMORY.md) · [docs/ROLEPLAY.md](docs/ROLEPLAY.md)
+More detail: [docs/MEMORY.md](docs/MEMORY.md) · [docs/ROLEPLAY.md](docs/ROLEPLAY.md) · [docs/BODY.md](docs/BODY.md)
+
+## Releasing
+
+CI runs the test suite on every push and pull request. A version tag publishes the package:
+
+1. Bump `version` in `package.json`.
+2. Commit and push `main`.
+3. Push a matching tag:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The `Release` workflow checks that the tag matches `package.json`, runs the tests, publishes to npm with provenance, and creates a GitHub release. Pre-release versions such as `v0.2.0-beta.1` publish under the `next` dist-tag.
+
+The repository needs an `NPM_TOKEN` secret with publish access. The workflow requests `id-token: write` for provenance.
 
 ## License
 

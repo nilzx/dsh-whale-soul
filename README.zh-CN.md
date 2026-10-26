@@ -1,14 +1,16 @@
+<p align="center">
+  <img src="assets/icon.png" alt="鲸鱼娘" width="128" height="128">
+</p>
+
 # dsh-whale-soul
 
-给 DeepSeek Harness 的「鲸鱼娘」灵魂：一个全中文、不出戏的 Agent 模式，带分层长期记忆、梦境式整理，以及可选的 [`dsh-pet`](https://www.npmjs.com/package/dsh-pet) 身体反应。
+给 DeepSeek Harness 的「鲸鱼娘」灵魂：一个全中文、不出戏的 Agent 模式，带分层长期记忆和梦境式整理。
 
 [English README](README.md)
 
 ## 这是什么
 
-`dsh-whale-soul` 是一个标准的 DSH bundle。安装后，Agent 模式选择器里会出现 **鲸鱼娘**。它只负责“灵魂”：人格、记忆、检索和说话方式；聊天入口仍然是 DSH。
-
-如果本机安装了 `dsh-pet`，身体适配器可以让宠物打哈欠、睡觉、醒来、做动作，并显示很短的台词。**没有 dsh-pet 是默认情况**，插件会安静降级，灵魂照常工作。适配器只调用 dsh-pet 的本地 HTTP 路由，不导入、不修改、不 fork dsh-pet。
+`dsh-whale-soul` 是一个基于 DSH 官方插件接口的 bundle。安装后，Agent 模式选择器里会出现 **鲸鱼娘**。它只负责“灵魂”：人格、记忆、检索和说话方式；聊天入口仍然是 DSH。它可以独立工作，不需要额外的配套应用。
 
 ## 特性
 
@@ -17,16 +19,15 @@
 - **每条记忆都有检索 tags**：使用 `who:`、`topic:`、`mood:`、`kind:` 等命名空间；缺少时自动补 `kind:` 和 `topic:general`。
 - **按类别去重**：相似事实合并；冲突事实版本化，不静默覆盖；相关条目通过 links 关联。
 - **记忆衰退**：细节移入 cold storage，要旨可淡成目录行，极低分量旧条目归档；pinned 和用户编辑过的条目受保护。设计借鉴模糊痕迹/遗忘曲线，不宣称模拟大脑。
-- **梦境式维护**：到点且空闲时在后台整理，只写梦日记，不在聊天里播报。有 dsh-pet 时播放睡觉/醒来动画。
+- **梦境式维护**：到点且空闲时在后台整理，只写梦日记，不在聊天里播报。有身体时，适配器可以播放一小段睡觉/醒来的表演。
 - **用户可编辑记忆**：Markdown/JSON 是事实源，索引可重建；不做逐条 hash。外部编辑用文件时间和解析校验识别，视为用户修正。
-- **可选表情包**：用户明确同意保留的图片可以存入 asset store（支持最近一张聊天图片、本地路径或 URL）、打标签，并在有身体时作为宠物气泡递回去。
+- **可选表情包**：用户明确同意保留的图片可以存入 asset store（支持最近一张聊天图片、本地路径或 URL）、打标签，并在有身体时作为气泡递回去。
 - **本地优先**：记忆和图片都在 `$DSH_HOME` 下，不上传云端。
 
 ## 要求
 
 - DSH `0.2.1-rc.3`（bundle 声明了该兼容性）。
 - Node.js `>=22.12.0`。
-- 可选：`dsh-pet`（测试版本 `0.3.8`）。没有它也能完整使用。
 
 ## 安装
 
@@ -43,7 +44,7 @@ npm pack
 
 - **在 DSH 里聊天**。Agent 该有的能力都在：文件、shell、网页、定时、skills、压缩等。
 - **记忆维护不是聊天命令**。它会在合适的时候变成一场梦。要查看或编辑记忆文件，请切到工作/维护模式；鲸鱼娘模式故意不暴露记忆面板。
-- **宠物反应是可选的**。如果同一 loopback 上有 dsh-pet，适配器会检测到并注册 `soul_react` / `soul_meme_use`；没有 dsh-pet 时这些工具不存在。
+- **身体反应是可选的**。如果本机有兼容的陪伴应用在运行，预设可以加一点小反应；没有就保持安静。详见[可选的身体反应](#可选的身体反应)。
 
 ## 记忆目录
 
@@ -79,21 +80,6 @@ $DSH_HOME/whale-soul/memory/
 - 衰退会把 `detail`/`raw` 移到 `cold/`，可把条目降成目录行；很旧的极低分量条目会归档。`pinned` 和 `user_edited` 受保护。
 - 自动永久删除默认关闭。设置 `autoPurgeArchived: true` 后，归档的低分量条目在 `purgeAfterDays`（默认 730）后可能被清除。
 
-## 可选的 dsh-pet 身体
-
-只有检测到 dsh-pet 才启用：
-
-1. 通过 `webApp` / `webServer` / `DSH_WEB_URL` 发现 DSH 本地 origin。
-2. 在 loopback 上探测 `GET /dsh-pet-7340/state` 和 `GET /dsh-pet-7340/config`。
-3. 只使用已有路由：
-   - `POST /dsh-pet-7340/broadcast?pet=main&surface=any`
-   - `POST /dsh-pet-7340/anim?pet=main&surface=any`
-   - `POST /dsh-pet-7340/lock` / `lock/release`
-   - `POST /dsh-pet-7340/bubble/clear`
-4. 梦境维护时播放短睡眠序列（`哈欠连天` → `原地小憩沉眠` → `打瞌睡被惊醒`），结束后释放 lock。
-
-适配器**不会**调用 dsh-pet 的 `/chat` 或 `/whisper`，因为那两处使用 dsh-pet 自己的人设和模型。它也不会修改 dsh-pet 配置。如果 dsh-pet 自己的碎碎念还开着，可能会出现两个声音；想要单一声音，请在 dsh-pet 设置里关掉它的 AI。
-
 ## 配置
 
 预设在 memory 行里传入：
@@ -110,16 +96,11 @@ $DSH_HOME/whale-soul/memory/
 | `autoPurgeArchived` | `false` | 是否允许自动清理旧归档。 |
 | `purgeAfterDays` | `730` | 归档多久后才可能被清理。 |
 
-body 行传入：
+## 可选的身体反应
 
-| 选项 | 默认 | 含义 |
-|---|---:|---|
-| `baseUrl` | 自动 | 覆盖 dsh-pet 的 origin。 |
-| `petId` | `main` | 驱动哪只 dsh-pet。 |
-| `surface` | `any` | `web` / `desktop` / `both` / `any`。 |
-| `maxBubbleChars` | `100` | 气泡最长字符数。 |
-| `rateLimitMs` | `4000` | 主动反应的最小间隔。 |
-| `minSleepMs` | `8000` | 睡眠表演最短时长。 |
+bundle 里的身体适配器是一座很小的单向桥。只有本机已经有兼容的陪伴应用在运行时，它才会加一点短反应、气泡和睡觉动画；没有检测到就自动禁用，灵魂照常工作。它不导入、不修改另一个应用。
+
+接入细节和配置项：[docs/BODY.zh-CN.md](docs/BODY.zh-CN.md)。
 
 ## 隐私和安全
 
@@ -151,9 +132,26 @@ npm test
 npm run pack:check
 ```
 
-测试覆盖记忆存储、分层回忆、去重、衰退、梦日记、图片资产、body 探测，以及无 dsh-pet 的降级路径。
+测试覆盖记忆存储、分层回忆、去重、衰退、梦日记、图片资产、body 探测，以及无 body 的降级路径。
 
-更多细节：[docs/MEMORY.zh-CN.md](docs/MEMORY.zh-CN.md) · [docs/ROLEPLAY.zh-CN.md](docs/ROLEPLAY.zh-CN.md)
+更多细节：[docs/MEMORY.zh-CN.md](docs/MEMORY.zh-CN.md) · [docs/ROLEPLAY.zh-CN.md](docs/ROLEPLAY.zh-CN.md) · [docs/BODY.zh-CN.md](docs/BODY.zh-CN.md)
+
+## 发布
+
+CI 会在每次 push 和 pull request 时跑测试。推送版本 tag 会发布 npm 包：
+
+1. 修改 `package.json` 里的 `version`。
+2. 提交并推送 `main`。
+3. 推送匹配的 tag：
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+`Release` workflow 会核对 tag 与 `package.json` 是否一致、跑测试、带 provenance 发布到 npm，并创建 GitHub Release。预发布版本（例如 `v0.2.0-beta.1`）会发布到 `next` dist-tag。
+
+仓库需要一个有发布权限的 `NPM_TOKEN` secret；workflow 声明了 `id-token: write` 用于 provenance。
 
 ## 许可
 

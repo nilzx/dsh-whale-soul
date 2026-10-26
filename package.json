@@ -1,9 +1,18 @@
 {
   "name": "dsh-whale-soul",
   "version": "0.1.0",
-  "description": "A soul for DeepSeek Harness: an in-character Whale-chan agent preset with layered long-term memory, dream-like consolidation, and optional dsh-pet body reactions.",
+  "description": "A soul for DeepSeek Harness: an in-character Whale-chan agent preset with layered long-term memory and dream-like consolidation.",
   "type": "module",
   "license": "MIT",
+  "author": "Nilzx",
+  "homepage": "https://github.com/nilzx/dsh-whale-soul#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nilzx/dsh-whale-soul.git"
+  },
+  "bugs": {
+    "url": "https://github.com/nilzx/dsh-whale-soul/issues"
+  },
   "main": "src/index.js",
   "exports": {
     ".": "./src/index.js",
@@ -32,13 +41,17 @@
     "whale",
     "whale-chan"
   ],
-  "icon": "assets/icon.svg",
+  "icon": "assets/icon.png",
   "engines": {
     "node": ">=22.12.0"
   },
   "scripts": {
     "test": "node --test",
-    "pack:check": "npm pack --dry-run"
+    "pack:check": "npm pack --dry-run",
+    "prepublishOnly": "npm test"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "dsh": {
     "bundle": {

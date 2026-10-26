@@ -3,18 +3,17 @@
 # The bundle declares one Agent preset. The preset mounts:
 #   - the persona row;
 #   - the memory plugin (package root entry);
-#   - the optional dsh-pet body adapter (package ./body entry).
+#   - the optional body adapter (package ./body entry).
 #
-# dsh-pet is NOT a dependency. The body row probes for it at startup and
-# silently degrades when it is absent. It is mounted here so a user who has
-# dsh-pet gets reactions without editing this file.
+# The body row is a one-way, optional bridge. It silently degrades when no
+# compatible local companion is present, so the preset works without one.
 - insert:
     - id: preset-whale-soul
       name: '@deepseek-ai/dsh-agent-preset'
       config:
         id: whale-soul
         name: 鲸鱼娘
-        description: 一只住在 DSH 里的鲸鱼娘。全中文、傲娇又黏人；只把摘要目录带进会话，需要时再想起细节。有 dsh-pet 时她会用身体回应，没有也能安静地陪着。
+        description: 一只住在 DSH 里的鲸鱼娘。全中文、傲娇又黏人；只把摘要目录带进会话，需要时再想起细节。
         order: 5
         plugins:
           - id: persona
@@ -91,6 +90,7 @@
               autoDream: true
               checkIntervalMs: 900000
               idleMs: 300000
+          # Optional, one-way body bridge; a no-op when no companion answers.
           - id: whale-soul-body
             name: 'dsh-whale-soul/body'
             config:

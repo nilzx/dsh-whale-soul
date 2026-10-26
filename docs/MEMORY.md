@@ -69,7 +69,7 @@ The pass writes `dreams/YYYY-MM-DD.md` and emits internal dream events for the o
 
 ## Assets
 
-Images live in `assets/` under their SHA-256 content hash, with a JSON sidecar describing tags, source, description, and usage. `soul_meme_save` is explicit: `recent_image: true` reads the latest image attachment of the current session through `ctx.attachments`; a local path or URL is also accepted. The body adapter can serve an asset through the local `/whale-soul-assets/` route and pass its URL to dsh-pet's `broadcast` route. Nothing is captured automatically.
+Images live in `assets/` under their SHA-256 content hash, with a JSON sidecar describing tags, source, description, and usage. `soul_meme_save` is explicit: `recent_image: true` reads the latest image attachment of the current session through `ctx.attachments`; a local path or URL is also accepted. The body adapter can serve an asset through the local `/whale-soul-assets/` route and pass its URL to the optional body's `broadcast` route (see [BODY.md](BODY.md)). Nothing is captured automatically.
 
 ## Migrating a legacy store
 
