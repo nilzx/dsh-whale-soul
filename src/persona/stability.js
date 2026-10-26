@@ -224,6 +224,7 @@ export class StabilityPolicy {
 
   /** Restore re-resolves all IDs; trusted service watermarks may reject rollback. */
   static async restore(snapshot, options = {}) {
+    const configuredMode = options.mode === undefined ? undefined : mode(options.mode)
     if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) throw invalid('INVALID_SNAPSHOT')
     if (snapshot.schema_version !== STABILITY_SNAPSHOT_VERSION || snapshot.policy_version !== STABILITY_POLICY_VERSION) {
       throw invalid('UNSUPPORTED_VERSION')
@@ -267,6 +268,7 @@ export class StabilityPolicy {
       }
     }
     restored.#generation = snapshot.generation
+    if (configuredMode !== undefined) restored.setMode(configuredMode)
     return restored
   }
 }
