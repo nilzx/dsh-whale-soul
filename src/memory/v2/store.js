@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { API_VERSION, CAPABILITIES, CLAIM_KINDS, FORMAT_VERSION, MEMORY_TYPES, MemoryError, RECORD_SCHEMA_VERSION, assertId, assertOnly, digest, failure, stableStringify, text, timestamp, validateRecord } from './contracts.js'
 import { TransactionEngine, atomicWrite, readJson } from './transactions.js'
+import { getPurgeState, reconcilePurgeState } from './purge-ledger.js'
 
 const DATA_FILES = ['meta.json', 'gist.md', 'detail.md', 'evidence.jsonl']
 const PROPOSAL_FIELDS = ['operation_id', 'subject_id', 'content', 'gist', 'title', 'type', 'tags', 'canonical_key', 'provenance_refs', 'claim_kind', 'confidence', 'visibility', 'valid_from', 'valid_to', 'expires_at', 'retention', 'pinned']
@@ -27,7 +28,7 @@ export class MemoryStoreV2 {
     this.paths = Object.freeze(Object.fromEntries(['records', 'evidence', 'candidates', 'self', 'assets', 'cold', 'quarantine', 'external-changes', 'journal', 'index', 'operations'].map((key) => [key, join(this.spaceRoot, key)])))
     this.evidenceResolver = evidenceResolver
     this.contexts = new WeakSet()
-    this.engine = new TransactionEngine({ root: this.spaceRoot, lockRoot: this.root, faultInjector, lockWaitMs, generationProvider, recoveryGuard })
+    this.engine = new TransactionEngine({ root: this.spaceRoot, lockRoot: this.root, memorySpaceId: this.memorySpaceId, faultInjector, lockWaitMs, generationProvider, recoveryGuard })
     this.initialized = false
   }
 
@@ -47,6 +48,7 @@ export class MemoryStoreV2 {
       const spaces = [...new Set([...(rootManifest?.spaces ?? []), this.memorySpaceId])].sort()
       atomicWrite(rootManifestPath, json(rootManifest ? { ...rootManifest, spaces } : { format_version: FORMAT_VERSION, api_version: API_VERSION, record_schema_versions: [RECORD_SCHEMA_VERSION], spaces, created_at: now }))
       this.engine._recover()
+      reconcilePurgeState(this.root, this.spaceRoot, atomicWrite)
       this._rebuildIndex()
     })
     this.initialized = true
@@ -140,6 +142,7 @@ export class MemoryStoreV2 {
     if (!ids.length || typeof this.evidenceResolver !== 'function') throw new MemoryError('EVIDENCE_REQUIRED')
     const result = []
     for (const id of ids) {
+      if (getPurgeState(this.root, this.memorySpaceId).related_evidence_ids.includes(id)) throw new MemoryError('EVIDENCE_PURGED')
       const source = await this.evidenceResolver(id, context)
       this._authorize(context, 'memory.write')
       if (!source || source.allow_persist !== true) throw new MemoryError('EVIDENCE_NOT_ALLOWED')
@@ -251,6 +254,7 @@ export class MemoryStoreV2 {
         this._authorize(context, 'memory.write')
         const previous = this._readRecord(args.record_id)
         if (!this._visible(previous.meta, context) || (previous.meta.agent_identity_id !== context.agent_identity_id && !context.capabilities.includes('memory.manage'))) throw new MemoryError('RECORD_DENIED')
+        if ((previous.meta.external_revision?.protected === true || previous.meta.legacy?.user_edited === true) && !context.capabilities.includes('memory.manage')) throw new MemoryError('PROTECTED_REVISION')
         if (previous.meta.revision !== args.expected_revision) throw new MemoryError('REVISION_CONFLICT')
         const record = await this._proposal(args, context, previous)
         this._authorize(context, 'memory.write')

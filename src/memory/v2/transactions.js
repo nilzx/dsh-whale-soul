@@ -3,6 +3,7 @@ import { hostname } from 'node:os'
 import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { MemoryError, assertId, digest } from './contracts.js'
+import { commitPurgeDescriptor, filterRecoveryChanges, getPurgeState, pathIsPurged, reconcilePurgeState, referencesPurged, validateManagedPurgeArtifacts } from './purge-ledger.js'
 
 function syncDir(path) {
   let fd
@@ -47,12 +48,22 @@ function createLockCandidate(root, owner) {
   return candidate
 }
 
-function retireLock(path, root) {
+export function retireExpectedLock(path, expectedToken, root, { requireDead = false } = {}) {
   const retired = join(root, `.retired-lock-${randomUUID()}`)
-  renameSync(path, retired)
+  try { renameSync(path, retired) } catch (error) { if (error?.code === 'ENOENT') return false; throw error }
+  const moved = readJson(join(retired, 'owner.json'), null)
+  if (moved?.token !== expectedToken || (requireDead && alive(moved))) {
+    // A late publisher may have replaced the inspected owner. Preserve it and
+    // restore its lock; never recursively delete an unexpected live owner.
+    if (!existsSync(path)) renameSync(retired, path)
+    throw new MemoryError(requireDead && alive(moved) ? 'LIVE_LOCK_OWNER' : 'LOCK_OWNER_CONFLICT')
+  }
   rmSync(retired, { recursive: true, force: true })
   syncDir(root)
+  return true
 }
+
+function managementGate(root) { return join(root, '.administration/repair.lock') }
 
 export async function acquireRootLock(root, { waitMs = 2000 } = {}) {
   mkdirSync(root, { recursive: true, mode: 0o700 })
@@ -61,15 +72,32 @@ export async function acquireRootLock(root, { waitMs = 2000 } = {}) {
   const owner = { token: randomUUID(), pid: process.pid, hostname: hostname(), acquired_at: new Date().toISOString() }
   const candidate = createLockCandidate(root, owner)
   const deadline = Date.now() + waitMs
+  const releaseOwned = () => {
+    const current = readJson(join(lockPath, 'owner.json'), null)
+    if (current?.token === owner.token) retireExpectedLock(lockPath, owner.token, root)
+  }
   try {
     for (;;) {
+      if (existsSync(managementGate(root))) {
+        if (Date.now() >= deadline) {
+          const gateOwner = readJson(join(managementGate(root), 'owner.json'), null)
+          throw new MemoryError(gateOwner && !alive(gateOwner) ? 'MANAGEMENT_RECOVERY_REQUIRED' : 'WRITER_BUSY')
+        }
+        await new Promise((fulfil) => setTimeout(fulfil, 8))
+        continue
+      }
+      if (readJson(join(lockPath, 'owner.json'), null)?.token === owner.token) return releaseOwned
+      if (!existsSync(candidate)) createLockCandidate(root, owner)
       try {
         renameSync(candidate, lockPath)
         syncDir(root)
-        return () => {
+        if (existsSync(managementGate(root))) {
           const current = readJson(join(lockPath, 'owner.json'), null)
-          if (current?.token === owner.token) retireLock(lockPath, root)
+          if (current?.token === owner.token) retireExpectedLock(lockPath, owner.token, root)
+          await new Promise((fulfil) => setTimeout(fulfil, 8))
+          continue
         }
+        return releaseOwned
       } catch (error) {
         if (!['ENOTEMPTY', 'EEXIST', 'EPERM'].includes(error?.code)) throw error
       }
@@ -82,7 +110,8 @@ export async function acquireRootLock(root, { waitMs = 2000 } = {}) {
         // A separate reaper serializes stale-owner recovery. Its own crash is
         // fail-closed and requires a trusted repair, never a time-based steal.
         const reaper = join(root, '.writer-recovery.lock')
-        const reaperCandidate = createLockCandidate(root, { ...owner, token: randomUUID() })
+        const reaperOwner = { ...owner, token: randomUUID() }
+        const reaperCandidate = createLockCandidate(root, reaperOwner)
         let reaping = false
         try {
           try { renameSync(reaperCandidate, reaper); reaping = true } catch (error) {
@@ -90,15 +119,13 @@ export async function acquireRootLock(root, { waitMs = 2000 } = {}) {
           }
           if (reaping) {
             const current = readJson(join(lockPath, 'owner.json'), null)
-            if (current?.token === previous.token && !alive(current)) {
-              const stale = join(root, `.stale-lock-${randomUUID()}`)
-              renameSync(lockPath, stale)
-              rmSync(stale, { recursive: true, force: true })
+            if (!existsSync(managementGate(root)) && current?.token === previous.token && !alive(current)) {
+              retireExpectedLock(lockPath, previous.token, root, { requireDead: true })
             }
           }
         } finally {
           rmSync(reaperCandidate, { recursive: true, force: true })
-          if (reaping) retireLock(reaper, root)
+          if (reaping) retireExpectedLock(reaper, reaperOwner.token, root)
         }
       }
       if (Date.now() >= deadline) throw new MemoryError('WRITER_BUSY')
@@ -108,11 +135,12 @@ export async function acquireRootLock(root, { waitMs = 2000 } = {}) {
 }
 
 export class TransactionEngine {
-  constructor({ root, lockRoot = root, faultInjector, generationProvider = () => 0, recoveryGuard = () => true, lockWaitMs = 2000 }) {
+  constructor({ root, lockRoot = root, memorySpaceId = null, faultInjector, generationProvider, recoveryGuard = () => true, lockWaitMs = 2000 }) {
     this.root = resolve(root)
     this.lockRoot = resolve(lockRoot)
     this.faultInjector = faultInjector
-    this.generationProvider = generationProvider
+    this.memorySpaceId = memorySpaceId ?? this.root.split(/[\\/]/).pop()
+    this.generationProvider = generationProvider ?? (() => getPurgeState(this.lockRoot, this.memorySpaceId).generation)
     this.recoveryGuard = recoveryGuard
     this.lockWaitMs = lockWaitMs
   }
@@ -143,13 +171,18 @@ export class TransactionEngine {
   _checkpoint(point, info = {}) { this.faultInjector?.(point, info) }
 
   _apply(transaction) {
-    for (let index = 0; index < transaction.changes.length; index++) {
-      const change = transaction.changes[index]
+    commitPurgeDescriptor(this.lockRoot, this.root, transaction.purge_descriptor, atomicWrite)
+    if (transaction.purge_descriptor) this._checkpoint('after_purge_ledger', { operation_id: transaction.operation_id })
+    const state = getPurgeState(this.lockRoot, this.memorySpaceId)
+    const changes = filterRecoveryChanges(transaction.changes, state, readJson(join(this.root, 'manifest.json'), null), { filterDerived: transaction.generation < state.generation && !transaction.purge_descriptor })
+    for (let index = 0; index < changes.length; index++) {
+      const change = changes[index]
       const path = this.resolvePath(change.path)
       if (change.data === null) { rmSync(path, { recursive: true, force: true }); if (existsSync(dirname(path))) syncDir(dirname(path)) }
       else atomicWrite(path, Buffer.from(change.data, 'base64'))
       this._checkpoint('after_apply', { index, operation_id: transaction.operation_id })
     }
+    reconcilePurgeState(this.lockRoot, this.root, atomicWrite)
   }
 
   _recover() {
@@ -162,7 +195,7 @@ export class TransactionEngine {
       const committed = existsSync(join(path, 'COMMIT'))
       if (committed && (!transaction || transaction.transaction_id !== dirent.name || readFileSync(join(path, 'COMMIT'), 'utf8') !== dirent.name || !Array.isArray(transaction.changes) || !/^[a-f0-9]{64}$/.test(transaction.receipt_key))) throw new MemoryError('JOURNAL_REPAIR_REQUIRED')
       if (!committed) { rmSync(path, { recursive: true, force: true }); continue }
-      if (transaction.generation < this.generationProvider() || !this.recoveryGuard(transaction)) {
+      if (!this.recoveryGuard(transaction)) {
         rmSync(path, { recursive: true, force: true })
         continue
       }
@@ -176,13 +209,14 @@ export class TransactionEngine {
   }
 
   async read(callback) {
-    return this.locked(() => { this._recover(); return callback() })
+    return this.locked(() => { this._recover(); reconcilePurgeState(this.lockRoot, this.root, atomicWrite); return callback() })
   }
 
   async run(operationId, request, build, { authorize = () => {} } = {}) {
     assertId(operationId, 'operation_id')
     return this.locked(async () => {
       this._recover()
+      reconcilePurgeState(this.lockRoot, this.root, atomicWrite)
       authorize()
       const receiptKey = digest(operationId)
       const requestHash = digest(request)
@@ -190,18 +224,34 @@ export class TransactionEngine {
       const existing = readJson(receiptPath, null)
       if (existing) {
         if (existing.request_hash !== requestHash) throw new MemoryError('OPERATION_CONFLICT')
+        const state = getPurgeState(this.lockRoot, this.memorySpaceId)
+        if (existing.result.reason_code !== 'PURGED' && (existing.result.affected_ids ?? []).some((id) => state.record_ids.includes(id))) {
+          return { api_version: existing.result.api_version, operation_id: operationId, status: 'purged', reason_code: 'PURGED_BY_MANAGEMENT', affected_ids: [], pending: false, replayed: true }
+        }
         return { ...existing.result, replayed: true }
       }
       const built = await build()
       authorize()
+      if (built?.purge_descriptor) validateManagedPurgeArtifacts(this.lockRoot, this.memorySpaceId)
       if (!built || !Array.isArray(built.changes)) throw new MemoryError('INVALID_TRANSACTION')
       const changes = built.changes.map((change) => {
         this.resolvePath(change.path)
         return { path: change.path, data: change.data === null ? null : Buffer.from(change.data).toString('base64') }
       })
+      const purgeState = getPurgeState(this.lockRoot, this.memorySpaceId)
+      if (!built.purge_descriptor && purgeState.generation) for (const change of changes) {
+        if (change.data === null) continue
+        if (pathIsPurged(change.path, purgeState)) throw new MemoryError('PURGED_CONTENT')
+        if (/^(records|self|candidates|evidence)\//.test(change.path) && change.path.endsWith('.json') && !change.path.endsWith('/manifest.json')) {
+          let value
+          try { value = JSON.parse(Buffer.from(change.data, 'base64').toString('utf8')) } catch { continue }
+          if (referencesPurged(value, purgeState)) throw new MemoryError('PURGED_CONTENT')
+        }
+      }
       const transaction = {
         transaction_id: randomUUID(), operation_id: operationId, receipt_key: receiptKey,
         generation: this.generationProvider(), changes,
+        ...(built.purge_descriptor ? { purge_descriptor: built.purge_descriptor } : {}),
         receipt: { operation_id: operationId, request_hash: requestHash, result: built.result },
       }
       const path = this.resolvePath(`journal/${transaction.transaction_id}`)
