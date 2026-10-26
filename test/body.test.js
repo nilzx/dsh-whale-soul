@@ -154,3 +154,62 @@ test('body plugin detects a local dsh-pet and registers soul_react', async () =>
     await new Promise((resolve) => server.close(resolve))
   }
 })
+
+test('dream events play a sleep/wake performance without a chat report', async () => {
+  const requests = []
+  const server = createServer((req, res) => {
+    const url = new URL(req.url ?? '/', 'http://localhost')
+    let body = ''
+    req.on('data', (chunk) => { body += chunk })
+    req.on('end', () => {
+      requests.push({ path: url.pathname, method: req.method, body })
+      if (url.pathname.endsWith('/state')) {
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ sections: {} }))
+        return
+      }
+      if (url.pathname.endsWith('/config')) {
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({
+          pets: [{ id: 'main', display: 'both' }],
+          animations: {
+            idle: ['待机呼吸休闲'],
+            events: { whisper: ['哈欠连天'] },
+            categories: [{ actions: ['原地小憩沉眠', '打瞌睡被惊醒'] }],
+          },
+        }))
+        return
+      }
+      if (url.pathname.endsWith('/lock')) {
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ ok: true, lockId: 'dream-lock' }))
+        return
+      }
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ ok: true }))
+    })
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const previous = process.env.DSH_WEB_URL
+  process.env.DSH_WEB_URL = `http://127.0.0.1:${server.address().port}`
+  try {
+    const ctx = fakeContext()
+    await applyBody(ctx, { minSleepMs: 20, rateLimitMs: 0 })
+    const runtime = bodyRuntimeFor(ctx)
+    assert.equal(runtime.available, true)
+    ctx.listeners.get('whale-soul/dream-start')()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    ctx.listeners.get('whale-soul/dream-end')()
+    await new Promise((resolve) => setTimeout(resolve, 120))
+    assert.ok(requests.some((request) => request.path.endsWith('/anim')))
+    assert.ok(requests.some((request) => request.path.endsWith('/broadcast') && request.body.includes('眯一小会儿')))
+    assert.ok(requests.some((request) => request.path.endsWith('/broadcast') && request.body.includes('睡醒')))
+    assert.ok(!requests.some((request) => request.path.endsWith('/chat') || request.path.endsWith('/whisper')))
+    await runtime.body.release()
+    for (const dispose of ctx.disposers) await dispose()
+  } finally {
+    if (previous === undefined) delete process.env.DSH_WEB_URL
+    else process.env.DSH_WEB_URL = previous
+    await new Promise((resolve) => server.close(resolve))
+  }
+})
