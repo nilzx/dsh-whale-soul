@@ -392,7 +392,8 @@ export class PersonaGrowth {
         for (const trait of traits) {
           if (selected.length >= Math.min(12, Math.max(0, Number(maxTraits) || 0))) break
           const label = this.#core.allowed_dimensions[trait.dimension].label ?? trait.dimension
-          const line = `- ${JSON.stringify(label)} (${JSON.stringify(trait.scope)}): ${JSON.stringify(trait.value)}\n`
+          const dataString = (value) => JSON.stringify(value).replaceAll('<', '\\u003c').replaceAll('>', '\\u003e').replaceAll('&', '\\u0026')
+          const line = `- ${dataString(label)} (${dataString(trait.scope)}): ${dataString(trait.value)}\n`
           if (prefix.length + body.length + line.length + suffix.length > budget) continue
           body += line; selected.push(trait)
         }
