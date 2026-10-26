@@ -156,15 +156,15 @@
           - id: present
             name: '@deepseek-ai/dsh-tool-present'
 
-    # Compatibility entry for sessions that recorded the old `whale-girl`
-    # preset id. New sessions should choose `whale-soul`; this keeps old
-    # conversations resumable against the migrated soul composition.
+    # Compatibility entry for sessions that recorded an older preset id.
+    # New sessions should choose `whale-soul`; this keeps old conversations
+    # resumable against the same soul composition.
     - id: preset-whale-girl-legacy
       name: '@deepseek-ai/dsh-agent-preset'
       config:
         id: whale-girl
         name: 鲸鱼娘（旧会话）
-        description: 旧版 whale-girl 会话的兼容入口；新会话请选择鲸鱼娘。
+        description: 旧会话的兼容入口；新会话请选择鲸鱼娘。
         order: 99
         plugins:
           - id: persona

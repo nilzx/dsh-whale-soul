@@ -71,10 +71,6 @@ tags 使用命名空间（`who:master`、`topic:food/rice`、`mood:warm`、`kind
 
 图片按 SHA-256 内容寻址存放在 `assets/`，旁边有 JSON 元数据（tags、来源、描述、使用次数）。`soul_meme_save` 是显式动作：`recent_image: true` 会通过 `ctx.attachments` 读取当前会话最近一张图片；也支持本地路径或 URL。身体适配器可以通过本地 `/whale-soul-assets/` 路由把图片 URL 交给可选身体的 `broadcast`（见 [BODY.zh-CN.md](BODY.zh-CN.md)）。不会自动捕获任何图片。
 
-## 迁移旧记忆
-
-`scripts/migrate-legacy.mjs` 把 `dsh-whale-girl` 的 block 映射到新 schema，保留正文、时间、tags 和情感分量，把旧 kind 映射成新 type，并跳过重复的 canonical key。确认新 `index.md` 之前，把旧目录保留在 `backups/`。
-
 ## 隐私
 
 只存本地，不上传云端。人设排除敏感凭证。图片只在用户同意时保存。

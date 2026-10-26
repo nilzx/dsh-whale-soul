@@ -71,10 +71,6 @@ The pass writes `dreams/YYYY-MM-DD.md` and emits internal dream events for the o
 
 Images live in `assets/` under their SHA-256 content hash, with a JSON sidecar describing tags, source, description, and usage. `soul_meme_save` is explicit: `recent_image: true` reads the latest image attachment of the current session through `ctx.attachments`; a local path or URL is also accepted. The body adapter can serve an asset through the local `/whale-soul-assets/` route and pass its URL to the optional body's `broadcast` route (see [BODY.md](BODY.md)). Nothing is captured automatically.
 
-## Migrating a legacy store
-
-`scripts/migrate-legacy.mjs` maps `dsh-whale-girl` blocks into this schema. It preserves content, timestamps, tags, and emotional weight, maps legacy kinds (`player` → `identity`, `moment` → `episode`, and so on), and skips duplicate canonical keys. Keep the old directory in `backups/` until the new `index.md` has been verified.
-
 ## Privacy
 
 Local only. No cloud upload. Sensitive credentials are excluded by persona policy. Images should be saved only with the user's consent.
