@@ -1,4 +1,5 @@
 import { createStructuredAssessor, PersonaAssessmentError } from '../shared/structured-assessor.js'
+import { isBatchEventReference, sameEvidenceOrigin } from './evidence-origin.js'
 
 export { createStructuredAssessor, PersonaAssessmentError }
 
@@ -56,7 +57,7 @@ function projectCore(core) {
 function projectEvidence(records, core, identity) {
   if (!Array.isArray(records) || records.length > 64) throw fail('ASSESSOR_INVALID_EVIDENCE')
   const kinds = new Map([['user_statement', 'user'], ['interaction_observation', 'host']])
-  const origins = new Map()
+  const origins = new Map(), projected = [], byId = new Map()
   for (const record of records) {
     if (!plain(record) || !kinds.has(record.claim_kind) || kinds.get(record.claim_kind) !== record.source ||
       (Object.hasOwn(record, 'allow_persist') && record.allow_persist !== true) ||
@@ -65,15 +66,21 @@ function projectEvidence(records, core, identity) {
     identity.agentId ??= id(record.agent_identity_id)
     const occurredAt = boundedString(record.occurred_at, 64, 'ASSESSOR_INVALID_EVIDENCE')
     if (!/T.*(?:Z|[+-]\d{2}:\d{2})$/.test(occurredAt) || !Number.isFinite(Date.parse(occurredAt))) throw fail('ASSESSOR_INVALID_EVIDENCE')
+    if (record.event_evidence_id !== undefined && !isBatchEventReference(record.event_evidence_id)) throw fail('ASSESSOR_INVALID_EVIDENCE')
     const value = { evidence_id: id(record.evidence_id), persona_id: core.persona_id, agent_identity_id: identity.agentId,
       source: record.source, claim_kind: record.claim_kind, independence_key: id(record.independence_key),
       session_id: id(record.session_id), occurred_at: occurredAt,
+      ...(record.event_evidence_id === undefined ? {} : { event_evidence_id: record.event_evidence_id }),
       content: boundedString(record.content, 8000, 'ASSESSOR_INVALID_EVIDENCE') }
     const previous = origins.get(value.independence_key)
-    if (previous && ['session_id', 'occurred_at', 'content', 'source', 'claim_kind'].some((key) => previous[key] !== value[key])) throw fail('ASSESSOR_INDEPENDENCE_CONFLICT')
+    if (previous && !sameEvidenceOrigin(previous, value)) throw fail('ASSESSOR_INDEPENDENCE_CONFLICT')
+    const priorId = byId.get(value.evidence_id)
+    if (priorId && JSON.stringify(priorId) !== JSON.stringify(value)) throw fail('ASSESSOR_EVIDENCE_CONFLICT')
+    if (!priorId && (!previous || value.event_evidence_id !== undefined)) projected.push(value)
+    byId.set(value.evidence_id, value)
     if (!previous) origins.set(value.independence_key, value)
   }
-  return [...origins.values()]
+  return projected
 }
 
 export function projectGrowthAssessmentInput(input) {

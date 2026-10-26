@@ -1,5 +1,6 @@
 import { createStructuredAssessor } from './assessor.js'
 import { MemoryError, assertId, assertOnly, timestamp } from '../memory/v2/contracts.js'
+import { isBatchEventReference, sameEvidenceOrigin } from './evidence-origin.js'
 
 const fail = (code) => { throw new MemoryError(code) }
 const string = (value, max) => typeof value === 'string' && value.trim() && value.length <= max && value.isWellFormed() && !/[\u0000-\u001f]/.test(value)
@@ -24,12 +25,14 @@ export function projectReflectionInput(input) {
     const identity = assertId(record.agent_identity_id)
     if (individual && individual !== identity) fail('REFLECTION_IDENTITY_CONFLICT')
     individual = identity
+    if (record.event_evidence_id !== undefined && !isBatchEventReference(record.event_evidence_id)) fail('REFLECTION_EVIDENCE_DENIED')
     const next = { evidence_id: assertId(record.evidence_id), independence_key: assertId(record.independence_key),
       session_id: assertId(record.session_id), occurred_at: timestamp(record.occurred_at, 'evidence time', false),
+      ...(record.event_evidence_id === undefined ? {} : { event_evidence_id: record.event_evidence_id }),
       source: record.source, claim_kind: record.claim_kind, content: record.content }
     const previous = events.get(next.independence_key)
-    if (previous && ['session_id', 'occurred_at', 'source', 'claim_kind', 'content'].some((key) => previous[key] !== next[key])) fail('REFLECTION_INDEPENDENCE_CONFLICT')
-    events.set(next.independence_key, next)
+    if (previous && !sameEvidenceOrigin(previous, next)) fail('REFLECTION_INDEPENDENCE_CONFLICT')
+    if (!previous) events.set(next.independence_key, next)
     return next
   })
   if (new Set(evidence.map((entry) => entry.evidence_id)).size !== evidence.length) fail('REFLECTION_DUPLICATE_EVIDENCE')

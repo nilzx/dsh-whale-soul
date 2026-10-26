@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { MemoryError, assertId, assertOnly, digest, failure, text, timestamp } from '../memory/v2/contracts.js'
+import { isBatchEventReference, sameEvidenceOrigin } from './evidence-origin.js'
 
 const json = (value) => `${JSON.stringify(value, null, 2)}\n`
 const clone = (value) => JSON.parse(JSON.stringify(value))
@@ -96,14 +97,16 @@ export class PersonaGrowth {
       if (value.persona_id !== this.#identity.persona_id || value.agent_identity_id !== this.#identity.agent_identity_id) throw new MemoryError('GROWTH_EVIDENCE_SCOPE')
       if (!EVIDENCE_KINDS.has(value.claim_kind) || EVIDENCE_KINDS.get(value.claim_kind) !== value.source) throw new MemoryError('GROWTH_EVIDENCE_KIND')
       assertId(value.independence_key); assertId(value.session_id)
+      if (value.event_evidence_id !== undefined && !isBatchEventReference(value.event_evidence_id)) throw new MemoryError('GROWTH_EVIDENCE_KIND')
       timestamp(value.occurred_at, 'growth evidence time', false)
       const normalized = { evidence_id: value.evidence_id, source: value.source, claim_kind: value.claim_kind,
         persona_id: value.persona_id, agent_identity_id: value.agent_identity_id,
         independence_key: value.independence_key, session_id: value.session_id,
+        ...(value.event_evidence_id === undefined ? {} : { event_evidence_id: value.event_evidence_id }),
         occurred_at: value.occurred_at, content: text(value.content, 'growth evidence content', { max: 8000 }) }
       const previous = origins.get(normalized.independence_key)
-      if (previous && ['session_id', 'occurred_at', 'content', 'source', 'claim_kind'].some((key) => previous[key] !== normalized[key])) throw new MemoryError('GROWTH_INDEPENDENCE_CONFLICT')
-      origins.set(normalized.independence_key, normalized)
+      if (previous && !sameEvidenceOrigin(previous, normalized)) throw new MemoryError('GROWTH_INDEPENDENCE_CONFLICT')
+      if (!previous) origins.set(normalized.independence_key, normalized)
       records.push(normalized)
     }
     return records
