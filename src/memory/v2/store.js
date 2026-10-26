@@ -235,6 +235,10 @@ export class MemoryStoreV2 {
       assertOnly(args, PROPOSAL_FIELDS)
       return await this.engine.run(operationId, { action: 'proposeMemory', args, actor: context.agent_identity_id, subject: context.subject_id, persona: context.persona_id, space: context.memory_space_id }, async () => {
         this._authorize(context, 'memory.write')
+        const canonicalKey = args.canonical_key == null ? null : text(args.canonical_key, 'canonical_key', { max: 256 })
+        if (canonicalKey !== null && this._records().records.some((meta) =>
+          meta.status === 'active' && meta.canonical_key === canonicalKey && meta.subject_id === (args.subject_id ?? context.subject_id) &&
+          meta.type === (args.type ?? 'fact') && meta.persona_id === context.persona_id && meta.agent_identity_id === context.agent_identity_id)) throw new MemoryError('CANONICAL_CONFLICT')
         const record = await this._proposal(args, context)
         this._authorize(context, 'memory.write')
         return { changes: this._commitChanges(record), result: success(operationId, record.meta, record.meta.retention === 'temporary' ? 'temporary' : 'committed') }

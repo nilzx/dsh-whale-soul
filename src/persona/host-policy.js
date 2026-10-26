@@ -225,9 +225,14 @@ export function createHostProtection(ctx, { protectedRoots, writableRoots,
     const value = baseFs[key]
     return typeof value === 'function' ? value.bind(baseFs) : value
   } })
-  const releaseFs = capabilityContext.provide('fs', fs)
-  const releaseSubprocess = capabilityContext.provide('subprocess', subprocess)
-  const releaseSandbox = capabilityContext.provide('sandbox', sandbox)
+  // A dedicated active provider fiber owns the isolated labels. Providing on
+  // a still-loading parent's fiber would notify the parent's service labels
+  // and leave child fs/bash/search consumers waiting indefinitely.
+  const providerFiber = capabilityContext.plugin((child) => {
+    child.provide('fs', fs)
+    child.provide('subprocess', subprocess)
+    child.provide('sandbox', sandbox)
+  })
   const readCapabilities = (exec) => {
     assertRoots()
     const service = capabilityContext.get('sandboxPolicy')
@@ -283,6 +288,7 @@ export function createHostProtection(ctx, { protectedRoots, writableRoots,
       if (disposed) return Promise.reject(fail('DISPOSED'))
       return initPromise ??= (async () => {
         try {
+          await providerFiber.await()
           assertRoots()
           const result = await collect({ op: 'probe', roots }, undefined, 1024, probeTimeoutMs)
           if (result.toString('utf8') !== 'protected-read-denied') throw fail('READ_ISOLATION_PROBE_FAILED')
@@ -310,7 +316,7 @@ export function createHostProtection(ctx, { protectedRoots, writableRoots,
       uninstall?.(); policy.dispose()
       for (const process of processes) process.terminate()
       await Promise.allSettled([...processes].map((process) => process.waitForExit(AbortSignal.timeout(5000))))
-      releaseFs(); releaseSubprocess(); releaseSandbox()
+      await providerFiber.dispose()
     },
   }
 }
