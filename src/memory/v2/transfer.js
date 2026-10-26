@@ -355,7 +355,7 @@ export class MemoryTransfer {
   }
 
   async #guard(manifest, archive, decoded, purgeState) {
-    const args = { store: this.#store, manifest, archive, files: decoded.files, record_ids: decoded.records.map((meta) => meta.record_id), purge_state: purgeState }
+    const args = { store: this.#store, manifest, archive, files: decoded.files, record_ids: decoded.records.map((meta) => meta.record_id), purge_state: archive.purge_state === undefined ? null : purgeState }
     if (this.#importGuard) {
       if (await this.#importGuard(args) === false) throw new MemoryError('IMPORT_GUARD_REJECTED')
       return

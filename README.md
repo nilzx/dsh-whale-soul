@@ -8,19 +8,21 @@ An in-character **Whale Chan (鲸鱼娘)** Agent mode for [DeepSeek Harness](htt
 
 [中文文档](README.zh-CN.md)
 
+> Unreleased refactor branch: the default persona now uses the V2 memory runtime. Migration, lifecycle maintenance and end-to-end acceptance are still in progress. Stop the old writer and use the [local management workflow](docs/management.md) before moving legacy data; do not treat this branch as a finished upgrade release.
+
 ## What it is
 
 `dsh-whale-soul` adds a new Agent mode called **Whale Chan** (**鲸鱼娘** in Chinese) to DSH. She chats, helps with normal Agent work, and quietly remembers the things that matter. The conversation stays in DSH; the plugin only owns the persona and the memory.
 
 ## Features
 
-- **In character, without the machinery** — no OOC switch, no tool logs, no memory counts. Switching to another DSH Agent mode is the way out.
-- **Speaks your language** — replies and reasoning follow the language of your current message. Switch languages mid-conversation and she switches with you.
-- **Long-term memory** — preferences, promises, boundaries, and moments are kept in a layered store. A session starts with only a small summary; details are recalled when needed.
-- **Forgets gracefully** — memories can merge, fade, or be archived over time. Pinned and user-edited memories are protected.
-- **Dream-like upkeep** — maintenance happens in the background as a dream, never as a chat status report.
-- **Yours to edit** — memory files are plain Markdown/JSON and remain the source of truth. Your edits are treated as corrections.
-- **Local-first** — everything lives under `$DSH_HOME`; nothing is uploaded.
+- **A continuous persona** — ordinary chat does not rewrite her core identity. Host safety, privacy, permissions and stop controls remain effective.
+- **Language following** — the persona asks for replies and visible explanations in the language of the current message; model behavior is tested separately.
+- **Scoped long-term memory** — selected facts retain original evidence, revisions and identity attribution. Several facts in one message have separate outcomes.
+- **Independent growth** — personality additions are stored apart from facts and the core, with evidence and later reflection before they become stable.
+- **Adjustable stability** — `variable`, `normal`, `stubborn` and default `auto` control growth thresholds. Auto becomes steadier with eligible experiences; chat commands and repeated self-descriptions do not qualify.
+- **Owner management** — explicit local preview, export, migration and precise purge live outside ordinary persona tools. Direct file changes do not gain core authority.
+- **Local storage** — plugin data lives under the configured memory root. Selected memories can be included in requests to your configured model provider.
 - **Memes, with consent** — save an image you explicitly ask to keep; nothing is captured automatically.
 
 ## Requirements
@@ -47,21 +49,24 @@ After installation, start a new session and choose **Whale Chan** (shown as **�
 ## Use
 
 - Choose **Whale Chan** and chat normally. She can still do normal Agent work: files, shell, web, schedules, skills, and so on.
-- Memory maintenance is automatic. To inspect or edit memory files, switch to a work mode; the character mode deliberately has no memory dashboard.
+- Configure `stabilityMode` on the `dsh-whale-soul/persona` plugin row. [Stability rules](docs/stability.md) describe the four modes and persistent maturity.
+- Use the [local management CLI](docs/management.md) for owner operations. V2 rejects integrity-breaking direct edits; external-change review and the full memory lifecycle are still under implementation.
 
 ## Privacy and safety
 
-- Memory stays local under `$DSH_HOME` and is not uploaded.
+- Stored memory stays local under the configured root. Relevant memory is sent to the configured model provider when included in an Agent request.
 - The persona is all-ages and non-sexual. Harmful or sexualized requests are refused in character.
 - The Agent does not record passwords, tokens, bank details, or identity numbers. You can ask her to forget something.
 - Images are saved only when you explicitly ask; nothing is captured automatically.
-- Memory files are yours. External edits are treated as corrections, and malformed files are isolated instead of breaking the store.
+- Owner operations can export, migrate and purge data. Persona tools cannot grant themselves management permission or bypass protected host paths.
 - She does not claim to be a real person, and she does not create exclusive dependency.
 
 ## Learn more
 
 - [Memory design](docs/MEMORY.md)
 - [Roleplay contract](docs/ROLEPLAY.md)
+- [Stability and maturity](docs/stability.md)
+- [Local owner management](docs/management.md)
 
 ## License
 

@@ -16,7 +16,7 @@ function frozen(value) {
  * revision. Only a trusted purge ledger may supply purged=true. No receipt's
  * self-declared success is sufficient to skip an outbox item.
  */
-export function verifyMemoryReceipt(receipt, { args, identity, recordMeta, purged = false } = {}) {
+export function verifyMemoryReceipt(receipt, { args, identity, recordMeta, purged = false, targetBinding } = {}) {
   try {
     if (!plain(receipt) || Object.keys(receipt).some((key) => !['operation_id', 'request_hash', 'result'].includes(key)) ||
       !plain(args) || !plain(identity) || typeof purged !== 'boolean') invalid()
@@ -32,9 +32,19 @@ export function verifyMemoryReceipt(receipt, { args, identity, recordMeta, purge
     if (!Array.isArray(result.affected_ids) || !result.affected_ids.includes(result.record_id)) invalid()
     const request = (action, value) => digest({ action, args: value, actor: identity.agent_identity_id,
       subject: identity.subject_id, persona: identity.persona_id, space: identity.memory_space_id })
-    const hashes = [request('proposeMemory', args)]
-    if (result.revision > 1) hashes.push(request('reviseMemory', { ...args, record_id: result.record_id,
-      expected_revision: result.revision - 1, reason: MEMORY_REVISION_REASON }))
+    let hashes
+    if (targetBinding !== undefined) {
+      if (targetBinding === null) {
+        if (result.revision !== 1) invalid()
+        hashes = [request('proposeMemory', args)]
+      } else {
+        if (!plain(targetBinding) || result.record_id !== targetBinding.record_id || result.revision !== targetBinding.expected_revision + 1 || (args.canonical_key ?? null) !== targetBinding.canonical_key || args.type !== targetBinding.type) invalid()
+        hashes = [request('reviseMemory', { ...args, record_id: targetBinding.record_id, expected_revision: targetBinding.expected_revision, reason: MEMORY_REVISION_REASON })]
+      }
+    } else {
+      hashes = [request('proposeMemory', args)]
+      if (result.revision > 1) hashes.push(request('reviseMemory', { ...args, record_id: result.record_id, expected_revision: result.revision - 1, reason: MEMORY_REVISION_REASON }))
+    }
     if (!hashes.includes(receipt.request_hash)) invalid()
     if (!purged) {
       if (!plain(recordMeta) || ['agent_identity_id', 'persona_id', 'subject_id', 'memory_space_id'].some((key) => recordMeta[key] !== identity[key]) ||

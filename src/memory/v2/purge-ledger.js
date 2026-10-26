@@ -1,7 +1,7 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
-import { MemoryError, assertId, digest } from './contracts.js'
-import { validatePortablePersonaShape } from './persona-ledger.js'
+import { MemoryError, assertId, assertOnly, digest } from './contracts.js'
+import { validatePersonaAnchor, validatePortablePersonaShape } from './persona-ledger.js'
 
 export const PURGE_LEDGER_PATH = '.administration/purge-ledger.json'
 const json = (value) => `${JSON.stringify(value, null, 2)}\n`
@@ -160,8 +160,30 @@ function walkFiles(root, callback, prefix = '') {
   }
 }
 
+function managedJournal(name, spaceId) { return name.split('/').includes(spaceId) && /(?:^|\/)journal\/[^/]+\/prepared\.json$/.test(name) }
+function validateJournal(value) {
+  try {
+    assertOnly(value, ['transaction_id','operation_id','receipt_key','generation','changes','purge_descriptor','persona_descriptor','persona_descriptors','receipt'])
+    assertId(value.transaction_id);assertId(value.operation_id)
+    if (!/^[a-f0-9]{64}$/.test(value.receipt_key) || !Number.isSafeInteger(value.generation) || value.generation < 0 || !Array.isArray(value.changes)) throw new Error()
+    for (const change of value.changes) {
+      assertOnly(change,['path','data'])
+      if (typeof change.path !== 'string' || isAbsolute(change.path) || change.path.includes('\\') || change.path.split('/').some((part)=>!part||part==='.'||part==='..')) throw new Error()
+      if (change.data !== null && (typeof change.data !== 'string' || Buffer.from(change.data,'base64').toString('base64') !== change.data)) throw new Error()
+    }
+    for (const descriptor of value.persona_descriptors ?? (value.persona_descriptor ? [value.persona_descriptor] : [])) { assertOnly(descriptor,['expected_revision','anchor']);validatePersonaAnchor(descriptor.anchor) }
+    if (value.operation_id.startsWith('persona-batch-')) {
+      assertOnly(value.receipt,['operation_id','request_hash','result'])
+      assertOnly(value.receipt.result,['status','event_evidence_id','item_ids'])
+      if (value.receipt.operation_id !== value.operation_id || !/^[a-f0-9]{64}$/.test(value.receipt.request_hash) || value.receipt.result.status !== 'recorded' || !/^event-[a-f0-9]{40}$/.test(value.receipt.result.event_evidence_id) || !Array.isArray(value.receipt.result.item_ids) || value.receipt.result.item_ids.some((id)=>!/^item-[a-f0-9]{40}$/.test(id))) throw new Error()
+    }
+    return value
+  } catch { throw new MemoryError('MANAGED_JOURNAL_REPAIR_REQUIRED') }
+}
+
 export function validateManagedPurgeArtifacts(root, spaceId) {
-  for (const category of ['exports', 'backups']) walkFiles(join(root, category), (path) => {
+  for (const category of ['exports', 'backups']) walkFiles(join(root, category), (path, name) => {
+    if (managedJournal(name, spaceId)) { validateJournal(optionalData(path)); return }
     if (!path.endsWith('.json')) return
     const archive = optionalData(path)
     if (archive?.transfer_format !== 'dsh-memory-space' || archive.memory_space_id !== spaceId) return
@@ -263,6 +285,12 @@ export function reconcilePurgeState(root, spaceRoot, write) {
   for (const category of ['exports', 'backups']) {
     walkFiles(join(root, category), (path, name) => {
       const scoped = name.split('/').includes(spaceId)
+      if (managedJournal(name, spaceId)) {
+        const transaction = validateJournal(optionalData(path))
+        const changes = filterRecoveryChanges(transaction.changes, state, manifest, { filterDerived: false })
+        if (digest(changes) !== digest(transaction.changes)) { write(path, json({ ...transaction, changes })); sanitized.push(`${category}/${name}`) }
+        return
+      }
       if (scoped && pathIsPurged(name, state)) { rmSync(path, { force: true }); removed.push(`${category}/${name}`); return }
       if (scoped && /(?:^|\/)index\//.test(name)) { rmSync(path, { force: true }); removed.push(`${category}/${name}`); return }
       if (path.endsWith('.json')) {

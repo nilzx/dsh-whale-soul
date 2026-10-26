@@ -12,6 +12,24 @@ const EVIDENCE_FIELDS = ['evidence_id', 'subject_ids', 'actor_ids', 'session_id'
 export const ASSET_METADATA_FIELDS = Object.freeze(['schema_version', 'id', 'file', 'mime', 'bytes', 'description', 'tags', 'source',
   'created_at', 'updated_at', 'uses', ...IDENTITY, 'consent_id', 'evidence_refs', 'record_ids'])
 const clone = (value) => structuredClone(value)
+const querySegmenter = new Intl.Segmenter('zh', { granularity: 'word' })
+const imageWords = new Set(['图', '图片', '图像', '照片', 'image', 'images', 'picture', 'pictures', 'photo', 'photos'])
+const queryParticles = new Set(['的', '这', '那', '张', '一张', '个', '一个', 'a', 'an', 'the'])
+function assetQueryWords(value, { query = false } = {}) {
+  const words = new Set()
+  for (const part of querySegmenter.segment(value.normalize('NFKC').toLowerCase())) {
+    if (!part.isWordLike || query && queryParticles.has(part.segment)) continue
+    words.add(imageWords.has(part.segment) ? 'image' : part.segment)
+  }
+  return words
+}
+function matchesAssetQuery(item, words) {
+  if (!words.size) return false
+  const available = assetQueryWords(`${item.description} ${item.tags.join(' ')}`)
+  // Every query word must be present. Exact lexical tokens prevent red/credit
+  // or sea/seasonal substring matches while allowing Chinese word combinations.
+  return [...words].every((word) => available.has(word))
+}
 function blocked(value) { const reason = retentionBlockReason(value); if (reason) throw new MemoryError(reason) }
 function tags(input = []) {
   if (!Array.isArray(input) || input.length > 24) throw new MemoryError('INVALID_ASSET_TAGS')
@@ -165,7 +183,7 @@ export class MemoryAssetsV2 {
           { path: 'index/records.json', data: json(this.store._index([...records, record.meta], watermark)) }],
         result: { api_version: API_VERSION, operation_id: operationId, status: 'committed', reason_code: 'OK', asset_id: assetId,
           record_id: recordId, affected_ids: [recordId], evidence_id: evidenceId, revision: 1, pending: false } }
-      }, managed)
+      }, managed, { authorize: assertCurrent })
       if (result.status !== 'committed') return result
       return { ...result, asset: this.read(result.asset_id, context) }
     } finally { signals.forEach((signal) => signal.removeEventListener('abort', revoke)) }
@@ -196,12 +214,13 @@ export class MemoryAssetsV2 {
   async list({ asset_id, query = '', tag = '', limit = 5 } = {}, context) {
     this.store._authorize(context, 'memory.read')
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 10 || typeof query !== 'string' || query.length > 2000 || typeof tag !== 'string' || tag.length > 64) throw new MemoryError('INVALID_ASSET_QUERY')
+    const queryWords = query ? assetQueryWords(query, { query: true }) : null
     return this.store.managedRead(this.#context(context), () => {
       const ids = asset_id ? [assertId(asset_id)] : readdirSync(this.store.paths.assets).filter((file) => /^a-[a-f0-9]{20}\.json$/.test(file)).map((file) => file.slice(0, -5))
       const items = []
       for (const id of ids) {
         const item = this.read(id, context)
-        if (!item || tag && !item.tags.includes(tag) || query && !`${item.description} ${item.tags.join(' ')}`.toLowerCase().includes(query.toLowerCase())) continue
+        if (!item || tag && !item.tags.includes(tag) || queryWords && !matchesAssetQuery(item, queryWords)) continue
         items.push(item); if (items.length >= limit) break
       }
       return items

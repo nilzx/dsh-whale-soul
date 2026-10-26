@@ -1,6 +1,9 @@
 import { fileURLToPath } from 'node:url'
+import { mkdirSync } from 'node:fs'
 import { resolveMemoryRoot } from '../paths.js'
 import { createHostProtection } from './host-policy.js'
+import { createHostPrivateRoots } from './host-private-roots.js'
+import FileImage from './file-image.js'
 import { PersonaRuntime } from './runtime.js'
 import { createPersonaTools } from './tools.js'
 import { getWhaleCorePrompt } from './core.js'
@@ -12,24 +15,34 @@ export const name = 'whale-soul-persona'
 export const inject = ['systemPrompt', 'tools', 'llm', 'sandboxPolicy', 'fs', 'subprocess', 'sandbox', 'agents']
 const runtimes = new WeakMap()
 export const runtimeFor = (ctx) => runtimes.get(ctx)
-const serviceTools = ['soul_recall', 'soul_remember', 'soul_forget', 'soul_meme_save', 'soul_meme_recall', 'soul_meme_use', 'soul_react',
+const serviceTools = ['soul_recall', 'soul_remember', 'soul_forget', 'soul_view_image', 'soul_meme_save', 'soul_meme_recall', 'soul_meme_use', 'soul_react',
   'ask_user_question', 'todo_write', 'web_search', 'web_fetch', 'job_list', 'job_output', 'job_kill']
 
 /** Explicit constructors make the host composition testable without global state. */
 export async function installPersonaPlugin(ctx, config = {}, host) {
   if (typeof host.scopeOf !== 'function' || typeof host.scopeChainOf !== 'function' || !host.scopeOf(ctx)) throw new Error('whale-soul: trusted persona scope required')
   const root = resolveMemoryRoot(config)
+  mkdirSync(root, { recursive: true, mode: 0o700 })
+  const resolvePrivateRoots = createHostPrivateRoots(ctx, host.privateRootBindings)
   const protection = createHostProtection(ctx, { protectedRoots: [fileURLToPath(new URL('../..', import.meta.url)), root],
-    writableRoots: host.writableRoots, readTools: ['read', 'read_image', 'glob', 'grep'], serviceTools })
+    resolvePrivateRoots, writableRoots: host.writableRoots, readTools: ['read', 'read_image', 'glob', 'grep'], serviceTools })
   protection.install()
   ctx.effect(() => () => protection.dispose(), 'whale-soul.persona.protection()')
   await protection.initialize()
   const capabilityContext = protection.capabilityContext
-  for (const [plugin, options] of [[host.BashSandbox, {}], [host.FsTools, {}], [host.BashTools, {}],
+  for (const [plugin, options] of [[host.BashSandbox, {}], [host.FsTools, { readImage: false }], [host.BashTools, {}],
     [host.FsSearchTools, { sampleOverCapGlobResults: false }]]) {
     if (!plugin) throw new Error('whale-soul: official protected tool bindings required')
     await capabilityContext.plugin(plugin, options).await()
   }
+  await capabilityContext.plugin(FileImage, {
+    ownsAgent: (agent) => host.scopeChainOf(agent).includes(host.scopeOf(ctx)) &&
+      ctx.get('agents')?.get(agent.id) === agent,
+    captureBoundary: (exec) => {
+      const snapshot = resolvePrivateRoots()
+      return () => snapshot.isCurrent() && protection.status.initialized && protection.status.readIsolation && protection.policy.guard(exec) === undefined
+    },
+  }).await()
   let images
   const runtime = new PersonaRuntime({ ...config, root, llm: ctx.llm, createAssembler: () => new host.BlockAssembler(),
     additionalEvidenceAllowed: (id, context, meta) => images?.evidenceAllowed(id, context, meta) ?? false,
@@ -49,7 +62,7 @@ export async function installPersonaPlugin(ctx, config = {}, host) {
   }
   const ownerScope = host.scopeOf(ctx)
   images = new PersonaImages({ runtime, getAttachments: () => ctx.get('attachments'),
-    ownsAgent: (agent) => host.scopeChainOf(agent).includes(ownerScope), assetPreview })
+    getLlm: () => ctx.get('llm'), ownsAgent: (agent) => host.scopeChainOf(agent).includes(ownerScope), assetPreview })
   ctx.effect(() => () => images.dispose(), 'whale-soul.persona.images()')
   if (config.coreInPreset !== true) ctx.effect(() => ctx.systemPrompt.section({
     name: 'deployment:persona-prefix', order: ctx.systemPrompt.getSectionOrder('DEPLOYMENT_PERSONA_PREFIX'),
@@ -99,13 +112,19 @@ export async function installPersonaPlugin(ctx, config = {}, host) {
 }
 
 export async function apply(ctx, config = {}) {
-  const [llm, sandbox, scope, bashSandbox, fsTools, bashTools, fsSearchTools] = await Promise.all([
+  const [llm, sandbox, scope, bashSandbox, fsTools, bashTools, fsSearchTools, home, credentials, persistence, storageJson, storage, attachments] = await Promise.all([
     '@deepseek-ai/dsh-llm', '@deepseek-ai/dsh-sandbox', '@deepseek-ai/dsh-scope',
     '@deepseek-ai/dsh-bash-sandbox', '@deepseek-ai/dsh-tool-fs', '@deepseek-ai/dsh-tool-bash', '@deepseek-ai/dsh-tool-fs-search',
+    '@deepseek-ai/dsh-home-paths', '@deepseek-ai/dsh-credentials-local', '@deepseek-ai/dsh-session-persistence-jsonl',
+    '@deepseek-ai/dsh-storage-json', '@deepseek-ai/dsh-storage', '@deepseek-ai/dsh-attachment-local',
   ].map((specifier) => import(specifier)))
   await installPersonaPlugin(ctx, config, { BlockAssembler: llm.BlockAssembler, writableRoots: sandbox.writableRoots,
     scopeOf: scope.scopeOf, scopeChainOf: scope.scopeChainOf, BashSandbox: bashSandbox.default,
-    FsTools: fsTools, BashTools: bashTools, FsSearchTools: fsSearchTools })
+    FsTools: fsTools, BashTools: bashTools, FsSearchTools: fsSearchTools, privateRootBindings: {
+      resolveDshHome: home.resolveDshHome, LocalCredentialProvider: credentials.LocalCredentialProvider, resolveCredentialSpec: credentials.resolveSpec,
+      SessionPersistencePlugin: persistence, StorageJsonPlugin: storageJson, JsonStorageBackend: storageJson.JsonStorageBackend,
+      storageBackendServiceKey: storage.storageBackendServiceKey, LocalAttachmentStore: attachments.LocalAttachmentStore,
+    } })
 }
 
 export default { name, inject, apply }

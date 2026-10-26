@@ -21,10 +21,11 @@ export function imagesForAgent(agent) {
 
 /** Session-bound image authorization comes exclusively from real user events. */
 export class PersonaImages {
-  #runtime; #attachments; #owns; #preview; #slots = new Map(); #agents = new Set(); #pending = new Set(); #disposed = false
-  constructor({ runtime, getAttachments, ownsAgent, assetPreview } = {}) {
+  #runtime; #attachments; #llm; #owns; #preview; #slots = new Map(); #agents = new Set(); #pending = new Set(); #disposed = false
+  constructor({ runtime, getAttachments, getLlm, ownsAgent, assetPreview } = {}) {
     if (!runtime?.store || typeof getAttachments !== 'function' || typeof ownsAgent !== 'function') throw new MemoryError('TRUSTED_IMAGE_ADAPTERS_REQUIRED')
-    this.#runtime = runtime; this.#attachments = getAttachments; this.#owns = ownsAgent; this.#preview = assetPreview
+    if (getLlm !== undefined && typeof getLlm !== 'function') throw new MemoryError('TRUSTED_IMAGE_ADAPTERS_REQUIRED')
+    this.#runtime = runtime; this.#attachments = getAttachments; this.#llm = getLlm; this.#owns = ownsAgent; this.#preview = assetPreview
     this.assets = new MemoryAssetsV2({ store: runtime.store, resolveConsent: (id, context) => this.#resolve(id, context) })
   }
   owns(agent) { return !this.#disposed && !this.#runtime.disposed && this.#owns(agent) === true }
@@ -55,8 +56,9 @@ export class PersonaImages {
     previous?.controller.abort()
     const controller = new AbortController()
     const caption = parts.filter((part) => part?.type === 'text' && typeof part.text === 'string').map((part) => part.text).join('\n')
-    const reference = images.length ? images.at(-1).attachment : previous?.reference
-    const slot = { agent, controller, reference, image_message_id: images.length ? event.data.id : previous?.image_message_id, grant: null }
+    const reference = images.length ? Object.freeze(structuredClone(images.at(-1).attachment)) : previous?.reference
+    const slot = { agent, controller, reference, attachmentProvider: images.length ? original(this.#attachments()) : previous?.attachmentProvider,
+      image_message_id: images.length ? event.data.id : previous?.image_message_id, grant: null }
     this.#slots.set(sessionId, slot)
     if (!reference || !Number.isFinite(event.time) || !Number.isSafeInteger(event.seq) || typeof event.data.id !== 'string' ||
       caption.length > 8000 || !caption.isWellFormed() || retentionBlockReason(caption) || quotation.test(caption) || !consent.test(caption)) return
@@ -70,15 +72,54 @@ export class PersonaImages {
   async #resolve(id, context) {
     const slot = this.#slots.get(context.session_id)
     if (!slot?.grant || slot.grant.consent_id !== id) throw new MemoryError('IMAGE_CONSENT_REQUIRED')
-    const isCurrent = () => this.owns(slot.agent) && this.#slots.get(context.session_id) === slot && !slot.controller.signal.aborted
-    if (!isCurrent()) throw new MemoryError('IMAGE_CONSENT_REVOKED')
     const attachments = this.#attachments()
+    const provider = original(attachments)
+    const isCurrent = () => this.owns(slot.agent) && this.#slots.get(context.session_id) === slot && !slot.controller.signal.aborted &&
+      slot.attachmentProvider === provider && original(this.#attachments()) === provider
+    if (!isCurrent()) throw new MemoryError('IMAGE_CONSENT_REVOKED')
     if (typeof attachments?.readImage !== 'function') throw new MemoryError('IMAGE_ATTACHMENT_UNAVAILABLE')
     let image
     try { image = await attachments.readImage(slot.reference, AbortSignal.any([slot.controller.signal, AbortSignal.timeout(10000)])) }
     catch { throw new MemoryError('IMAGE_ATTACHMENT_UNAVAILABLE') }
     if (!isCurrent() || original(this.#attachments()) !== original(attachments)) throw new MemoryError('IMAGE_CONSENT_REVOKED')
     return { ...slot.grant, image, signal: slot.controller.signal, isCurrent }
+  }
+  async view(agent, args = {}, { signal } = {}) {
+    try {
+      assertOnly(args, ['recent_image'])
+      if (args.recent_image !== true) throw new MemoryError('CURRENT_ATTACHMENT_ONLY')
+      this.attachAgent(agent)
+      const session = agent.session, slot = this.#slots.get(session.id), attachments = this.#attachments(), llm = this.#llm?.()
+      if (!slot?.reference || slot.agent !== agent || slot.attachmentProvider !== original(attachments) || typeof attachments?.readImage !== 'function') throw new MemoryError('IMAGE_ATTACHMENT_UNAVAILABLE')
+      const route = () => {
+        const header = agent.session.requestHeader?.()?.config
+        return { provider: header?.provider ?? agent.options?.provider, model: header?.model ?? agent.options?.model }
+      }
+      const selected = route()
+      if (typeof llm?.resolveModelInfo !== 'function' || !selected.provider || !selected.model) throw new MemoryError('IMAGE_ROUTE_UNAVAILABLE')
+      const current = () => this.owns(agent) && agent.session === session && this.#slots.get(session.id) === slot &&
+        !slot.controller.signal.aborted && !signal?.aborted && original(this.#attachments()) === original(attachments) &&
+        original(this.#llm?.()) === original(llm) && JSON.stringify(route()) === JSON.stringify(selected)
+      const check = () => { if (!current()) throw new MemoryError('IMAGE_VIEW_REVOKED') }
+      check()
+      const joined = AbortSignal.any([slot.controller.signal, ...(signal ? [signal] : []), AbortSignal.timeout(10000)])
+      const task = (async () => {
+        const info = await llm.resolveModelInfo(selected.provider, selected.model, joined)
+        check(); joined.throwIfAborted()
+        if (!info?.inputModalities?.includes('image')) throw new MemoryError('IMAGE_ROUTE_UNAVAILABLE')
+        const stored = await attachments.readImage(slot.reference, joined)
+        check(); joined.throwIfAborted()
+        if (!stored?.ref || stored.ref.attachmentId !== slot.reference.attachmentId || !(stored.data instanceof Uint8Array) ||
+          stored.ref.bytes !== stored.data.byteLength || stored.data.byteLength > 8 * 1024 * 1024 ||
+          stored.ref.attachmentId !== `sha256:${digest(Buffer.from(stored.data))}` || !['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(stored.ref.mediaType) ||
+          ![stored.ref.width, stored.ref.height].every((value) => Number.isSafeInteger(value) && value > 0)) throw new MemoryError('IMAGE_ATTACHMENT_UNAVAILABLE')
+        const image = Object.fromEntries(['attachmentId', 'mediaType', 'bytes', 'width', 'height'].map((key) => [key, stored.ref[key]]))
+        if (typeof stored.ref.name === 'string' && !/[\/\\\0]/.test(stored.ref.name)) image.name = stored.ref.name
+        return { status: 'ok', text: '这是当前会话的图片；查看没有把它存入长期记忆。', image }
+      })()
+      this.#pending.add(task)
+      try { return await task } finally { this.#pending.delete(task) }
+    } catch (error) { return { ...unavailable(error.code), text: '当前图片暂时无法查看。' } }
   }
   #context(agent) {
     this.attachAgent(agent)
@@ -153,7 +194,16 @@ export function createPersonaImageTools(controller) {
       if (!exec?.agent) return unavailable('LIVE_AGENT_REQUIRED')
       return execute(exec.agent, args ?? {}, { signal: exec.signal })
     } })
-  return [definition('soul_meme_save', '只保存当前会话真实用户明确同意收下的最近图片。不能用参数授予同意；不接受路径或URL。成功后使用返回图片引用，不能另找内部文件。', {
+  const view = { name: 'soul_view_image', description: '只查看当前会话真实用户上传的最近图片；无需长期保存同意。只接受recent_image:true，不接受路径、URL或图片编号。',
+    parameters: { type: 'object', additionalProperties: false, properties: { recent_image: { type: 'boolean', const: true } }, required: ['recent_image'] },
+    output: { schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string' }, status: { type: 'string' },
+      reason_code: { type: 'string' }, image: { type: 'object', additionalProperties: true } }, required: ['text', 'status'] },
+    render: (_args, result) => [{ type: 'text', text: result.text }, ...(result.status === 'ok' && result.image ? [{ type: 'image', attachment: result.image }] : [])] },
+    async execute(args, exec) {
+      if (!exec?.agent) return { ...unavailable('LIVE_AGENT_REQUIRED'), text: '当前图片暂时无法查看。' }
+      return controller.view(exec.agent, args, { signal: exec.signal })
+    } }
+  return [view, definition('soul_meme_save', '只保存当前会话真实用户明确同意收下的最近图片。不能用参数授予同意；不接受路径或URL。成功后使用返回图片引用，不能另找内部文件。', {
     recent_image: { type: 'boolean' }, description: { type: 'string', maxLength: 240 },
     tags: { type: 'array', maxItems: 24, items: { type: 'string', maxLength: 64 } },
   }, (agent, args, call) => controller.save(agent, args, call)),

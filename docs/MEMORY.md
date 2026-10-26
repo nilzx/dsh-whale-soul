@@ -1,5 +1,7 @@
 # Memory design
 
+> Legacy V1 design, retained for compatibility and migration reference. The unreleased default persona uses V2: direct edits do not automatically become trusted corrections. See [local management](management.md) and [stability](stability.md); full V2 lifecycle and external-change review remain under implementation.
+
 Whale Chan's memory is a file-backed, layered memory garden. It is designed to be **inspectable, editable, and rebuildable**, not to be an immutable database.
 
 ## Source of truth

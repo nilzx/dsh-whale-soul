@@ -6,6 +6,8 @@ import { API_VERSION, MemoryError, assertId, assertOnly, failure } from './contr
 import { atomicWrite, readJson, retireExpectedLock } from './transactions.js'
 import { getPurgeState, pathIsPurged, preparePurgeImport, referencesPurged } from './purge-ledger.js'
 import { validateTransferArchive } from './transfer.js'
+import { loadPersonaLedger, validatePersonaAnchor } from './persona-ledger.js'
+import { validateBoundItemPayload } from './batch-bindings.js'
 
 const json = (value) => `${JSON.stringify(value, null, 2)}\n`
 
@@ -160,7 +162,69 @@ export class MemoryAdministration {
           legacy_narratives_cleared: descriptor.clear_legacy_narratives,
           outside_scope: ['Host conversation history', 'Unmanaged external copies and exports', 'Unattributed legacy narratives and malformed artifacts without stable references'],
         } }
-      }, this._hostContext(context))
+      }, this._hostContext(context), { authorize: () => {
+        this._authorize(context, 'memory.purge')
+        if (args.include_legacy_narratives === true) this._authorize(context, 'memory.manage')
+      } })
+    } catch (error) { return failure(error, operationId) }
+  }
+
+  /** Permanently erase one approved item that has never entered a record. */
+  async purgePendingItem(args, context) {
+    const operationId = args?.operation_id ?? randomUUID()
+    try {
+      this._authorize(context, 'memory.purge')
+      assertOnly(args, ['operation_id', 'evidence_id'])
+      const evidenceId = assertId(args.evidence_id, 'evidence_id')
+      return await this.store.managedTransaction(operationId, { action: 'purgePendingItem', evidence_id: evidenceId }, ({ manifest }) => {
+        this._authorize(context, 'memory.purge')
+        const spaces = loadPersonaLedger(this.store.root).spaces
+        const space = Object.hasOwn(spaces, this.store.memorySpaceId) ? spaces[this.store.memorySpaceId] : {}
+        if (!space || typeof space !== 'object' || Array.isArray(space)) throw new MemoryError('PERSONA_STATE_REPAIR_REQUIRED')
+        const matches = []
+        for (const anchor of Object.values(space)) {
+          validatePersonaAnchor(anchor)
+          if (anchor.memory_space_id !== this.store.memorySpaceId) throw new MemoryError('PERSONA_SPACE_MISMATCH')
+          const item = (anchor.items ?? []).find((entry) => entry.evidence_id === evidenceId)
+          if (item) matches.push({ anchor, item })
+        }
+        if (matches.length !== 1) throw new MemoryError(matches.length ? 'PERSONA_ITEM_CONFLICT' : 'ITEM_NOT_FOUND')
+        const { anchor, item } = matches[0]
+        if (!context.capabilities.includes('memory.manage') && (context.agent_identity_id !== anchor.agent_identity_id || context.persona_id !== anchor.persona_id || context.subject_id !== anchor.subject_id)) throw new MemoryError('SUBJECT_DENIED')
+        const previous = getPurgeState(this.store.root, this.store.memorySpaceId)
+        const result = (generation, replayed = false) => ({ api_version: API_VERSION, operation_id: operationId,
+          status: 'committed', reason_code: 'PURGED', pending: false, affected_ids: [], evidence_ids_removed: [evidenceId],
+          purge_generation: generation, replayed, event_qualification_retained: true,
+          outside_scope: ['Host conversation history', 'Unmanaged external copies and exports'] })
+        if (previous.evidence_ids.includes(evidenceId)) return { changes: [], result: result(previous.generation, true) }
+        const payloadPath = `self/${anchor.agent_identity_id}/evidence/${evidenceId}.json`
+        const payload = readJson(this.store.engine.resolvePath(payloadPath), null)
+        if (payload) validateBoundItemPayload(anchor, item, payload)
+        else if (!anchor.revoked_ids.includes(evidenceId)) throw new MemoryError('PERSONA_EVIDENCE_REPAIR_REQUIRED')
+        files(this.store.paths.records)
+        const scan = this.store._records()
+        if (scan.warnings.length) throw new MemoryError('MEMORY_REPAIR_REQUIRED')
+        const check = (record) => {
+          if (record.meta.provenance_refs?.includes(evidenceId) || record.evidence.some((entry) => entry.evidence_id === evidenceId)) throw new MemoryError('ITEM_HAS_RECORDS')
+        }
+        for (const meta of scan.records) {
+          check(this.store._readRecord(meta.record_id))
+          const history = this.store.engine.resolvePath(`records/${meta.record_id}/revisions`)
+          for (const entry of readdirSync(history, { withFileTypes: true })) {
+            if (!entry.isDirectory() || entry.isSymbolicLink()) throw new MemoryError('MEMORY_REPAIR_REQUIRED')
+            check(this.store._readRecord(meta.record_id, entry.name))
+          }
+        }
+        const descriptor = { operation_id: operationId, memory_space_id: this.store.memorySpaceId,
+          generation: previous.generation + 1, revision_floor: manifest.revision_watermark + 1,
+          record_ids: [], evidence_ids: [evidenceId], related_evidence_ids: [evidenceId], asset_files: [], clear_legacy_narratives: false }
+        const changes = [
+          { path: payloadPath, data: null }, { path: `evidence/${evidenceId}.json`, data: null },
+          { path: 'manifest.json', data: json({ ...manifest, purge_generation: descriptor.generation, revision_watermark: descriptor.revision_floor }) },
+          { path: 'index/records.json', data: json(this.store._index(scan.records, descriptor.revision_floor)) },
+        ]
+        return { changes, purge_descriptor: descriptor, result: result(descriptor.generation) }
+      }, this._hostContext(context), { authorize: () => this._authorize(context, 'memory.purge') })
     } catch (error) { return failure(error, operationId) }
   }
 

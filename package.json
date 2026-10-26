@@ -14,6 +14,9 @@
     "url": "https://github.com/nilzx/dsh-whale-soul/issues"
   },
   "main": "src/index.js",
+  "bin": {
+    "dsh-whale-soul-manage": "./src/manage.js"
+  },
   "exports": {
     ".": "./src/index.js",
     "./body": "./src/body/index.js",
@@ -88,6 +91,12 @@
     "@deepseek-ai/dsh-sandbox": ">=0.2.1-rc.3 <0.3.0",
     "@deepseek-ai/dsh-system-prompt": ">=0.2.1-rc.3 <0.3.0",
     "@deepseek-ai/dsh-scope": ">=0.2.1-rc.3 <0.3.0",
+    "@deepseek-ai/dsh-home-paths": ">=0.2.1-rc.3 <0.3.0",
+    "@deepseek-ai/dsh-credentials-local": ">=0.2.1-rc.3 <0.3.0",
+    "@deepseek-ai/dsh-session-persistence-jsonl": ">=0.2.1-rc.3 <0.3.0",
+    "@deepseek-ai/dsh-storage-json": ">=0.2.1-rc.3 <0.3.0",
+    "@deepseek-ai/dsh-storage": ">=0.2.1-rc.3 <0.3.0",
+    "@deepseek-ai/dsh-attachment-local": ">=0.2.1-rc.3 <0.3.0",
     "@deepseek-ai/dsh-bash-sandbox": ">=0.2.1-rc.3 <0.3.0",
     "@deepseek-ai/dsh-tool-fs": ">=0.2.1-rc.3 <0.3.0",
     "@deepseek-ai/dsh-tool-bash": ">=0.2.1-rc.3 <0.3.0",
@@ -110,6 +119,24 @@
       "optional": true
     },
     "@deepseek-ai/dsh-scope": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-home-paths": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-credentials-local": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-session-persistence-jsonl": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-storage-json": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-storage": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-attachment-local": {
       "optional": true
     },
     "@deepseek-ai/dsh-bash-sandbox": {
