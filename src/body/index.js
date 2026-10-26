@@ -1,7 +1,7 @@
 import { join } from 'node:path'
 import { DshPetBody } from './dsh-pet.js'
 import { findAsset, markAssetUsed, readAsset } from '../memory/assets.js'
-import { resolveMemoryRoot } from '../paths.js'
+import { resolveMemoryAssetRoot } from '../paths.js'
 import { makeTool } from '../tools.js'
 
 export const name = 'whale-soul-body'
@@ -51,7 +51,7 @@ function discoverBaseUrl(ctx, configured) {
 }
 
 function assetReader(config) {
-  const root = resolveMemoryRoot(config)
+  const root = resolveMemoryAssetRoot(config)
   return { paths: { assets: join(root, 'assets') } }
 }
 
@@ -146,7 +146,7 @@ export function createBodyTools(body, { config = {}, timers = new Set() } = {}) 
         await body.release({ owner: memeOwner, lockId: lock })
         return '（那张图现在拿不出来）'
       }
-      markAssetUsed(assetStore, asset.id)
+      if (Number(config.memoryFormat) !== 2) markAssetUsed(assetStore, asset.id)
       releaseLater(body, 12_000, timers, memeOwner)
       return '（把那张图递了过去）'
     },
@@ -171,7 +171,7 @@ export async function apply(ctx, config = {}) {
     routePrefix: options.routePrefix ?? '/dsh-pet-7340',
     timeoutMs: Number.isFinite(Number(options.timeoutMs)) ? Number(options.timeoutMs) : 1200,
     maxBubbleChars: Number.isFinite(Number(options.maxBubbleChars)) ? Number(options.maxBubbleChars) : 100,
-    memoryRoot: resolveMemoryRoot(options),
+    memoryRoot: resolveMemoryAssetRoot(options),
   })
   const available = await body.detect()
   if (!available) {
