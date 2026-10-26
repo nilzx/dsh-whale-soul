@@ -1,6 +1,5 @@
-import { existsSync, readFileSync } from 'node:fs'
-import { basename, join } from 'node:path'
 import { MemoryStore } from './store.js'
+import { registerAssetRoutes } from './asset-route.js'
 import { buildL0 } from './retrieval.js'
 import { runDream } from './decay.js'
 import { createMemoryTools } from '../tools.js'
@@ -15,56 +14,6 @@ const DEFAULT_IDLE_MS = 5 * 60 * 1000
 function option(config, key, fallback) {
   const value = Number(config?.[key])
   return Number.isFinite(value) ? value : fallback
-}
-
-function registerAssetRoute(ctx, store) {
-  let webServer
-  try {
-    webServer = typeof ctx.get === 'function' ? ctx.get('webServer') : undefined
-  } catch {
-    webServer = undefined
-  }
-  if (!webServer || typeof webServer.register !== 'function') return null
-  try {
-    const dispose = webServer.register({
-      kind: 'prefix',
-      path: '/whale-soul-assets',
-      handler: (req, res) => {
-        try {
-          const url = new URL(req.url ?? '/', 'http://localhost')
-          const name = basename(decodeURIComponent(url.pathname))
-          if (!/^[a-f0-9]{64}\.(png|jpe?g|webp|gif)$/i.test(name)) {
-            res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
-            res.end('asset not found')
-            return
-          }
-          const path = join(store.paths.assets, name)
-          if (!existsSync(path)) {
-            res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
-            res.end('asset not found')
-            return
-          }
-          const ext = name.split('.').pop()?.toLowerCase()
-          const mime = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : ext === 'gif' ? 'image/gif' : 'image/jpeg'
-          const bytes = readFileSync(path)
-          res.writeHead(200, {
-            'content-type': mime,
-            'cache-control': 'private, max-age=86400',
-            'content-length': bytes.byteLength,
-          })
-          res.end(bytes)
-        } catch {
-          if (!res.writableEnded) {
-            res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' })
-            res.end('asset read failed')
-          }
-        }
-      },
-    })
-    return dispose
-  } catch {
-    return null
-  }
 }
 
 const runtimes = new WeakMap()
@@ -203,12 +152,11 @@ export function apply(ctx, config = {}) {
     }, 'whale-soul.memory.dream-timer()')
   }
 
-  const assetDispose = registerAssetRoute(ctx, store)
-  if (assetDispose) ctx.effect(() => assetDispose, 'whale-soul.memory.asset-route()')
+  const assetRoute = registerAssetRoutes(ctx, store)
 
   ctx.effect(() => () => store.dispose(), 'whale-soul.memory.dispose()')
 
-  runtimes.set(ctx, { store, runDreamNow })
+  runtimes.set(ctx, { store, runDreamNow, assetRoute })
 }
 
 export default { name, inject, apply }

@@ -137,6 +137,7 @@ export function createBodyTools(body, { config = {}, timers = new Set() } = {}) 
       const asset = findAsset(assetStore, { id: args.asset_id, tag: args.tag, query: args.query })
       if (!asset) return '（翻了翻口袋，没找到那张图）'
       const url = body.assetUrl(asset.file)
+      if (!url) return '（那张图现在拿不出来）'
       const lock = await body.lock(15_000, memeOwner)
       if (!lock) return '（想把图递过去，但身体正忙着）'
       if (body.disposed) { await body.release({ owner: memeOwner, lockId: lock }); return '（安静地待着）' }
@@ -170,6 +171,7 @@ export async function apply(ctx, config = {}) {
     routePrefix: options.routePrefix ?? '/dsh-pet-7340',
     timeoutMs: Number.isFinite(Number(options.timeoutMs)) ? Number(options.timeoutMs) : 1200,
     maxBubbleChars: Number.isFinite(Number(options.maxBubbleChars)) ? Number(options.maxBubbleChars) : 100,
+    memoryRoot: resolveMemoryRoot(options),
   })
   const available = await body.detect()
   if (!available) {

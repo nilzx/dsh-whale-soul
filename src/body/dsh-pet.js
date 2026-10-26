@@ -1,3 +1,5 @@
+import { assetPath } from '../memory/asset-route.js'
+
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '::1', '[::1]'])
 
 function bubbleText(value, maxChars) {
@@ -51,6 +53,7 @@ export class DshPetBody {
     fetchImpl = globalThis.fetch,
     timeoutMs = 1200,
     maxBubbleChars = 100,
+    memoryRoot,
   } = {}) {
     this.baseUrl = typeof baseUrl === 'string' ? baseUrl.replace(/\/+$/, '') : ''
     this.configuredPetId = petId
@@ -60,6 +63,7 @@ export class DshPetBody {
     this.fetchImpl = fetchImpl
     this.timeoutMs = timeoutMs
     this.maxBubbleChars = maxBubbleChars
+    this.memoryRoot = memoryRoot
     this.available = false
     this.pets = []
     this.animations = []
@@ -248,6 +252,7 @@ export class DshPetBody {
   }
 
   assetUrl(file) {
-    return `${this.baseUrl}/whale-soul-assets/${encodeURIComponent(file)}`
+    const path = this.memoryRoot ? assetPath(this.memoryRoot, file) : null
+    return path ? `${this.baseUrl}${path}` : null
   }
 }

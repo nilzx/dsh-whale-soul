@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { extname, join } from 'node:path'
 import { normalizeTags, nowIso, summarize } from './schema.js'
+import { assetPath } from './asset-route.js'
 
 const MAX_BYTES = 8 * 1024 * 1024
 const MIME = {
@@ -146,7 +147,8 @@ export function deleteAsset(store, id) {
   return true
 }
 
-export function assetUrl(baseUrl, asset) {
-  if (!baseUrl || !asset?.file) return null
-  return `${String(baseUrl).replace(/\/+$/, '')}/whale-soul-assets/${encodeURIComponent(asset.file)}`
+export function assetUrl(baseUrl, asset, root) {
+  if (!baseUrl || !asset?.file || !root) return null
+  const path = assetPath(root, asset.file)
+  return path ? `${String(baseUrl).replace(/\/+$/, '')}${path}` : null
 }
