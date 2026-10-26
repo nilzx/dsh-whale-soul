@@ -1,6 +1,6 @@
 {
   "name": "dsh-whale-soul",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A soul for DeepSeek Harness: an in-character Whale-chan agent preset with layered long-term memory and dream-like consolidation.",
   "type": "module",
   "license": "MIT",

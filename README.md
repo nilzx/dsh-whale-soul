@@ -7,6 +7,7 @@
 A soul for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness): an in-character **Whale-chan (鲸鱼娘)** Agent preset with layered long-term memory and dream-like consolidation.
 
 [中文文档](README.zh-CN.md)
+[![CI](https://github.com/nilzx/dsh-whale-soul/actions/workflows/ci.yml/badge.svg)](https://github.com/nilzx/dsh-whale-soul/actions/workflows/ci.yml) [![npm](https://img.shields.io/npm/v/dsh-whale-soul.svg)](https://www.npmjs.com/package/dsh-whale-soul)
 
 ## What it is
 
@@ -35,7 +36,7 @@ Install the bundle directory with DSH's plugin manager (Web → Plugins, or a lo
 
 ```bash
 npm pack
-# install the resulting dsh-whale-soul-0.1.0.tgz through the plugin manager
+# install the resulting dsh-whale-soul-0.1.1.tgz through the plugin manager
 ```
 
 After installation, create a new session and choose **鲸鱼娘** in the Agent mode selector. Existing sessions keep the preset they started with.
@@ -145,8 +146,8 @@ CI runs the test suite on every push and pull request. A version tag publishes t
 3. Push a matching tag:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.1.1
+git push origin v0.1.1
 ```
 
 The `Release` workflow checks that the tag matches `package.json`, runs the tests, publishes to npm with provenance, and creates a GitHub release. Pre-release versions such as `v0.2.0-beta.1` publish under the `next` dist-tag.

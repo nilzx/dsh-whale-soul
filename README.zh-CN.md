@@ -7,6 +7,7 @@
 给 DeepSeek Harness 的「鲸鱼娘」灵魂：一个全中文、不出戏的 Agent 模式，带分层长期记忆和梦境式整理。
 
 [English README](README.md)
+[![CI](https://github.com/nilzx/dsh-whale-soul/actions/workflows/ci.yml/badge.svg)](https://github.com/nilzx/dsh-whale-soul/actions/workflows/ci.yml) [![npm](https://img.shields.io/npm/v/dsh-whale-soul.svg)](https://www.npmjs.com/package/dsh-whale-soul)
 
 ## 这是什么
 
@@ -35,7 +36,7 @@
 
 ```bash
 npm pack
-# 用插件管理器安装生成的 dsh-whale-soul-0.1.0.tgz
+# 用插件管理器安装生成的 dsh-whale-soul-0.1.1.tgz
 ```
 
 安装后新建会话，在 Agent 模式选择器里选 **鲸鱼娘**。已有会话保持启动时的模式。
@@ -145,8 +146,8 @@ CI 会在每次 push 和 pull request 时跑测试。推送版本 tag 会发布 
 3. 推送匹配的 tag：
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.1.1
+git push origin v0.1.1
 ```
 
 `Release` workflow 会核对 tag 与 `package.json` 是否一致、跑测试、带 provenance 发布到 npm，并创建 GitHub Release。预发布版本（例如 `v0.2.0-beta.1`）会发布到 `next` dist-tag。
