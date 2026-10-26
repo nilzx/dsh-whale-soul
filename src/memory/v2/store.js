@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path'
 import { API_VERSION, CAPABILITIES, CLAIM_KINDS, FORMAT_VERSION, MEMORY_TYPES, MemoryError, RECORD_SCHEMA_VERSION, assertId, assertOnly, digest, failure, stableStringify, text, timestamp, validateRecord } from './contracts.js'
 import { TransactionEngine, atomicWrite, readJson } from './transactions.js'
 import { getPurgeState, reconcilePurgeState } from './purge-ledger.js'
+import { normalizeMemorySlotKey } from './slot-policy.js'
 
 const DATA_FILES = ['meta.json', 'gist.md', 'detail.md', 'evidence.jsonl']
 const PROPOSAL_FIELDS = ['operation_id', 'subject_id', 'content', 'gist', 'title', 'type', 'tags', 'canonical_key', 'provenance_refs', 'claim_kind', 'confidence', 'visibility', 'valid_from', 'valid_to', 'expires_at', 'retention', 'pinned']
@@ -220,6 +221,13 @@ export class MemoryStoreV2 {
     const manifest = this._manifest()
     const watermark = manifest.revision_watermark + 1
     const existing = this._records().records.filter((item) => item.record_id !== record.meta.record_id)
+    if (record.meta.status === 'active' && record.meta.canonical_key !== null) {
+      const slot = normalizeMemorySlotKey(record.meta.canonical_key)
+      const conflict = existing.find((meta) => meta.status === 'active' && meta.canonical_key !== null &&
+        normalizeMemorySlotKey(meta.canonical_key) === slot && meta.subject_id === record.meta.subject_id &&
+        meta.type === record.meta.type && meta.persona_id === record.meta.persona_id && meta.agent_identity_id === record.meta.agent_identity_id)
+      if (conflict) throw new MemoryError(conflict.canonical_key === record.meta.canonical_key ? 'CANONICAL_CONFLICT' : 'CANONICAL_ALIAS_CONFLICT')
+    }
     return [
       ...this._recordChanges(record),
       ...record.evidence.map((item) => ({ path: `evidence/${item.evidence_id}.json`, data: json(item) })),
@@ -316,14 +324,27 @@ export class MemoryStoreV2 {
     try { this._authorize(context, 'memory.manage'); return await this.engine.read(() => { this._authorize(context, 'memory.manage'); return { status: 'ok', ...this._rebuildIndex() } }) } catch (error) { return failure(error) }
   }
 
-  async managedTransaction(operationId, request, build, context) {
-    this._authorize(context, 'memory.manage')
+  async managedTransaction(operationId, request, build, context, options = {}) {
+    assertOnly(options, ['authorize'])
+    if (options.authorize !== undefined && typeof options.authorize !== 'function') throw new MemoryError('TRUSTED_AUTHORIZER_REQUIRED')
+    const authorize = () => {
+      this._authorize(context, 'memory.manage')
+      if (options.authorize) {
+        const result = options.authorize()
+        if (result && typeof result.then === 'function') {
+          Promise.resolve(result).catch(() => {})
+          throw new MemoryError('ASYNC_AUTHORIZER_UNSUPPORTED')
+        }
+        if (result === false) throw new MemoryError('HOST_AUTHORIZATION_DENIED')
+      }
+    }
+    authorize()
     return this.engine.run(operationId, { action: 'managed', request, actor: context.agent_identity_id, subject: context.subject_id, persona: context.persona_id, space: context.memory_space_id }, async () => {
-      this._authorize(context, 'memory.manage')
+      authorize()
       const result = await build({ store: this, manifest: this._manifest(), records: this._records().records })
-      this._authorize(context, 'memory.manage')
+      authorize()
       return result
-    }, { authorize: () => this._authorize(context, 'memory.manage') })
+    }, { authorize })
   }
 
   async managedRead(context, read) {
