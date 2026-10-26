@@ -1,5 +1,17 @@
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '::1', '[::1]'])
 
+function bubbleText(value, maxChars) {
+  const clean = String(value ?? '').toWellFormed().replace(/\s+/g, ' ').trim()
+  const limit = Math.max(0, Math.floor(Number(maxChars) || 0))
+  const segments = new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(clean)
+  const out = []
+  for (const { segment } of segments) {
+    if (out.length >= limit) break
+    out.push(segment)
+  }
+  return out.join('')
+}
+
 function collectAnimations(config) {
   const out = new Set()
   const push = (value) => {
@@ -52,6 +64,12 @@ export class DshPetBody {
     this.pets = []
     this.animations = []
     this.lockId = null
+    this.lockOwner = null
+    this.pendingLockOwner = null
+    this.lockPromise = null
+    this.releasePromise = null
+    this.closePromise = null
+    this.disposed = false
   }
 
   static isLoopback(baseUrl) {
@@ -64,6 +82,7 @@ export class DshPetBody {
   }
 
   async request(path, { method = 'GET', body, query } = {}) {
+    if (this.disposed && path !== '/lock/release') return null
     if (!this.baseUrl || typeof this.fetchImpl !== 'function') return null
     const url = new URL(`${this.routePrefix}${path}`, `${this.baseUrl}/`)
     if (query) for (const [key, value] of Object.entries(query)) {
@@ -118,7 +137,7 @@ export class DshPetBody {
   }
 
   async say(text, { duration, url, anim = false } = {}) {
-    const clean = String(text ?? '').replace(/\s+/g, ' ').trim().slice(0, this.maxBubbleChars)
+    const clean = bubbleText(text, this.maxBubbleChars)
     if (!clean) return false
     const result = await this.request('/broadcast', {
       method: 'POST',
@@ -152,30 +171,80 @@ export class DshPetBody {
     return result?.ok === true
   }
 
-  async lock(ttl = 60_000) {
-    if (this.lockId) return this.lockId
-    const result = await this.request('/lock', {
-      method: 'POST',
-      body: { ttl },
-      query: { pet: this.petId, surface: this.surface },
-    })
-    if (result?.ok && result.lockId) {
-      this.lockId = result.lockId
-      return this.lockId
+  async lock(ttl = 60_000, owner = 'default') {
+    if (this.disposed) return null
+    if (this.releasePromise) await this.releasePromise
+    if (this.disposed) return null
+    if (this.lockId) return this.lockOwner === owner ? this.lockId : null
+    if (this.lockPromise) return this.pendingLockOwner === owner ? this.lockPromise : null
+    this.pendingLockOwner = owner
+    const pending = this.request('/lock', {
+        method: 'POST',
+        body: { ttl },
+        query: { pet: this.petId, surface: this.surface },
+      }).then((result) => {
+        if (result?.ok && result.lockId) {
+          this.lockId = result.lockId
+          this.lockOwner = owner
+          return this.lockId
+        }
+        return null
+      })
+    this.lockPromise = pending
+    try {
+      return await pending
+    } finally {
+      if (this.lockPromise === pending) {
+        this.lockPromise = null
+        this.pendingLockOwner = null
+      }
     }
-    return null
   }
 
-  async release() {
-    if (!this.lockId) return true
-    const lockId = this.lockId
-    this.lockId = null
-    const result = await this.request('/lock/release', {
-      method: 'POST',
-      body: { lockId },
-      query: { pet: this.petId },
+  async release({ owner, lockId: expectedLockId } = {}) {
+    const currentOwner = this.lockId ? this.lockOwner : this.pendingLockOwner
+    if (owner !== undefined && currentOwner !== null && currentOwner !== owner) return false
+    if (expectedLockId !== undefined && this.lockId !== expectedLockId) return false
+    if (this.releasePromise) return this.releasePromise
+    const pending = Promise.resolve().then(async () => {
+      // A late lock response still carries a cleanup responsibility.
+      if (this.lockPromise) await this.lockPromise
+      if (!this.lockId) return true
+      if (owner !== undefined && this.lockOwner !== owner) return false
+      if (expectedLockId !== undefined && this.lockId !== expectedLockId) return false
+      const lockId = this.lockId
+      const result = await this.request('/lock/release', {
+        method: 'POST',
+        body: { lockId },
+        query: { pet: this.petId },
+      })
+      if (result?.ok === true) {
+        if (this.lockId === lockId) {
+          this.lockId = null
+          this.lockOwner = null
+        }
+        return true
+      }
+      return false
     })
-    return result?.ok === true
+    this.releasePromise = pending
+    try {
+      return await pending
+    } finally {
+      if (this.releasePromise === pending) this.releasePromise = null
+    }
+  }
+
+  close() {
+    if (this.closePromise) return this.closePromise
+    this.disposed = true
+    this.available = false
+    this.closePromise = (async () => {
+      // Bound cleanup to two HTTP attempts; failed IDs remain inspectable.
+      if (await this.release()) return true
+      return this.release()
+    })()
+    return this.closePromise
   }
 
   assetUrl(file) {
