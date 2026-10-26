@@ -141,7 +141,9 @@ export class PersonaProtection {
       writable: JSON.stringify(writable), protectedRoots: JSON.stringify(protectedRoots),
       fsBackend: capabilities.fs?.backend,
       executionBackend: capabilities.execution?.backend,
+      subprocessBackend: capabilities.execution?.subprocess,
       provider: capabilities.execution?.provider,
+      readBoundary: capabilities.readBoundary,
       enforcement: effect === 'execution' ? capabilities.execution?.enforcement : undefined,
     }
   }
@@ -182,12 +184,13 @@ export const createProtectionPolicy = (options) => new PersonaProtection(options
 
 /** Install in the role's own Cordis scope, not the management scope. */
 export function installProtectionGuard(ctx, policy) {
-  if (typeof ctx.on !== 'function' || typeof ctx.tools?.guard !== 'function') throw error('HOST_GUARD_API_REQUIRED')
+  const tools = typeof ctx.get === 'function' ? ctx.get('tools') : ctx.tools
+  if (typeof ctx.on !== 'function' || typeof tools?.guard !== 'function') throw error('HOST_GUARD_API_REQUIRED')
   const disposePre = ctx.on('tools/pre-execute', async (exec, next) => {
     const result = await policy.prepare(exec)
     return result.allowed ? next() : { kind: 'deny', reason: result.reason }
   })
-  const disposeGuard = ctx.tools.guard((exec) => policy.guard(exec))
+  const disposeGuard = tools.guard((exec) => policy.guard(exec))
   const disposeResult = ctx.on('tools/result', (exec) => { policy.release(exec) })
   return () => {
     policy.dispose()
