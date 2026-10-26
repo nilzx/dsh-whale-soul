@@ -273,8 +273,16 @@ export class TransactionEngine {
       const path = this.resolvePath(`journal/${transaction.transaction_id}`)
       mkdirSync(path, { recursive: true, mode: 0o700 })
       atomicWrite(join(path, 'prepared.json'), JSON.stringify(transaction))
-      this._checkpoint('after_prepare', { operation_id: operationId })
-      authorize()
+      try {
+        this._checkpoint('after_prepare', { operation_id: operationId })
+        authorize()
+      } catch (error) {
+        // A synchronous cancellation has a live owner that can remove its
+        // uncommitted body now. Abrupt process death still uses startup redo.
+        rmSync(path, { recursive: true, force: true })
+        syncDir(dirname(path))
+        throw error
+      }
       atomicWrite(join(path, 'COMMIT'), transaction.transaction_id)
       try {
         this._checkpoint('after_commit', { operation_id: operationId })
