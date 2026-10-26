@@ -15,15 +15,17 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: '22.x'
-          registry-url: 'https://registry.npmjs.org'
+          node-version: '24'
+
+      - name: Ensure npm supports trusted publishing
+        run: npm install -g npm@latest
 
       - name: Check that the tag matches the package version
         run: |
@@ -39,12 +41,15 @@ jobs:
       - name: Run tests
         run: npm test
 
-      - name: Publish to npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Publish to npm with trusted publishing
         run: |
           set -euo pipefail
+          name="$(node -p "require('./package.json').name")"
           version="$(node -p "require('./package.json').version")"
+          if npm view "${name}@${version}" version >/dev/null 2>&1; then
+            echo "${name}@${version} is already published; skipping npm publish."
+            exit 0
+          fi
           if [[ "$version" == *-* ]]; then
             dist_tag=next
           else

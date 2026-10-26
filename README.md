@@ -151,7 +151,7 @@ git push origin v0.1.0
 
 The `Release` workflow checks that the tag matches `package.json`, runs the tests, publishes to npm with provenance, and creates a GitHub release. Pre-release versions such as `v0.2.0-beta.1` publish under the `next` dist-tag.
 
-The repository needs an `NPM_TOKEN` secret with publish access. The workflow requests `id-token: write` for provenance.
+The first release of a new package needs a one-time bootstrap: publish or approve it with 2FA, then add a Trusted Publisher on npm (GitHub Actions, `nilzx/dsh-whale-soul`, workflow `release.yml`, allowed action `npm publish`). After that, tags publish through OIDC and no `NPM_TOKEN` secret is needed.
 
 ## License
 

@@ -151,7 +151,7 @@ git push origin v0.1.0
 
 `Release` workflow 会核对 tag 与 `package.json` 是否一致、跑测试、带 provenance 发布到 npm，并创建 GitHub Release。预发布版本（例如 `v0.2.0-beta.1`）会发布到 `next` dist-tag。
 
-仓库需要一个有发布权限的 `NPM_TOKEN` secret；workflow 声明了 `id-token: write` 用于 provenance。
+新包的首次发布需要一次 2FA 引导：先用 2FA 发布或批准首个版本，再在 npm 上添加 Trusted Publisher（GitHub Actions，`nilzx/dsh-whale-soul`，workflow `release.yml`，允许 `npm publish`）。之后打 tag 就会通过 OIDC 发布，不需要 `NPM_TOKEN` secret。
 
 ## 许可
 
