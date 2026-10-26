@@ -1,7 +1,7 @@
 import { existsSync, lstatSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { join, resolve, relative, sep } from 'node:path'
 import { MemoryError, assertId, assertOnly, digest, timestamp } from './contracts.js'
-import { StabilityPolicy, STABILITY_MODES } from '../../persona/stability.js'
+import { StabilityPolicy, STABILITY_MODES } from '../../shared/stability-policy.js'
 
 export const PERSONA_LEDGER_PATH = '.administration/persona-ledger.json'
 const json = (value) => `${JSON.stringify(value, null, 2)}\n`
