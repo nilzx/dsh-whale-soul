@@ -39,6 +39,10 @@ node /absolute/plugin/src/manage.js migrate-v1 --root /absolute/v2-memory --spac
 
 Stop v1 maintenance/watchers first. `--source-quiescent` is the owner's declaration; the API also checks the source snapshot again before import. Preview returns `source_snapshot`. Apply the same command with `--snapshot HASH --apply`; missing or changed snapshots are refused. Identity arguments assign unattributed legacy records; existing attribution is preserved by the migration API. Legacy records never become invented user quotes or automatic growth evidence. Use `--opaque-policy omit` instead to omit opaque files.
 
+The V2 runtime refuses an unmanifested legacy root with `LEGACY_MIGRATION_REQUIRED`; it does not create an empty replacement space there. Select a separate empty destination. If unattributed legacy records should belong to a particular continuing persona, first initialize that persona in the new destination, stop its writer, and obtain its real identity from `status`; then use that identity in the migration command. Supplying an arbitrary identity does not connect data to the persona anchor. Existing legacy attribution is preserved rather than reassigned by these flags.
+
+A directory containing both legacy markers and a V2 root manifest is refused as `MIXED_MEMORY_ROOT`. Preserve it and stop all writers. Do not delete its manifest or point `migrate-v1` directly at the mixed directory; automatic extraction and mixed-root recovery are not provided by this CLI.
+
 ```sh
 node /absolute/plugin/src/manage.js purge --root /absolute/memory --space owner \
   --record RECORD_ID@EXPECTED_REVISION

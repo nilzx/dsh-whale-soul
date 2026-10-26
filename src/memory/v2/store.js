@@ -5,6 +5,7 @@ import { API_VERSION, CAPABILITIES, CLAIM_KINDS, FORMAT_VERSION, MEMORY_TYPES, M
 import { TransactionEngine, atomicWrite, readJson } from './transactions.js'
 import { getPurgeState, reconcilePurgeState } from './purge-ledger.js'
 import { normalizeMemorySlotKey } from './slot-policy.js'
+import { inspectMemoryRoot } from './root-format.js'
 
 const DATA_FILES = ['meta.json', 'gist.md', 'detail.md', 'evidence.jsonl']
 const PROPOSAL_FIELDS = ['operation_id', 'subject_id', 'content', 'gist', 'title', 'type', 'tags', 'canonical_key', 'provenance_refs', 'claim_kind', 'confidence', 'visibility', 'valid_from', 'valid_to', 'expires_at', 'retention', 'pinned']
@@ -34,16 +35,13 @@ export class MemoryStoreV2 {
   }
 
   async initialize() {
+    inspectMemoryRoot(this.root, this.memorySpaceId)
     await this.engine.locked(() => {
+      const { rootManifest, spaceManifest: manifest } = inspectMemoryRoot(this.root, this.memorySpaceId)
       const rootManifestPath = join(this.root, 'manifest.json')
-      const rootManifest = readJson(rootManifestPath, null)
-      if (rootManifest && rootManifest.format_version !== FORMAT_VERSION) throw new MemoryError('UNSUPPORTED_FORMAT_VERSION')
-      if (rootManifest && (!Array.isArray(rootManifest.spaces) || rootManifest.spaces.some((id) => typeof id !== 'string'))) throw new MemoryError('INVALID_ROOT_MANIFEST')
       this.engine.resolvePath('manifest.json')
       for (const path of Object.values(this.paths)) mkdirSync(path, { recursive: true, mode: 0o700 })
       const manifestPath = join(this.spaceRoot, 'manifest.json')
-      const manifest = readJson(manifestPath, null)
-      if (manifest && (manifest.format_version !== FORMAT_VERSION || manifest.memory_space_id !== this.memorySpaceId)) throw new MemoryError('UNSUPPORTED_SPACE_FORMAT')
       const now = new Date().toISOString()
       if (!manifest) atomicWrite(manifestPath, json({ format_version: FORMAT_VERSION, memory_space_id: this.memorySpaceId, revision_watermark: 0, purge_generation: 0, created_at: now, identities: {}, migrations: [] }))
       const spaces = [...new Set([...(rootManifest?.spaces ?? []), this.memorySpaceId])].sort()

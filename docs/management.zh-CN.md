@@ -25,6 +25,10 @@ node /plugin/src/manage.js migrate-v1 --root /绝对路径/v2-memory --space own
 
 迁移预览返回 `source_snapshot`。应用时在相同命令中加 `--snapshot HASH --apply`；缺少快照或源已变化都会拒绝。`--source-quiescent` 是所有者关于已停写的声明，接口还会在导入前重查源快照。身份参数仅给无归属旧记录赋值，已有归属由接口保留。旧记录不会冒充当前用户原话，也不自动获得成长资格。
 
+V2运行时发现无manifest的旧根时返回`LEGACY_MIGRATION_REQUIRED`，不会在那里建立空白替代库。请选择独立的空目标根。如果无归属旧记录应接续某个人格，先在新目标根初始化该人格、停止其写入，再从`status`取得真实个体ID用于迁移；任意填写ID不会自动绑定人格anchor。上述参数不会重分配旧记录已有的归属。
+
+同时含旧版标志和V2根manifest的目录返回`MIXED_MEMORY_ROOT`。先停写并保全目录，不要删除manifest，也不要直接把混合目录交给`migrate-v1`。当前CLI不提供自动提取或混合根恢复。
+
 ```sh
 node /plugin/src/manage.js purge --root /绝对路径/memory --space owner --record 记录ID@预期修订号
 ```
