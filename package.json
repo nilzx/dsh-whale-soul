@@ -18,7 +18,8 @@
     ".": "./src/index.js",
     "./body": "./src/body/index.js",
     "./package.json": "./package.json",
-    "./locale": "./src/locale.js"
+    "./locale": "./src/locale.js",
+    "./client": "./src/client.js"
   },
   "files": [
     "src",
@@ -46,14 +47,20 @@
     "node": ">=22.12.0"
   },
   "scripts": {
+    "build:client": "node src/build-client.js",
     "test": "node --test",
     "pack:check": "npm pack --dry-run",
-    "prepublishOnly": "npm test"
+    "prepublishOnly": "npm run build:client && npm test"
   },
   "publishConfig": {
     "access": "public"
   },
   "dsh": {
+    "client": {
+      "inject": ["@deepseek-ai/dsh-client-locale", "@deepseek-ai/dsh-client-ui-agent-preset", "@deepseek-ai/dsh-client-ui-renderer"],
+      "platform": "web",
+      "immediately": true
+    },
     "bundle": {
       "patch": "./cordis.patch.yml"
     },

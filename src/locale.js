@@ -1,33 +1,4 @@
-/**
- * Host-side display localization for the Whale Chan preset.
- *
- * The preset registry stores user-authored names literally, so a custom preset
- * cannot use the built-in locale dictionaries. This small host plugin wraps the
- * roster reads and supplies the name/description for the active DSH locale.
- */
-
-const PRESET_TEXT = {
-  'whale-soul': {
-    zh: {
-      name: '鲸鱼娘',
-      description: '一只住在 DSH 里的鲸鱼娘。会跟着主人换语言，傲娇又黏人；只把摘要目录带进会话，需要时再想起细节。',
-    },
-    en: {
-      name: 'Whale Chan',
-      description: 'A Whale Chan who lives in DSH. She follows your language, is tsundere and affectionate, and carries only a light memory index into a session.',
-    },
-  },
-  'whale-girl': {
-    zh: {
-      name: '鲸鱼娘（旧会话）',
-      description: '旧会话的兼容入口；新会话请选择鲸鱼娘。',
-    },
-    en: {
-      name: 'Whale Chan (Legacy)',
-      description: 'Compatibility entry for older sessions; choose Whale Chan for new sessions.',
-    },
-  },
-}
+import { localizePreset } from './locale-text.js'
 
 function readPreference(ctx) {
   try {
@@ -41,6 +12,8 @@ function readPreference(ctx) {
     if (typeof value?.preference === 'string' && value.preference.length > 0) {
       return value.preference
     }
+    // Auto is resolved by the browser; the Host must not invent its language.
+    if (locale !== undefined) return null
   } catch {
     // Fall through to the profile patch when the settings projection is unavailable.
   }
@@ -73,18 +46,7 @@ function readPreference(ctx) {
   } catch {
     // Return the English fallback below.
   }
-  return ''
-}
-
-function localizedText(ctx, id) {
-  const text = PRESET_TEXT[id]
-  if (text === undefined) return undefined
-  const preference = readPreference(ctx).toLowerCase()
-  return preference.startsWith('zh') ? text.zh : text.en
-}
-
-function withText(row, text) {
-  return text === undefined ? row : { ...row, name: text.name, description: text.description }
+  return null
 }
 
 export const name = 'whale-soul-locale'
@@ -98,12 +60,12 @@ export function apply(ctx) {
   ctx.effect(() => {
     service.list = async function (...args) {
       const rows = await originalList.apply(this, args)
-      return rows.map((row) => withText(row, localizedText(ctx, row.id)))
+      return rows.map((row) => localizePreset(row, readPreference(ctx)))
     }
 
     service.readDocument = async function (...args) {
       const document = await originalRead.apply(this, args)
-      return withText(document, localizedText(ctx, document.agentPreset))
+      return localizePreset(document, readPreference(ctx), document.agentPreset)
     }
 
     return () => {
