@@ -12,13 +12,18 @@ const TEXT_OUTPUT = {
   required: ['text'],
 }
 
-function makeTool({ name, description, parameters, execute, presentTitle }) {
+const ASSET_OUTPUT = {
+  ...TEXT_OUTPUT,
+  properties: { ...TEXT_OUTPUT.properties, asset_id: { type: 'string' }, preview_url: { type: 'string' } },
+}
+
+function makeTool({ name, description, parameters, execute, presentTitle, outputSchema = TEXT_OUTPUT, toOutput }) {
   return {
     name,
     description,
     parameters,
     output: {
-      schema: TEXT_OUTPUT,
+      schema: outputSchema,
       render: (_args, value) => [{ type: 'text', text: value.text }],
     },
     ...(presentTitle
@@ -31,7 +36,8 @@ function makeTool({ name, description, parameters, execute, presentTitle }) {
         }
       : {}),
     async execute(args, exec) {
-      return { text: String(await execute(args ?? {}, exec)) }
+      const value = await execute(args ?? {}, exec)
+      return toOutput ? toOutput(value) : { text: String(value) }
     },
   }
 }
@@ -49,7 +55,25 @@ function forgetReply(mode) {
   return '好，这件事我不再留着了。'
 }
 
-export function createMemoryTools(store, { recentImage } = {}) {
+export function createMemoryTools(store, { recentImage, assetPreview } = {}) {
+  const savedAsset = async (asset, exec) => {
+    let preview
+    try {
+      const candidate = typeof assetPreview === 'function' ? await assetPreview(asset, exec) : null
+      if (typeof candidate === 'string') {
+        const url = new URL(candidate)
+        if (['http:', 'https:'].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash &&
+          /^\/whale-soul-assets\/[a-f0-9]{32}\/[a-f0-9]{64}\.(png|jpe?g|webp|gif)$/.test(url.pathname)) preview = url.href
+      }
+    } catch {
+      // Saving succeeds independently of the optional display service.
+    }
+    return {
+      text: `这张图我收进贝壳里了。\nasset_id: ${asset.id}\n\n${preview ? `![已保存的图片](${preview})` : '当前没有可展示地址。'}`,
+      asset_id: asset.id,
+      ...(preview ? { preview_url: preview } : {}),
+    }
+  }
   const remember = makeTool({
     name: 'soul_remember',
     description:
@@ -280,7 +304,7 @@ export function createMemoryTools(store, { recentImage } = {}) {
   const memeSave = makeTool({
     name: 'soul_meme_save',
     description:
-      '把主人同意留下的图片/表情包收进鲸鱼娘的口袋。只在主人明确说“收下/记住这个表情包”时使用；不要私自保存私人照片。description 写这张图看起来是什么、适合什么心情。',
+      '把主人同意留下的图片/表情包收进鲸鱼娘的口袋。只在主人明确说“收下/记住这个表情包”时使用；不要私自保存私人照片。description 写这张图看起来是什么、适合什么心情。成功时直接使用返回的图片引用展示；没有展示地址时如实说明，不通过通用命令寻找内部附件文件。',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -300,6 +324,8 @@ export function createMemoryTools(store, { recentImage } = {}) {
       },
     },
     presentTitle: '收进贝壳',
+    outputSchema: ASSET_OUTPUT,
+    toOutput: (value) => typeof value === 'string' ? { text: value } : value,
     async execute(args, exec) {
       if (!args.file_path && !args.url && args.recent_image !== true) {
         return '我还没看到要收下的那张图。'
@@ -308,25 +334,25 @@ export function createMemoryTools(store, { recentImage } = {}) {
         if (args.recent_image === true && typeof recentImage === 'function') {
           const image = await recentImage(exec?.agent?.session?.id)
           if (!image) return '我还没看到要收下的那张图。'
-          await saveAsset(store, {
+          const asset = await saveAsset(store, {
             bytes: image.bytes,
             mediaType: image.mediaType,
             description: args.description,
             tags: args.tags,
             source: image.source ?? 'chat-attachment',
           })
-          return '这张图我收进贝壳里了。'
+          return savedAsset(asset, exec)
         }
-        await saveAsset(store, {
+        const asset = await saveAsset(store, {
           filePath: args.file_path,
           url: args.url,
           description: args.description,
           tags: args.tags,
           source: args.file_path ? 'user-file' : 'user-url',
         })
-        return '这张图我收进贝壳里了。'
-      } catch (error) {
-        return `这张图我收不好：${error instanceof Error ? error.message : String(error)}`
+        return savedAsset(asset, exec)
+      } catch {
+        return '这张图暂时没收好，主人稍后再试一下。'
       }
     },
   })

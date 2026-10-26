@@ -4,6 +4,7 @@ import { buildL0 } from './retrieval.js'
 import { runDream } from './decay.js'
 import { createMemoryTools } from '../tools.js'
 import { nowIso } from './schema.js'
+import { assetUrl } from './assets.js'
 
 export const name = 'whale-soul-memory'
 export const inject = ['systemPrompt', 'tools']
@@ -66,6 +67,19 @@ export function apply(ctx, config = {}) {
     }
   }
 
+  const assetPreview = (asset) => {
+    try {
+      const web = typeof ctx.get === 'function' ? ctx.get('webServer') : undefined
+      const connection = typeof ctx.get === 'function' ? ctx.get('connection') : undefined
+      if (!assetRoute.active || typeof web?.getOrigin !== 'function' || typeof connection?.admit !== 'function') return null
+      const origin = new URL(web.getOrigin())
+      if (!['http:', 'https:'].includes(origin.protocol) || origin.username || origin.password || origin.search || origin.hash || origin.pathname !== '/') return null
+      return assetUrl(origin.origin, asset, store.root)
+    } catch {
+      return null
+    }
+  }
+
   const runDreamNow = (trigger = 'timer') => {
     if (dreaming) return
     if (store.entries.size === 0) return
@@ -120,7 +134,7 @@ export function apply(ctx, config = {}) {
     'whale-soul.memory.context()',
   )
 
-  for (const definition of createMemoryTools(store, { recentImage })) {
+  for (const definition of createMemoryTools(store, { recentImage, assetPreview })) {
     ctx.effect(() => ctx.tools.register(definition), `whale-soul.memory.tool(${definition.name})`)
   }
 
