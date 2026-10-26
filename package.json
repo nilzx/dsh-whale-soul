@@ -1,0 +1,69 @@
+{
+  "name": "dsh-whale-soul",
+  "version": "0.1.0",
+  "description": "A soul for DeepSeek Harness: an in-character Whale-chan agent preset with layered long-term memory, dream-like consolidation, and optional dsh-pet body reactions.",
+  "type": "module",
+  "license": "MIT",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./body": "./src/body/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE",
+    "docs",
+    "assets",
+    "scripts/migrate-legacy.mjs"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "cordis",
+    "agent-preset",
+    "persona",
+    "memory",
+    "companion",
+    "whale",
+    "whale-chan"
+  ],
+  "icon": "assets/icon.svg",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "test": "node --test",
+    "pack:check": "npm pack --dry-run"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "compatibility": {
+      "dshReleases": {
+        "0.2.1-rc.3": "compatible"
+      }
+    }
+  },
+  "dsh-plugin": {
+    "category": "identity",
+    "displayName": "Whale-chan Soul"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.5",
+    "@deepseek-ai/dsh-agent-preset": ">=0.2.1-rc.3 <0.3.0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-agent-preset": {
+      "optional": true
+    }
+  }
+}
