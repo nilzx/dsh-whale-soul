@@ -15,6 +15,7 @@ An in-character **Whale-chan (鲸鱼娘)** Agent mode for [DeepSeek Harness](htt
 ## Features
 
 - **In character, without the machinery** — no OOC switch, no tool logs, no memory counts. Switching to another DSH Agent mode is the way out.
+- **Speaks your language** — replies and reasoning follow the language of your current message. Switch languages mid-conversation and she switches with you.
 - **Long-term memory** — preferences, promises, boundaries, and moments are kept in a layered store. A session starts with only a small summary; details are recalled when needed.
 - **Forgets gracefully** — memories can merge, fade, or be archived over time. Pinned and user-edited memories are protected.
 - **Dream-like upkeep** — maintenance happens in the background as a dream, never as a chat status report.
