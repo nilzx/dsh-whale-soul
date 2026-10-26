@@ -3,6 +3,7 @@ import { hostname } from 'node:os'
 import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { MemoryError, assertId, digest } from './contracts.js'
+import { commitPersonaDescriptor, reconcilePersonaState } from './persona-ledger.js'
 import { commitPurgeDescriptor, filterRecoveryChanges, getPurgeState, pathIsPurged, reconcilePurgeState, referencesPurged, validateManagedPurgeArtifacts } from './purge-ledger.js'
 
 function syncDir(path) {
@@ -103,8 +104,13 @@ export async function acquireRootLock(root, { waitMs = 2000 } = {}) {
       }
       const previous = readJson(join(lockPath, 'owner.json'), null)
       if (!previous) {
+        // A retiring directory and a newly published owner may cross this read.
+        // Retry the observation without stealing; a stable ownerless lock stays
+        // fail-closed once the bounded acquisition deadline is reached.
         if (!existsSync(lockPath)) continue
-        throw new MemoryError('LOCK_RECOVERY_REQUIRED')
+        if (Date.now() >= deadline) throw new MemoryError('LOCK_RECOVERY_REQUIRED')
+        await new Promise((fulfil) => setTimeout(fulfil, 8))
+        continue
       }
       if (!alive(previous)) {
         // A separate reaper serializes stale-owner recovery. Its own crash is
@@ -173,6 +179,12 @@ export class TransactionEngine {
   _apply(transaction) {
     commitPurgeDescriptor(this.lockRoot, this.root, transaction.purge_descriptor, atomicWrite)
     if (transaction.purge_descriptor) this._checkpoint('after_purge_ledger', { operation_id: transaction.operation_id })
+    const personaDescriptors = transaction.persona_descriptors ?? (transaction.persona_descriptor ? [transaction.persona_descriptor] : [])
+    for (let index = 0; index < personaDescriptors.length; index++) {
+      commitPersonaDescriptor(this.lockRoot, this.root, personaDescriptors[index], atomicWrite)
+      this._checkpoint('after_persona_descriptor', { index, operation_id: transaction.operation_id })
+    }
+    if (personaDescriptors.length) this._checkpoint('after_persona_ledger', { operation_id: transaction.operation_id })
     const state = getPurgeState(this.lockRoot, this.memorySpaceId)
     const changes = filterRecoveryChanges(transaction.changes, state, readJson(join(this.root, 'manifest.json'), null), { filterDerived: transaction.generation < state.generation && !transaction.purge_descriptor })
     for (let index = 0; index < changes.length; index++) {
@@ -183,6 +195,7 @@ export class TransactionEngine {
       this._checkpoint('after_apply', { index, operation_id: transaction.operation_id })
     }
     reconcilePurgeState(this.lockRoot, this.root, atomicWrite)
+    reconcilePersonaState(this.lockRoot, this.root, atomicWrite)
   }
 
   _recover() {
@@ -209,7 +222,7 @@ export class TransactionEngine {
   }
 
   async read(callback) {
-    return this.locked(() => { this._recover(); reconcilePurgeState(this.lockRoot, this.root, atomicWrite); return callback() })
+    return this.locked(() => { this._recover(); reconcilePurgeState(this.lockRoot, this.root, atomicWrite); reconcilePersonaState(this.lockRoot, this.root, atomicWrite); return callback() })
   }
 
   async run(operationId, request, build, { authorize = () => {} } = {}) {
@@ -217,6 +230,7 @@ export class TransactionEngine {
     return this.locked(async () => {
       this._recover()
       reconcilePurgeState(this.lockRoot, this.root, atomicWrite)
+      reconcilePersonaState(this.lockRoot, this.root, atomicWrite)
       authorize()
       const receiptKey = digest(operationId)
       const requestHash = digest(request)
@@ -252,6 +266,8 @@ export class TransactionEngine {
         transaction_id: randomUUID(), operation_id: operationId, receipt_key: receiptKey,
         generation: this.generationProvider(), changes,
         ...(built.purge_descriptor ? { purge_descriptor: built.purge_descriptor } : {}),
+        ...(built.persona_descriptor ? { persona_descriptor: built.persona_descriptor } : {}),
+        ...(built.persona_descriptors ? { persona_descriptors: built.persona_descriptors } : {}),
         receipt: { operation_id: operationId, request_hash: requestHash, result: built.result },
       }
       const path = this.resolvePath(`journal/${transaction.transaction_id}`)

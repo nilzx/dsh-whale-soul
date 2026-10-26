@@ -1,6 +1,7 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { MemoryError, assertId, digest } from './contracts.js'
+import { validatePortablePersonaShape } from './persona-ledger.js'
 
 export const PURGE_LEDGER_PATH = '.administration/purge-ledger.json'
 const json = (value) => `${JSON.stringify(value, null, 2)}\n`
@@ -166,6 +167,9 @@ export function validateManagedPurgeArtifacts(root, spaceId) {
     if (archive?.transfer_format !== 'dsh-memory-space' || archive.memory_space_id !== spaceId) return
     const { checksum, ...payload } = archive
     if (!Array.isArray(archive.files) || checksum !== digest(payload)) throw new MemoryError('MANAGED_ARCHIVE_REPAIR_REQUIRED')
+    if (archive.persona_state !== undefined) {
+      try { validatePortablePersonaShape(archive.persona_state, spaceId) } catch { throw new MemoryError('MANAGED_ARCHIVE_REPAIR_REQUIRED') }
+    }
     for (const file of archive.files) {
       if (typeof file.data !== 'string' || file.encoding !== 'base64') throw new MemoryError('MANAGED_ARCHIVE_REPAIR_REQUIRED')
       const data = Buffer.from(file.data, 'base64')
