@@ -3,6 +3,7 @@ import { DshPetBody } from './dsh-pet.js'
 import { findAsset, markAssetUsed, readAsset } from '../memory/assets.js'
 import { resolveMemoryAssetRoot } from '../paths.js'
 import { makeTool } from '../tools.js'
+import { imagesForAgent } from '../persona/images.js'
 
 export const name = 'whale-soul-body'
 export const inject = ['tools']
@@ -132,9 +133,11 @@ export function createBodyTools(body, { config = {}, timers = new Set() } = {}) 
       },
     },
     presentTitle: '递了过去',
-    async execute(args) {
+    async execute(args, exec) {
       if (body.disposed) return '（安静地待着）'
-      const asset = findAsset(assetStore, { id: args.asset_id, tag: args.tag, query: args.query })
+      const asset = Number(config.memoryFormat) === 2
+        ? await imagesForAgent(exec?.agent)?.find(exec.agent, args)
+        : findAsset(assetStore, { id: args.asset_id, tag: args.tag, query: args.query })
       if (!asset) return '（翻了翻口袋，没找到那张图）'
       const url = body.assetUrl(asset.file)
       if (!url) return '（那张图现在拿不出来）'

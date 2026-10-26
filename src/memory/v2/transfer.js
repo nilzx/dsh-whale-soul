@@ -3,6 +3,7 @@ import { existsSync, lstatSync, readFileSync, readdirSync } from 'node:fs'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { API_VERSION, CLAIM_KINDS, FORMAT_VERSION, MEMORY_TYPES, MemoryError, assertId, assertOnly, digest, failure, stableStringify, timestamp, validateRecord } from './contracts.js'
 import { readJson } from './transactions.js'
+import { ASSET_METADATA_FIELDS, validateAssetMetadata } from './assets.js'
 import { assertPersonaFilesAllowed, exportPersonaState, preparePersonaImport, validatePortablePersonaShape, validatePortablePersonaState } from './persona-ledger.js'
 import { exportPurgeState, getPurgeState, preparePurgeImport } from './purge-ledger.js'
 
@@ -16,6 +17,8 @@ const copy = (value) => JSON.parse(JSON.stringify(value))
 const idPattern = '[A-Za-z0-9][A-Za-z0-9._-]{0,127}'
 const recordPath = new RegExp(`^records/(${idPattern})(?:/revisions/(${idPattern}))?/(${DATA_FILES.map((name) => name.replace('.', '\\.')).join('|')})$`)
 const assetMetadataPath = /(?:^|\/)assets\/(?:[a-f0-9]{64}|a-[a-f0-9]{20})\.json$/
+const scopedAssetFields = ['memory_space_id', 'persona_id', 'agent_identity_id', 'subject_id', 'consent_id', 'evidence_refs', 'record_ids']
+const scopedAsset = (value) => value && scopedAssetFields.some((key) => Object.hasOwn(value, key))
 const assetMetadataFields = ['schema_version', 'id', 'file', 'mime', 'bytes', 'description', 'tags', 'source', 'created_at', 'updated_at', 'uses', 'last_used_at']
 const legacyMetaFields = new Set(['schema_version', 'id', 'type', 'title', 'summary', 'tags', 'entities', 'links', 'emotional_weight', 'salience', 'confidence', 'pinned', 'status', 'source', 'user_edited', 'created_at', 'updated_at', 'last_access', 'access_count', 'valid_from', 'valid_to', 'supersedes', 'superseded_by', 'canonical_key', 'layers', 'assets', 'archived_at', 'archive_reason', 'subject_id', 'memory_space_id', 'agent_identity_id', 'persona_id'])
 
@@ -67,6 +70,11 @@ function sanitizedMetadata(files) {
     let value
     try { value = parseJson(file.data) } catch { return file }
     if (value.schema_version !== 1) throw new MemoryError('UNSUPPORTED_TRANSFER_ASSET_SCHEMA')
+    if (scopedAsset(value)) {
+      assertOnly(value, ASSET_METADATA_FIELDS)
+      validateAssetMetadata(value, { assetId: file.path.split('/').at(-1).slice(0, -5) })
+      return file
+    }
     const next = Object.fromEntries(assetMetadataFields.filter((key) => Object.hasOwn(value, key)).map((key) => [key, value[key]]))
     if (typeof next.file !== 'string' || !/^[a-f0-9]{64}\.(?:png|jpe?g|webp|gif)$/.test(next.file)) throw new MemoryError('INVALID_TRANSFER_ASSET_REFERENCE')
     const safeSources = ['chat-attachment', 'user-file', 'user-url', 'file', 'synthetic', 'legacy-local-file', 'legacy-remote-url', 'legacy-unknown']
@@ -140,12 +148,13 @@ function packageArchive(store, manifest, files, policy = exportPolicy('none'), p
 
 function validateFiles(files, spaceId) {
   const map = new Map(files.map((file) => [file.path, file]))
-  const records = []
+  const records = [], recordViews = [], scopedAssets = new Map()
   for (const file of files) {
     if (!allowedPath(file.path)) throw new MemoryError('UNSUPPORTED_TRANSFER_PATH')
     if (assetMetadataPath.test(file.path) && !opaqueFile(file)) {
       if (sanitizedMetadata([file]).redactions.length) throw new MemoryError('UNSANITIZED_TRANSFER_METADATA')
       const value = parseJson(file.data), base = file.path.slice(0, file.path.lastIndexOf('/') + 1)
+      if (scopedAsset(value)) scopedAssets.set(value.id, value)
       if (!map.has(base + value.file)) throw new MemoryError('TRANSFER_MISSING_ASSET')
     } else if (assetMetadataPath.test(file.path) && file.path.startsWith('assets/')) throw new MemoryError('INVALID_TRANSFER_ASSET_METADATA')
     const match = recordPath.exec(file.path)
@@ -155,6 +164,7 @@ function validateFiles(files, spaceId) {
     }
     if (match && match[3] === 'meta.json') {
       const meta = validateRecord(parseJson(file.data))
+      recordViews.push(meta)
       if (meta.record_id !== match[1] || (match[2] && meta.revision_id !== match[2]) || meta.memory_space_id !== spaceId) throw new MemoryError('TRANSFER_SCOPE_MISMATCH')
       if (!map.has(`records/${meta.record_id}/revisions/${meta.revision_id}/meta.json`)) throw new MemoryError('TRANSFER_MISSING_REVISION')
       for (const previous of meta.revision_history ?? []) {
@@ -210,7 +220,40 @@ function validateFiles(files, spaceId) {
     }
     if (/^assets\/[a-f0-9]{64}\.(?:png|jpe?g|webp|gif)$/.test(file.path) && file.sha256 !== file.path.split('/')[1].split('.')[0]) throw new MemoryError('TRANSFER_ASSET_HASH_MISMATCH')
   }
+  validateScopedAssets(map, scopedAssets, records, recordViews, spaceId)
   return records
+}
+
+function validateScopedAssets(files, assets, currentRecords, recordViews, spaceId) {
+  const evidenceFor = (metadata) => metadata.evidence_refs.map((ref) => {
+    const file = files.get(`evidence/${ref}.json`)
+    if (!file) throw new MemoryError('TRANSFER_MISSING_ASSET_CONSENT')
+    return parseJson(file.data)
+  })
+  for (const metadata of assets.values()) {
+    if (metadata.memory_space_id !== spaceId) throw new MemoryError('TRANSFER_ASSET_SCOPE_MISMATCH')
+    const recordMetas = metadata.record_ids.map((id) => {
+      const record = currentRecords.find((meta) => meta.record_id === id)
+      if (!record) throw new MemoryError('TRANSFER_MISSING_ASSET_RECORD')
+      return record
+    })
+    validateAssetMetadata(metadata, { assetId: metadata.id, recordMetas, evidence: evidenceFor(metadata) })
+    const bytes = files.get(`assets/${metadata.file}`)?.data
+    const extension = metadata.file.split('.').at(-1)
+    const extensions = { 'image/png': ['png'], 'image/jpeg': ['jpg', 'jpeg'], 'image/webp': ['webp'], 'image/gif': ['gif'] }
+    const magic = metadata.mime === 'image/png' ? bytes?.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex'))
+      : metadata.mime === 'image/jpeg' ? bytes?.[0] === 255 && bytes?.[1] === 216 && bytes?.[2] === 255
+      : metadata.mime === 'image/gif' ? /^GIF8[79]a$/.test(bytes?.subarray(0, 6).toString('ascii') ?? '')
+      : bytes?.subarray(0, 4).toString('ascii') === 'RIFF' && bytes?.subarray(8, 12).toString('ascii') === 'WEBP'
+    if (!bytes || bytes.length !== metadata.bytes || digest(bytes) !== metadata.file.split('.')[0] || !extensions[metadata.mime]?.includes(extension) || !magic) throw new MemoryError('TRANSFER_ASSET_CONTENT_MISMATCH')
+  }
+  for (const meta of recordViews) {
+    const refs = Array.isArray(meta.assets) ? meta.assets.filter((ref) => /^a-[a-f0-9]{20}$/.test(ref)) : []
+    if (meta.asset_metadata_hash === undefined && !refs.some((ref) => assets.has(ref))) continue
+    if (!/^[a-f0-9]{64}$/.test(meta.asset_metadata_hash ?? '') || refs.length !== 1 || !assets.has(refs[0])) throw new MemoryError('TRANSFER_ASSET_BINDING_MISMATCH')
+    const metadata = assets.get(refs[0])
+    validateAssetMetadata(metadata, { assetId: refs[0], recordMetas: [meta], evidence: evidenceFor(metadata) })
+  }
 }
 
 export function validateTransferArchive(archive, { maxFiles = 10_000, maxBytes = 64 * 1024 * 1024, maxFileBytes = 8 * 1024 * 1024 } = {}) {

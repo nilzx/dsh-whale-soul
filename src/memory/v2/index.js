@@ -1,6 +1,7 @@
 export { MemoryStoreV2 } from './store.js'
 export { MemoryAdministration } from './administration.js'
 export { MemoryTransfer, validateTransferArchive } from './transfer.js'
+export { MemoryAssetsV2, deriveImageIdentifiers, validateAssetMetadata } from './assets.js'
 export { createMemorySelector, createMemorySelectionAssessor } from './selection.js'
 export { retrieveMemory, buildMemoryContext } from './retrieval.js'
 export { recordRetentionAllowed } from './read-policy.js'

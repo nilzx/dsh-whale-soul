@@ -87,6 +87,7 @@
     "@deepseek-ai/dsh-llm": ">=0.2.1-rc.3 <0.3.0",
     "@deepseek-ai/dsh-sandbox": ">=0.2.1-rc.3 <0.3.0",
     "@deepseek-ai/dsh-system-prompt": ">=0.2.1-rc.3 <0.3.0",
+    "@deepseek-ai/dsh-scope": ">=0.2.1-rc.3 <0.3.0",
     "@deepseek-ai/dsh-bash-sandbox": ">=0.2.1-rc.3 <0.3.0",
     "@deepseek-ai/dsh-tool-fs": ">=0.2.1-rc.3 <0.3.0",
     "@deepseek-ai/dsh-tool-bash": ">=0.2.1-rc.3 <0.3.0",
@@ -106,6 +107,9 @@
       "optional": true
     },
     "@deepseek-ai/dsh-system-prompt": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-scope": {
       "optional": true
     },
     "@deepseek-ai/dsh-bash-sandbox": {
