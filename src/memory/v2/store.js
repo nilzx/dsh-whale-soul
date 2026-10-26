@@ -150,6 +150,8 @@ export class MemoryStoreV2 {
       if (source.evidence_id !== id) throw new MemoryError('EVIDENCE_SCOPE_MISMATCH')
       const subjects = source.subject_ids ?? [source.subject_id]
       if (!subjects.includes(subjectId)) throw new MemoryError('EVIDENCE_SCOPE_MISMATCH')
+      text(source.content, 'evidence content', { max: 8000 })
+      if (!source.content.isWellFormed()) throw new MemoryError('INVALID_EVIDENCE_TEXT')
       const evidence = {
         evidence_id: id, subject_ids: strings(subjects, 'evidence subjects'),
         session_id: assertId(source.session_id, 'evidence session'),
@@ -157,7 +159,7 @@ export class MemoryStoreV2 {
         observed_at: timestamp(source.observed_at, 'evidence time', false),
         actor_ids: strings(source.actor_ids, 'evidence actors'),
         claim_kind: source.claim_kind,
-        content: text(source.content, 'evidence content', { max: 8000 }),
+        content: source.content,
       }
       if (!CLAIM_KINDS.includes(evidence.claim_kind) || evidence.claim_kind === 'legacy') throw new MemoryError('INVALID_EVIDENCE_KIND')
       const existing = readJson(join(this.paths.evidence, `${id}.json`), null)

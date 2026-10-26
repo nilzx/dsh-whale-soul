@@ -42,7 +42,7 @@ export class PersonaGrowth {
 
   #hostContext(context) {
     return this.#store.issueContext({ ...this.#identity, subject_id: context.subject_id,
-      allowed_subject_ids: context.allowed_subject_ids, session_id: context.session_id, capabilities: ['memory.manage'] })
+      allowed_subject_ids: context.allowed_subject_ids, session_id: context.session_id, expires_at: context.expires_at, capabilities: ['memory.manage'] })
   }
 
   #base() { return `self/${this.#identity.agent_identity_id}` }
@@ -99,11 +99,13 @@ export class PersonaGrowth {
       assertId(value.independence_key); assertId(value.session_id)
       if (value.event_evidence_id !== undefined && !isBatchEventReference(value.event_evidence_id)) throw new MemoryError('GROWTH_EVIDENCE_KIND')
       timestamp(value.occurred_at, 'growth evidence time', false)
+      text(value.content, 'growth evidence content', { max: 8000 })
+      if (!value.content.isWellFormed()) throw new MemoryError('INVALID_EVIDENCE_TEXT')
       const normalized = { evidence_id: value.evidence_id, source: value.source, claim_kind: value.claim_kind,
         persona_id: value.persona_id, agent_identity_id: value.agent_identity_id,
         independence_key: value.independence_key, session_id: value.session_id,
         ...(value.event_evidence_id === undefined ? {} : { event_evidence_id: value.event_evidence_id }),
-        occurred_at: value.occurred_at, content: text(value.content, 'growth evidence content', { max: 8000 }) }
+        occurred_at: value.occurred_at, content: value.content }
       const previous = origins.get(normalized.independence_key)
       if (previous && !sameEvidenceOrigin(previous, normalized)) throw new MemoryError('GROWTH_INDEPENDENCE_CONFLICT')
       if (!previous) origins.set(normalized.independence_key, normalized)
@@ -166,7 +168,7 @@ export class PersonaGrowth {
         manifest.proposals[proposalId] = digest(proposal)
         return { changes: this.#changes(manifest, spaceManifest, [{ path: `${this.#base()}/proposals/${proposalId}.json`, data: json(proposal) }]),
           result: result('candidate', 'AWAITING_INDEPENDENT_SUPPORT', { proposal_id: proposalId, trait_id: traitId, revision: 1 }) }
-      }, this.#hostContext(context))
+      }, this.#hostContext(context), { authorize: () => this.#authorize(context, 'self.write') })
     } catch (error) { return failure(error, operationId) }
   }
 
@@ -198,7 +200,7 @@ export class PersonaGrowth {
         manifest.maintenance[args.maintenance_id] = [...attempts, { proposal_id: args.proposal_id, reservation_id: reservationId, state: 'reserved' }]
         return { changes: this.#changes(manifest, spaceManifest, []),
           result: result('reserved', 'ASSESSMENT_RESERVED', { reservation_id: reservationId }) }
-      }, this.#hostContext(context))
+      }, this.#hostContext(context), { authorize: () => this.#authorize(context, 'self.evaluate') })
       if (reservation.reservation_id !== reservationId) return reservation.status === 'reserved' ? result('pending', 'EVALUATION_IN_PROGRESS') : reservation
       const before = await this.#store.managedRead(this.#hostContext(context), () => {
         this.#authorize(context, 'self.evaluate')
@@ -254,7 +256,7 @@ export class PersonaGrowth {
         manifest.maintenance[args.maintenance_id] = evaluated.map((entry) => entry === attempt ? { ...entry, state: 'completed' } : entry)
         return { changes: this.#changes(manifest, spaceManifest, changes), result: result(state, state === 'stable' ? 'SUPPORTED_GROWTH' : state === 'disputed' ? 'REQUIRES_REVIEW' : 'MORE_SUPPORT_REQUIRED',
           { proposal_id: args.proposal_id, trait_id: proposal.trait_id, revision: next.revision }) }
-      }, this.#hostContext(context))
+      }, this.#hostContext(context), { authorize: () => this.#authorize(context, 'self.evaluate') })
     } catch (error) { return failure(error, operationId) }
   }
 
@@ -290,7 +292,7 @@ export class PersonaGrowth {
           if (attempts.length >= 20) throw new MemoryError('REFLECTION_BUDGET_EXCEEDED')
           manifest.maintenance[args.maintenance_id] = [...attempts, { proposal_id: key, reservation_id: reservationId, state: 'reserved' }]
           return { changes: this.#changes(manifest, spaceManifest, []), result: result('reserved', 'ASSESSMENT_RESERVED', { reservation_id: reservationId }) }
-        }, this.#hostContext(context))
+        }, this.#hostContext(context), { authorize: () => this.#authorize(context, 'self.evaluate') })
       if (reservation.reservation_id !== reservationId) return reservation.status === 'reserved' ? result('pending', 'EVALUATION_IN_PROGRESS') : reservation
       const before = await this.#store.managedRead(this.#hostContext(context), () => {
         this.#authorize(context, 'self.evaluate')
@@ -337,7 +339,7 @@ export class PersonaGrowth {
           { path: `${this.#base()}/history/${trait.trait_id}/${trait.revision}.json`, data: json(trait) },
           { path: `${this.#base()}/traits/${trait.trait_id}.json`, data: json(next) },
         ]), result: result(state, state === 'retired' ? 'SUPPORTED_RETIREMENT' : state === 'disputed' ? 'REQUIRES_REVIEW' : 'REVIEW_RECORDED', { trait_id: trait.trait_id, revision: next.revision }) }
-      }, this.#hostContext(context))
+      }, this.#hostContext(context), { authorize: () => this.#authorize(context, 'self.evaluate') })
     } catch (error) { return failure(error, operationId) }
   }
 
