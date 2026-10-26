@@ -11,7 +11,7 @@ A soul for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness): 
 
 ## What it is
 
-`dsh-whale-soul` is a DSH bundle built on the official plugin interface. Installing it adds a new Agent preset named **鲸鱼娘** to the Agent mode selector. The preset owns the persona and the memory engine; the chat surface stays in DSH. It works on its own and does not require a companion app.
+`dsh-whale-soul` is a DSH bundle built on the official plugin interface. Installing it adds a new Agent preset named **鲸鱼娘** to the Agent mode selector. The preset owns the persona and the memory engine; the chat surface stays in DSH. It works on its own.
 
 ## Features
 
@@ -20,9 +20,9 @@ A soul for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness): 
 - **Tags on every entry** — stable namespaces such as `who:`, `topic:`, `mood:`, `kind:` plus free tags. `kind:` and `topic:` are filled automatically when missing.
 - **Category-aware de-duplication** — similar entries merge; contradictory facts become versions instead of silent overwrites. Related entries are linked.
 - **Memory decay** — details move to cold storage, gists can fade to an index line, and very old low-value entries are archived. Pinned and user-edited memories are protected. This is inspired by gist/verbatim memory research and the forgetting curve, not a claim to simulate a brain.
-- **Dream-like maintenance** — consolidation runs in the background when due and idle. It writes a dream journal instead of a chat report. When a body is connected, the adapter can play a short sleep/wake performance.
-- **User-editable memory** — Markdown/JSON files are the source of truth. The index is derived and rebuildable. There are no per-entry hashes; external edits are detected with file metadata, validated, and treated as user corrections.
-- **Optional memes** — save an image the user explicitly agrees to keep (the latest chat attachment with `recent_image`, a local path, or a URL), tag it, and send it back as a body bubble when one is available.
+- **Dream-like maintenance** — consolidation runs in the background when due and idle. It writes a dream journal instead of a chat report.
+- **User-editable memory** — Markdown/JSON files are the source of truth. The index is derived and rebuildable. External edits are detected with file metadata, validated, and treated as user corrections.
+- **Optional memes** — save an image the user explicitly agrees to keep (the latest chat attachment with `recent_image`, a local path, or a URL), tag it, and keep it for later.
 - **Local-first** — memory and image assets live under `$DSH_HOME`; no cloud storage.
 
 ## Requirements
@@ -36,7 +36,7 @@ Install the bundle directory with DSH's plugin manager (Web → Plugins, or a lo
 
 ```bash
 npm pack
-# install the resulting dsh-whale-soul-0.1.1.tgz through the plugin manager
+# install the resulting dsh-whale-soul-0.1.2.tgz through the plugin manager
 ```
 
 After installation, create a new session and choose **鲸鱼娘** in the Agent mode selector. Existing sessions keep the preset they started with.
@@ -45,7 +45,6 @@ After installation, create a new session and choose **鲸鱼娘** in the Agent m
 
 - **Chat in DSH.** The Agent does normal Agent work: files, shell, web, schedules, skills, compaction, and so on.
 - **Memory maintenance is not a chat command.** It happens automatically as a dream. To inspect or edit memory files, switch to a work/maintenance Agent mode; this mode intentionally does not expose a memory dashboard.
-- **Body reactions are optional.** The preset can add small reactions when a compatible local companion is present, and stays quiet otherwise. See [Optional body reactions](#optional-body-reactions).
 
 ## Memory layout
 
@@ -97,12 +96,6 @@ The preset passes these options to the memory row:
 | `autoPurgeArchived` | `false` | Allow automatic purge of old archived entries. |
 | `purgeAfterDays` | `730` | Archive age before `autoPurgeArchived` may remove it. |
 
-## Optional body reactions
-
-The bundled body adapter is a small, one-way bridge. If a compatible local companion is already running, it can add short reactions, bubbles, and a sleep animation. It is disabled automatically when no bridge answers; the soul works exactly the same without it. It never imports or modifies the other app.
-
-Integration details and options: [docs/BODY.md](docs/BODY.md).
-
 ## Privacy and safety
 
 - Memory is stored locally under `$DSH_HOME` and is not uploaded.
@@ -110,7 +103,6 @@ Integration details and options: [docs/BODY.md](docs/BODY.md).
 - The Agent does not record passwords, tokens, bank details, or identity numbers. Users can ask to forget a memory.
 - Image saving is explicit (`soul_meme_save` with `recent_image`, a path, or a URL); do not save private photos without consent. Nothing is captured automatically.
 - Memory files are user-editable. The system treats user edits as corrections, validates them, and quarantines malformed files rather than crashing the memory garden.
-- No per-entry cryptographic hashes: authority comes from a single source of truth, atomic writes, rebuildable indexes, provenance, and versioning.
 
 ## Upgrading from `dsh-whale-girl`
 
@@ -133,9 +125,9 @@ npm test
 npm run pack:check
 ```
 
-Tests cover the memory store, layered recall, de-duplication, decay, dream journal, asset store, body adapter probing, and the no-body path.
+Tests cover the memory store, layered recall, de-duplication, decay, dream journal, and asset store.
 
-More detail: [docs/MEMORY.md](docs/MEMORY.md) · [docs/ROLEPLAY.md](docs/ROLEPLAY.md) · [docs/BODY.md](docs/BODY.md)
+More detail: [docs/MEMORY.md](docs/MEMORY.md) · [docs/ROLEPLAY.md](docs/ROLEPLAY.md)
 
 ## Releasing
 
@@ -146,8 +138,8 @@ CI runs the test suite on every push and pull request. A version tag publishes t
 3. Push a matching tag:
 
 ```bash
-git tag v0.1.1
-git push origin v0.1.1
+git tag v0.1.2
+git push origin v0.1.2
 ```
 
 The `Release` workflow checks that the tag matches `package.json`, runs the tests, publishes to npm with provenance, and creates a GitHub release. Pre-release versions such as `v0.2.0-beta.1` publish under the `next` dist-tag.
