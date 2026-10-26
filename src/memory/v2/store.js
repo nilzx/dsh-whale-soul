@@ -284,20 +284,28 @@ export class MemoryStoreV2 {
       return await this.engine.read(() => {
         this._authorize(context, 'memory.read')
         this._manifest()
-        const { records, warnings } = this._records()
-        const matches = records.filter((meta) => {
-          if (!this._visible(meta, context)) return false
-          if (args.record_id && meta.record_id !== args.record_id) return false
-          if (args.subject_id && meta.subject_id !== args.subject_id) return false
-          if (!args.include_inactive && meta.status !== 'active') return false
-          if ((meta.valid_from && Date.parse(meta.valid_from) > at) || (meta.valid_to && Date.parse(meta.valid_to) <= at) || (meta.expires_at && Date.parse(meta.expires_at) <= at)) return false
-          const record = this._readRecord(meta.record_id)
-          return !query || `${meta.title}\n${record.gist}\n${meta.tags.join(' ')}`.toLowerCase().includes(query)
-        }).slice(0, Math.min(10, Math.max(1, Number(args.limit) || 5)))
-        const items = matches.map((meta) => {
-          const record = this._readRecord(meta.record_id)
-          return { meta: clone(meta), ...(depth !== 'index' ? { gist: record.gist } : {}), ...(['detail', 'raw'].includes(depth) ? { detail: record.detail } : {}), ...(depth === 'raw' ? { evidence: record.evidence } : {}) }
-        })
+        const matches = [], warnings = []
+        const limit = Math.floor(Math.min(10, Math.max(1, Number(args.limit) || 5)))
+        // Keep integrity validation request-local and complete, including raw
+        // evidence for index/gist queries. Reuse each validated view instead of
+        // reopening the same five files during filtering and result projection.
+        for (const dir of readdirSync(this.paths.records, { withFileTypes: true })) {
+          if (!dir.isDirectory()) continue
+          let record
+          try { record = this._readRecord(assertId(dir.name)) } catch (error) {
+            warnings.push({ record_id: dir.name, reason_code: error.code ?? 'INVALID_RECORD' })
+            continue
+          }
+          const { meta } = record
+          if (!this._visible(meta, context)) continue
+          if (args.record_id && meta.record_id !== args.record_id) continue
+          if (args.subject_id && meta.subject_id !== args.subject_id) continue
+          if (!args.include_inactive && meta.status !== 'active') continue
+          if ((meta.valid_from && Date.parse(meta.valid_from) > at) || (meta.valid_to && Date.parse(meta.valid_to) <= at) || (meta.expires_at && Date.parse(meta.expires_at) <= at)) continue
+          if (query && !`${meta.title}\n${record.gist}\n${meta.tags.join(' ')}`.toLowerCase().includes(query)) continue
+          if (matches.length < limit) matches.push(record)
+        }
+        const items = matches.map(({ meta, gist, detail, evidence }) => ({ meta: clone(meta), ...(depth !== 'index' ? { gist } : {}), ...(['detail', 'raw'].includes(depth) ? { detail } : {}), ...(depth === 'raw' ? { evidence } : {}) }))
         this._authorize(context, 'memory.read')
         return { api_version: API_VERSION, operation_id: null, status: 'ok', reason_code: items.length ? 'OK' : 'NO_MATCH', items, warnings: context.capabilities.includes('memory.manage') ? warnings : warnings.map(({ reason_code }) => ({ reason_code })), revision_watermark: this._manifest().revision_watermark }
       })
