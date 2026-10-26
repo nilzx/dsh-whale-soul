@@ -95,13 +95,22 @@ function evidencePermitted(meta, context, check) {
   }
   return true
 }
+function recordPermitted(record, context, check) {
+  if (!check) return true
+  let allowed
+  try { allowed = check(freeze(record), context) } catch { throw new MemoryError('RECORD_FILTER_FAILED') }
+  if (typeof allowed !== 'boolean') throw new MemoryError('RECORD_FILTER_INVALID_RESULT')
+  return allowed
+}
 
 /** Authorized lexical baseline. No context promotion or evidence-strength changes. */
 export async function retrieveMemory(store, args = {}, context, hostOptions = {}) {
   try {
-    assertOnly(hostOptions, ['evidenceAllowed'])
+    assertOnly(hostOptions, ['evidenceAllowed', 'recordAllowed'])
     const evidenceAllowed = hostOptions.evidenceAllowed
+    const recordAllowed = hostOptions.recordAllowed
     if (evidenceAllowed !== undefined && typeof evidenceAllowed !== 'function') throw new MemoryError('EVIDENCE_FILTER_REQUIRED_FUNCTION')
+    if (recordAllowed !== undefined && typeof recordAllowed !== 'function') throw new MemoryError('RECORD_FILTER_REQUIRED_FUNCTION')
     store._authorize(context, 'memory.read')
     assertOnly(args, ['query', 'at', 'limit', 'depth', 'subject_id', 'signal'])
     checkSignal(args.signal)
@@ -154,12 +163,13 @@ export async function retrieveMemory(store, args = {}, context, hostOptions = {}
             const candidate = { record, relevance }
             if (matches.length === limit && rank(candidate, matches.at(-1)) >= 0) continue
             if (!evidencePermitted(freeze(record.meta), context, evidenceAllowed)) continue
+            if (!recordPermitted(record, context, recordAllowed)) continue
             matches.push(candidate)
             matches.sort(rank)
             if (matches.length > limit) matches.pop()
           }
         } catch (error) {
-          if (error?.code?.startsWith('EVIDENCE_FILTER_')) throw error
+          if (error?.code?.startsWith('EVIDENCE_FILTER_') || error?.code?.startsWith('RECORD_FILTER_')) throw error
           warnings.push({ reason_code: /^[A-Z0-9_]+$/.test(error?.code ?? '') ? error.code : 'MEMORY_UNAVAILABLE' })
         }
       }
@@ -184,6 +194,7 @@ export async function retrieveMemory(store, args = {}, context, hostOptions = {}
           if (depth === 'raw') store._authorize(context, 'memory.raw')
           checkSignal(args.signal)
           if (!items.every((item) => evidencePermitted(item.meta, context, evidenceAllowed))) return false
+          if (!selected.every(({ record }) => recordPermitted(record, context, recordAllowed))) return false
           if (Date.now() >= earliestExpiry || treeStamp(store, historical) !== initialTree) return false
           if (![...dependencies].every(([path, dependency]) => fileHash(path, dependency.optional) === dependency.hash)) return false
           store._authorize(context, 'memory.read')
@@ -193,6 +204,7 @@ export async function retrieveMemory(store, args = {}, context, hostOptions = {}
       store._authorize(context, 'memory.read')
       checkSignal(args.signal)
       if (!items.every((item) => evidencePermitted(item.meta, context, evidenceAllowed))) throw new MemoryError('EVIDENCE_REVOKED')
+      if (!selected.every(({ record }) => recordPermitted(record, context, recordAllowed))) throw new MemoryError('RECORD_READ_REVOKED')
       return { status: 'ok', reason_code: items.length ? 'OK' : 'NO_MATCH', items: freeze(items), warnings: freeze(warnings),
         revision_watermark: manifest.revision_watermark, isCurrent }
     })

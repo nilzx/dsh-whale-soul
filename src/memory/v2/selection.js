@@ -1,5 +1,6 @@
-import { createStructuredAssessor } from '../../persona/assessor.js'
+import { createStructuredAssessor } from '../../shared/structured-assessor.js'
 import { MemoryError, assertId, assertOnly, digest, timestamp } from './contracts.js'
+import { retentionBlockReason } from './retention.js'
 
 const DAY = 86_400_000
 const KINDS = ['fact', 'preference', 'episode', 'boundary', 'temporary_state', 'growth_observation']
@@ -10,19 +11,6 @@ const EXCLUDED_CLAIMS = new Set(['prescriptive_request', 'agent_echo', 'dream', 
 const meaningful = new Set(['episode', 'boundary', 'preference', 'growth_observation'])
 const decisions = new WeakSet()
 export const isSelectionDecision = (value) => Boolean(value && typeof value === 'object' && decisions.has(value))
-const secretPatterns = [
-  /-----BEGIN (?:[A-Z ]*PRIVATE KEY|OPENSSH PRIVATE KEY)-----/i,
-  /\b(?:sk|ghp|github_pat|xox[baprs])-[_A-Za-z0-9-]{16,}\b/,
-  /\bAKIA[A-Z0-9]{16}\b/,
-  /\b(?:authorization\s*[:=]\s*)?(?:Bearer|Basic)\s+[A-Za-z0-9+/_=.~-]{12,}/i,
-  /(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|password|passwd|secret|密码|密钥|令牌)\s*(?:[:：=]|是|为|\bis\b)\s*\S{4,}/i,
-  /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/,
-  /https?:\/\/[^\s/@:]+:[^\s/@]+@/i,
-  /https?:\/\/\S*[?&#](?:token|auth|key|secret|password|access_token|api_key)=\S+/i,
-  /(?:身份证|银行卡|信用卡|social security|credit card)[^\n]{0,20}\d[\d -]{8,}[\dXx]/i,
-  /(?:手机号|电话号码|phone number)[^\n]{0,12}(?:\+?\d[\d -]{8,}\d)/i,
-]
-const noRetention = /(?:不要|别|不许|请勿)(?:再|(?:把|将)[^\n]{0,80})?(?:记(?:住|下|录|忆)?|保存|存储|持久化|写入(?:长期)?记忆)|(?:这|此).{0,10}(?:不要记|别记)|\b(?:do not|don't|never)\s+(?:remember|store|save|record|retain|keep)\b|\b(?:off the record|forget this)\b/i
 const prescription = /(?:从现在起|从此|以后).{0,24}(?:你是|你必须|你要|性格|扮演|永远)|(?:扮演|假装你是|改成.{0,8}性格)|(?:忽略|无视|绕过).{0,12}(?:指令|规则|安全|权限|系统)|\b(?:pretend|act as|roleplay|from now on you|your personality must)\b|\b(?:ignore|override|bypass).{0,24}(?:instructions|rules|safety|permissions|system)/i
 const hypothetical = /^(?:假如|假设|设想|假定|引用|有人说|在故事里|小说里|角色设定)|\b(?:hypothetically|suppose that|imagine that|fictional character)\b|^(?:what if|if (?:i|we) (?:were|lived|had been))\b/i
 const fullQuote = /^\s*[“「『‘"][\s\S]+[”」』’"]\s*$/
@@ -159,8 +147,8 @@ export function createMemorySelector({ assess, clock = Date.now, timeoutMs = 15_
     try {
       if (signal?.aborted) return rejected('SELECTION_CANCELLED')
       const event = normalizeSelectionInput(input, { maxContentUtf16 })
-      if (input.non_retention === true || noRetention.test(event.content)) return rejected('NON_RETENTION_BOUNDARY')
-      if (input.sensitive === true || secretPatterns.some((pattern) => pattern.test(event.content))) return rejected('SENSITIVE_CONTENT')
+      const boundary = retentionBlockReason(event.content, { nonRetention: input.non_retention === true, sensitive: input.sensitive === true })
+      if (boundary) return rejected(boundary)
       if (input.allow_assessment === false) return rejected('ASSESSMENT_NOT_ALLOWED')
       if (!['user', 'host'].includes(event.source) || event.source === 'user' && event.claim_kind !== 'user_statement' || event.source === 'host' && event.claim_kind !== 'interaction_observation') return rejected('UNTRUSTED_SOURCE')
       if (EXCLUDED_CLAIMS.has(event.claim_kind) || prescription.test(event.content) || hypothetical.test(event.content) || fullQuote.test(event.content)) return rejected('NON_FACTUAL_OR_PRESCRIPTIVE')
