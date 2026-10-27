@@ -1,4 +1,5 @@
 import { watch as nativeWatch } from 'node:fs'
+import { join } from 'node:path'
 import { MemoryError, digest } from './contracts.js'
 
 const idPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
@@ -60,8 +61,8 @@ export class MemoryExternalWatcher {
     if (this.#started) { if (this.#running) await this.#running; return this.status() }
     this.#started = true
     try {
-      for (const key of ['records', 'quarantine']) {
-        const handle = this.#factory(this.#service.store.paths[key], { recursive: true, persistent: false }, (_event, filename) => this.#event(filename))
+      for (const directory of [this.#service.store.paths.records, join(this.#service.store.paths.cold, 'records'), this.#service.store.paths.quarantine]) {
+        const handle = this.#factory(directory, { recursive: true, persistent: false }, (_event, filename) => this.#event(filename))
         if (typeof handle?.close !== 'function' || typeof handle?.on !== 'function') throw new MemoryError('WATCH_UNAVAILABLE')
         handle.on('error', (error) => { if (this.#disposed) return; this.#state.watchErrorCode = /^[A-Z_]{1,64}$/.test(error?.code ?? '') ? error.code : 'WATCH_ERROR'; this.#poll('WATCH_RUNTIME_UNAVAILABLE') })
         this.#handles.push(handle)

@@ -9,6 +9,7 @@ import { MemoryAdministration } from './administration.js'
 import { exportPersonaState, personaIdentityProjection, validatePortablePersonaState } from './persona-ledger.js'
 import { exportPurgeState } from './purge-ledger.js'
 import { listRecordHeads } from './record-integrity.js'
+import { loadMaintenanceState } from './lifecycle-ledger.js'
 import { loadSelfHead, readSelfFiles, validateSelfFiles, validateSelfHead, verifySelfFiles } from './self-integrity.js'
 import { isGrowthSelfPath } from './self-transfer.js'
 
@@ -21,17 +22,18 @@ function walk(root,prefix,files){const path=join(root,prefix);safe(path);if(!exi
 function observe(source,space){
  if(existsSync(join(source,'spaces',space,'journal'))&&readdirSync(join(source,'spaces',space,'journal')).length)fail('SOURCE_RECOVERY_REQUIRED')
  const inputs=[]
- for(const path of ['manifest.json','.administration/persona-ledger.json','.administration/purge-ledger.json','.administration/source-protection.json'])if(existsSync(join(source,path)))inputs.push([path,digest(read(join(source,path)))])
+ for(const path of ['manifest.json','.administration/persona-ledger.json','.administration/purge-ledger.json','.administration/source-protection.json',`.administration/lifecycle/${space}.json`])if(existsSync(join(source,path)))inputs.push([path,digest(read(join(source,path)))])
  for(const prefix of [`.administration/record-heads/${space}`,`.administration/self-heads/${space}`,`spaces/${space}`]){const files=[];walk(source,prefix,files);for(const file of files)if(!file.path.includes('/index/')&&!file.path.includes('/operations/')&&!file.path.includes('/journal/'))inputs.push([file.path,file.sha256])}
  return digest(inputs.sort(([a],[b])=>a.localeCompare(b)))
 }
 async function prepare(store,source,operationId){
  if(readdirSync(source).some(name=>!['manifest.json','spaces','.administration','exports','backups'].includes(name)&&!/^(?:\.writer(?:-recovery)?\.lock|\.(?:lock-candidate|retired-lock)-[a-f0-9-]{36})$/.test(name)))fail('UNSUPPORTED_SELF_UPGRADE_SOURCE')
  const root=JSON.parse(read(join(source,'manifest.json'))),spaceId=store.memorySpaceId,base=join(source,'spaces',spaceId)
- if(root.format_version!==2||!['1.1.0',API_VERSION].includes(root.api_version)||!root.spaces?.includes(spaceId))fail('UNSUPPORTED_SELF_UPGRADE_SOURCE')
+ if(root.format_version!==2||!['1.1.0','1.2.0',API_VERSION].includes(root.api_version)||!root.spaces?.includes(spaceId))fail('UNSUPPORTED_SELF_UPGRADE_SOURCE')
  if(existsSync(join(base,'journal'))&&readdirSync(join(base,'journal')).length)fail('SOURCE_RECOVERY_REQUIRED')
  const manifest=JSON.parse(read(join(base,'manifest.json')))
  if(manifest.format_version!==2||manifest.memory_space_id!==spaceId)fail('UNSUPPORTED_SELF_UPGRADE_SOURCE')
+ loadMaintenanceState(source,spaceId)
  const before=observe(source,spaceId),personaState=exportPersonaState(source,spaceId);await validatePortablePersonaState(personaState,spaceId)
  const all=[];for(const prefix of ROOTS)walk(base,prefix,all)
  const files=[],heads=[],legacy=[];let upgrades=0
@@ -39,6 +41,7 @@ async function prepare(store,source,operationId){
  for(const anchor of personaState.anchors){
   const id=anchor.agent_identity_id,old=loadSelfHead(source,spaceId,id),growth=readSelfFiles(source,spaceId,id)
   if(old){verifySelfFiles(old,growth,anchor);heads.push(old)}else{
+   if(root.api_version!=='1.1.0')fail('SELF_UPGRADE_SOURCE_ANCHOR_REQUIRED')
    upgrades++;validateSelfFiles(growth,anchor)
    heads.push(validateSelfHead({schema_version:1,memory_space_id:spaceId,binding_id:anchor.binding_id,persona_id:anchor.persona_id,agent_identity_id:id,subject_id:anchor.subject_id,core_version:anchor.core_version,generation:1,parent_hash:null,operation_id:operationId,files:[],files_hash:digest([])}))
    for(const[path,data]of growth){const moved=`cold/legacy-self/${id}/${path}`;legacy.push(moved);files.push({path:moved,data,size:data.length,sha256:digest(data)})}
@@ -74,12 +77,13 @@ export async function upgradeLegacySelf(store,args,context){
   if(args.dry_run!==undefined&&typeof args.dry_run!=='boolean')fail('INVALID_DRY_RUN')
   release=await acquireRootLock(source);store._authorize(context,'memory.manage')
   const prepared=await prepare(store,source,operationId)
+  const lifecycleSchedule=loadMaintenanceState(store.root,store.memorySpaceId)?'preserved_destination':'reinitialized_for_destination'
   store._authorize(context,'memory.manage')
-  if(args.dry_run!==false)return{api_version:API_VERSION,status:'preview',source_snapshot:prepared.snapshot,identity_ids:prepared.identityIds,legacy_self_files:prepared.legacy,file_count:prepared.archive.files.length,writes:false,source_quiescence:'owner_declared',legacy_policy:'preserved_opaque_not_loaded'}
+  if(args.dry_run!==false)return{api_version:API_VERSION,status:'preview',source_snapshot:prepared.snapshot,identity_ids:prepared.identityIds,legacy_self_files:prepared.legacy,file_count:prepared.archive.files.length,writes:false,lifecycle_schedule:lifecycleSchedule,source_quiescence:'owner_declared',legacy_policy:'preserved_opaque_not_loaded'}
   if(args.expected_snapshot!==prepared.snapshot)fail('SELF_UPGRADE_SNAPSHOT_CONFLICT')
   const finalCheck=()=>{store._authorize(context,'memory.manage');if(observe(source,store.memorySpaceId)!==prepared.snapshot)fail('SELF_UPGRADE_SOURCE_CHANGED')}
   const administration=new MemoryAdministration({store}),transfer=new MemoryTransfer({store,importGuard:input=>{finalCheck();return administration.assertImportAllowed(input)},finalImportAuthorize:finalCheck,sourceProtectionBuilder:()=>prepareSourceProtection(store.root,source,prepared.snapshot,operationId,prepared.localSources)})
   const imported=await transfer.importSpace({operation_id:operationId,archive:prepared.archive,identity_mode:'preserve',accept_persona_state:true,accept_purge_state:true,accept_integrity_state:true,accept_self_integrity:true},context)
-  return{...imported,source_snapshot:prepared.snapshot,legacy_self_files:prepared.legacy,legacy_policy:'preserved_opaque_not_loaded'}
+  return{...imported,source_snapshot:prepared.snapshot,lifecycle_schedule:lifecycleSchedule,legacy_self_files:prepared.legacy,legacy_policy:'preserved_opaque_not_loaded'}
  }catch(error){return failure(error,operationId)}finally{release?.()}
 }

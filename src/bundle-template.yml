@@ -40,6 +40,8 @@
               maintenanceDays: 7
               maintenanceWrites: 40
               autoDream: true
+              autoMemoryMaintenance: false
+              automaticCold: false
               checkIntervalMs: 900000
               idleMs: 300000
           # Optional, one-way body bridge; a no-op when no companion answers.
@@ -127,6 +129,8 @@
               maintenanceDays: 7
               maintenanceWrites: 40
               autoDream: true
+              autoMemoryMaintenance: false
+              automaticCold: false
               checkIntervalMs: 900000
               idleMs: 300000
           - id: whale-soul-body

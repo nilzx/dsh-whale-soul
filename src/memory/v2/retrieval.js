@@ -2,6 +2,8 @@ import { existsSync, lstatSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { MemoryError, assertId, assertOnly, digest, failure, timestamp } from './contracts.js'
 
+import { loadRecordHead, recordBundlePath } from './record-integrity.js'
+
 const LAYERS = ['meta.json', 'gist.md', 'detail.md', 'evidence.jsonl', 'integrity.json']
 function freeze(value) {
   if (value && typeof value === 'object') { Object.values(value).forEach(freeze); Object.freeze(value) }
@@ -28,8 +30,9 @@ function terms(value) {
   return [...new Set([...synonyms, ...found])].slice(0, 128).map((term) => /^[a-z0-9_]+$/i.test(term)
     ? new RegExp(`(^|[^a-z0-9])${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=$|[^a-z0-9])`, 'i') : term)
 }
-const activeAt = (meta, at) => meta.status === 'active' && (!meta.valid_from || Date.parse(meta.valid_from) <= at) &&
-  (!meta.valid_to || at < Date.parse(meta.valid_to)) && (!meta.expires_at || at < Date.parse(meta.expires_at))
+const activeAt = (meta, at, includeCold = false) => (meta.status === 'active' || includeCold && meta.lifecycle?.tier === 'cold') && (!meta.valid_from || Date.parse(meta.valid_from) <= at) &&
+  (!meta.valid_to || at < Date.parse(meta.valid_to)) && (!meta.expires_at || at < Date.parse(meta.expires_at)) &&
+  (!meta.agreement || meta.agreement.state === 'open' && (!meta.agreement.due_at || at < Date.parse(meta.agreement.due_at)))
 function score(record, queryTerms) {
   const fields = [[record.meta.title, 3], [(record.meta.tags ?? []).join(' '), 4], [record.meta.canonical_key ?? '', 2], [record.gist, 1]]
   let total = 0
@@ -57,13 +60,15 @@ function fileHash(path, optional = false) {
     throw error
   }
 }
-function treeStamp(store, history = false) {
-  const recordsStat = lstatSync(store.paths.records)
+function locationStamp(store, folder, history) {
+  const root = store.engine.resolvePath(folder)
+  if (!existsSync(root)) return 'absent'
+  const recordsStat = lstatSync(root)
   if (!recordsStat.isDirectory() || recordsStat.isSymbolicLink()) throw new MemoryError('UNSAFE_STORAGE_PATH')
-  const rows = readdirSync(store.paths.records, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))
+  const rows = readdirSync(root, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))
   return digest(rows.map((row) => {
     if (!row.isDirectory() || row.isSymbolicLink()) return [row.name, 'not-directory']
-    const directory = join(store.paths.records, row.name)
+    const directory = join(root, row.name)
     const inspect = (base, name) => {
       try {
         const stat = lstatSync(join(base, name), { bigint: true })
@@ -80,6 +85,9 @@ function treeStamp(store, history = false) {
       revision.isDirectory() && !revision.isSymbolicLink() ? [revision.name, LAYERS.map((name) => inspect(join(revisions, revision.name), name))] : [revision.name, 'not-directory']) : []
     return [row.name, files, previous]
   }))
+}
+function treeStamp(store, history = false) {
+  return digest(['records', 'cold/records'].map((folder) => [folder, locationStamp(store, folder, history)]))
 }
 function checkSignal(signal) {
   if (signal !== undefined && (!signal || typeof signal.aborted !== 'boolean')) throw new MemoryError('INVALID_SIGNAL')
@@ -112,8 +120,9 @@ export async function retrieveMemory(store, args = {}, context, hostOptions = {}
     if (evidenceAllowed !== undefined && typeof evidenceAllowed !== 'function') throw new MemoryError('EVIDENCE_FILTER_REQUIRED_FUNCTION')
     if (recordAllowed !== undefined && typeof recordAllowed !== 'function') throw new MemoryError('RECORD_FILTER_REQUIRED_FUNCTION')
     store._authorize(context, 'memory.read')
-    assertOnly(args, ['query', 'at', 'limit', 'depth', 'subject_id', 'signal'])
+    assertOnly(args, ['query', 'at', 'limit', 'depth', 'subject_id', 'signal', 'include_cold'])
     checkSignal(args.signal)
+    if (args.include_cold !== undefined && typeof args.include_cold !== 'boolean') throw new MemoryError('INVALID_COLD_OPTION')
     if (args.query !== undefined && (typeof args.query !== 'string' || args.query.length > 2000 || !args.query.isWellFormed())) throw new MemoryError('INVALID_QUERY')
     const query = String(args.query ?? '').trim()
     if (!query) store._authorize(context, 'memory.list')
@@ -136,17 +145,17 @@ export async function retrieveMemory(store, args = {}, context, hostOptions = {}
       const queryTerms = terms(query), matches = [], warnings = [], temporalTransitions = []
       // Read each current record once. Integrity checking is owned by the store;
       // historical revisions are read only for an explicit historical query.
-      for (const row of readdirSync(store.paths.records, { withFileTypes: true })) {
-        if (!row.isDirectory() || row.isSymbolicLink()) continue
+      for (const id of store._recordIds()) {
         try {
-          const current = store._readRecord(assertId(row.name))
+          const current = store._readRecord(assertId(id))
           if (!visible(store, current.meta, context, args.subject_id)) continue
-          if (!historical && current.meta.status === 'active') for (const value of [current.meta.valid_from, current.meta.valid_to, current.meta.expires_at]) {
+          if (!historical && (current.meta.status === 'active' || args.include_cold && current.meta.lifecycle?.tier === 'cold')) for (const value of [current.meta.valid_from, current.meta.valid_to, current.meta.expires_at, current.meta.agreement?.due_at]) {
             if (value && Date.parse(value) > at) temporalTransitions.push(Date.parse(value))
           }
           let record = current
           if (args.at !== undefined) {
-            const revisions = store.engine.resolvePath(`records/${current.meta.record_id}/revisions`)
+            const head = loadRecordHead(store.root, store.memorySpaceId, current.meta.record_id)
+            const revisions = store.engine.resolvePath(`${recordBundlePath(head)}/revisions`)
             const versions = []
             if (existsSync(revisions)) for (const revision of readdirSync(revisions, { withFileTypes: true })) {
               if (!revision.isDirectory() || revision.isSymbolicLink()) continue
@@ -157,7 +166,7 @@ export async function retrieveMemory(store, args = {}, context, hostOptions = {}
           }
           // Choose the latest known revision first. An expired new revision must
           // never cause an older, open-ended revision to become current again.
-          if (!record || !activeAt(record.meta, at)) continue
+          if (!record || !activeAt(record.meta, at, args.include_cold === true)) continue
           const relevance = query ? score(record, queryTerms) : 1
           if (relevance > 0) {
             const candidate = { record, relevance }
@@ -178,7 +187,9 @@ export async function retrieveMemory(store, args = {}, context, hostOptions = {}
       observe(store.engine.resolvePath('manifest.json'))
       observe(join(store.root, '.administration', 'purge-ledger.json'), true)
       const items = freeze(selected.map(({ record, relevance }) => {
-        const base = `records/${record.meta.record_id}${args.at === undefined ? '' : `/revisions/${record.meta.revision_id}`}`
+        const head = loadRecordHead(store.root, store.memorySpaceId, record.meta.record_id)
+        const base = recordBundlePath(head, args.at === undefined ? null : record.meta.revision_id)
+        observe(join(store.root, '.administration', 'record-heads', store.memorySpaceId, `${record.meta.record_id}.json`))
         for (const file of LAYERS) observe(store.engine.resolvePath(`${base}/${file}`))
         return { meta: structuredClone(record.meta), relevance,
           ...(depth !== 'index' ? { gist: record.gist } : {}),
@@ -214,7 +225,7 @@ export async function retrieveMemory(store, args = {}, context, hostOptions = {}
 /** A data-only JSON-lines view. Every complete entry and the wrapper count. */
 export async function buildMemoryContext(store, args = {}, context, hostOptions = {}) {
   try {
-    assertOnly(args, ['query', 'at', 'limit', 'subject_id', 'maxChars', 'signal'])
+    assertOnly(args, ['query', 'at', 'limit', 'subject_id', 'maxChars', 'signal', 'include_cold'])
     const { query = '', maxChars = 2400, ...queryArgs } = args
     if (!Number.isSafeInteger(maxChars) || maxChars < 0) throw new MemoryError('INVALID_CONTEXT_BUDGET')
     const result = await retrieveMemory(store, { query, limit: 10, ...queryArgs, depth: query ? 'gist' : 'index' }, context, hostOptions)
@@ -228,7 +239,7 @@ export async function buildMemoryContext(store, args = {}, context, hostOptions 
         ...(item.gist === undefined ? {} : { gist: item.gist }), claim: item.meta.claim_kind,
         ...(item.meta.claim_kind === 'quotation' && item.meta.external_revision?.protected === true ? { source: 'owner_reviewed_quotation' } : {}),
         from: item.meta.valid_from, until: item.meta.valid_to ?? item.meta.expires_at,
-        actor: item.meta.agent_identity_id, persona: item.meta.persona_id, evidence: item.meta.provenance_refs })
+        actor: item.meta.agent_identity_id, persona: item.meta.persona_id, ...(item.meta.agreement ? { agreement: { state: item.meta.agreement.state, due_at: item.meta.agreement.due_at, participants: item.meta.agreement.participants } } : {}), evidence: item.meta.provenance_refs })
         .replaceAll('&', '\\u0026').replaceAll('<', '\\u003c').replaceAll('>', '\\u003e') + '\n'
       if (prefix.length + body.length + line.length + suffix.length > budget) continue
       body += line; ids.push(item.meta.record_id)

@@ -1,3 +1,4 @@
+import { registerMemoryStoreWriter } from './maintenance-writers.js'
 import { repairSourceProtectionMarker } from './source-protection.js'
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs'
@@ -5,9 +6,10 @@ import { join, resolve } from 'node:path'
 import { API_VERSION, CAPABILITIES, CLAIM_KINDS, FORMAT_VERSION, MEMORY_TYPES, MemoryError, RECORD_SCHEMA_VERSION, assertId, assertOnly, digest, failure, stableStringify, text, timestamp, validateRecord } from './contracts.js'
 import { TransactionEngine, atomicWrite, readJson } from './transactions.js'
 import { getPurgeState, reconcilePurgeState } from './purge-ledger.js'
+import { reconcileMaintenanceState } from './lifecycle-ledger.js'
 import { normalizeMemorySlotKey } from './slot-policy.js'
 import { inspectMemoryRoot } from './root-format.js'
-import { loadRecordHead, verifyRecordBundle } from './record-integrity.js'
+import { listRecordHeads, loadRecordHead, locateRecordBundle, recordBundlePath, verifyRecordBundle } from './record-integrity.js'
 
 const DATA_FILES = ['meta.json', 'gist.md', 'detail.md', 'evidence.jsonl']
 const PROPOSAL_FIELDS = ['operation_id', 'subject_id', 'content', 'gist', 'title', 'type', 'tags', 'canonical_key', 'provenance_refs', 'claim_kind', 'confidence', 'visibility', 'valid_from', 'valid_to', 'expires_at', 'retention', 'pinned']
@@ -36,6 +38,7 @@ export class MemoryStoreV2 {
     this.contexts = new WeakSet()
     this.engine = new TransactionEngine({ root: this.spaceRoot, lockRoot: this.root, memorySpaceId: this.memorySpaceId, faultInjector, lockWaitMs, generationProvider, recoveryGuard })
     this.initialized = false
+    registerMemoryStoreWriter(this)
   }
 
   async initialize() {
@@ -46,7 +49,7 @@ export class MemoryStoreV2 {
       const { rootManifest, spaceManifest: manifest } = inspectMemoryRoot(this.root, this.memorySpaceId)
       const rootManifestPath = join(this.root, 'manifest.json')
       this.engine.resolvePath('manifest.json')
-      for (const path of Object.values(this.paths)) mkdirSync(path, { recursive: true, mode: 0o700 })
+      for (const path of [...Object.values(this.paths), this.engine.resolvePath('cold/records')]) mkdirSync(path, { recursive: true, mode: 0o700 })
       const manifestPath = join(this.spaceRoot, 'manifest.json')
       const now = new Date().toISOString()
       if (!manifest) atomicWrite(manifestPath, json({ format_version: FORMAT_VERSION, memory_space_id: this.memorySpaceId, revision_watermark: 0, purge_generation: 0, created_at: now, identities: {}, migrations: [] }))
@@ -55,6 +58,7 @@ export class MemoryStoreV2 {
       this.engine._recover()
       repairSourceProtectionMarker(this.root, atomicWrite)
       reconcilePurgeState(this.root, this.spaceRoot, atomicWrite)
+      reconcileMaintenanceState(this.root, this.spaceRoot, atomicWrite)
       this._rebuildIndex()
     })
     this.initialized = true
@@ -107,19 +111,29 @@ export class MemoryStoreV2 {
     const head = loadRecordHead(this.root, this.memorySpaceId, id)
     if (!head) throw new MemoryError('INTEGRITY_BASELINE_REQUIRED')
     if (!revisionId && head.state !== 'clean') throw new MemoryError(head.state === 'purged' ? 'RECORD_PURGED' : 'RECORD_QUARANTINED')
-    const base = `records/${assertId(id, 'record_id')}${revisionId ? `/revisions/${assertId(revisionId, 'revision_id')}` : ''}`
-    const dir = this.engine.resolvePath(base)
+    const { directory: dir } = locateRecordBundle(this, head, revisionId)
+    const alternate = `${head.bundle_location === 'cold' ? 'records' : 'cold/records'}/${assertId(id, 'record_id')}`
+    if ([...DATA_FILES, 'integrity.json', 'revisions'].some((name) => existsSync(this.engine.resolvePath(`${alternate}/${name}`)))) throw new MemoryError('AMBIGUOUS_RECORD_LOCATION')
     const files = Object.fromEntries([...DATA_FILES, 'integrity.json'].map((file) => [file, readFileSync(join(dir, file))]))
     try { return verifyRecordBundle(head, files, revisionId ?? head.head_revision_id) }
     catch (error) { if (error.code === 'RECORD_HASH_MISMATCH') throw new MemoryError('EXTERNAL_CHANGE'); throw error }
   }
 
+  _recordIds() {
+    const ids = new Set(listRecordHeads(this.root, this.memorySpaceId).map((head) => head.record_id))
+    for (const folder of ['records', 'cold/records']) {
+      const path = this.engine.resolvePath(folder)
+      if (!existsSync(path)) continue
+      for (const entry of readdirSync(path, { withFileTypes: true })) if (entry.isDirectory() || entry.isSymbolicLink()) ids.add(entry.name)
+    }
+    return [...ids].sort()
+  }
+
   _records() {
     const records = []
     const warnings = []
-    for (const dir of readdirSync(this.paths.records, { withFileTypes: true })) {
-      if (!dir.isDirectory()) continue
-      try { records.push(this._readRecord(assertId(dir.name)).meta) } catch (error) { warnings.push({ record_id: dir.name, reason_code: error.code ?? 'INVALID_RECORD' }) }
+    for (const id of this._recordIds()) {
+      try { records.push(this._readRecord(assertId(id)).meta) } catch (error) { warnings.push({ record_id: id, reason_code: error.code ?? 'INVALID_RECORD' }) }
     }
     return { records, warnings }
   }
@@ -134,13 +148,20 @@ export class MemoryStoreV2 {
     return { count: records.length, warnings }
   }
 
-  _recordChanges(record) {
+  _recordFiles(record) {
     const files = {
       'meta.json': json(record.meta), 'gist.md': record.gist, 'detail.md': record.detail,
       'evidence.jsonl': record.evidence.map((item) => JSON.stringify(item)).join('\n') + '\n',
     }
     files['integrity.json'] = json({ revision_id: record.meta.revision_id, files: Object.fromEntries(DATA_FILES.map((file) => [file, digest(files[file])])) })
-    const bases = [`records/${record.meta.record_id}`, `records/${record.meta.record_id}/revisions/${record.meta.revision_id}`]
+    return files
+  }
+
+  _recordChanges(record) {
+    const files = this._recordFiles(record)
+    const head = loadRecordHead(this.root, this.memorySpaceId, record.meta.record_id)
+    const base = head ? recordBundlePath(head) : `records/${record.meta.record_id}`
+    const bases = [base, `${base}/revisions/${record.meta.revision_id}`]
     return bases.flatMap((base) => Object.entries(files).map(([file, data]) => ({ path: `${base}/${file}`, data })))
   }
 
@@ -221,6 +242,7 @@ export class MemoryStoreV2 {
       revision_history: old ? [...(old.revision_history ?? []), { revision_id: old.revision_id, revision: old.revision, superseded_at: now, reason: args.reason }] : [],
       layers: { gist: true, detail: true, raw: true },
     }
+    if (old?.lifecycle) meta.lifecycle = clone(old.lifecycle)
     if (!Number.isFinite(meta.confidence) || meta.confidence < 0 || meta.confidence > 1) throw new MemoryError('INVALID_CONFIDENCE')
     validateRecord(meta)
     return { meta, gist, detail: content, evidence }
@@ -288,6 +310,8 @@ export class MemoryStoreV2 {
         const previous = this._readRecord(args.record_id)
         if (!this._visible(previous.meta, context) || (previous.meta.agent_identity_id !== context.agent_identity_id && !context.capabilities.includes('memory.manage'))) throw new MemoryError('RECORD_DENIED')
         if ((previous.meta.external_revision?.protected === true || previous.meta.legacy?.user_edited === true) && !context.capabilities.includes('memory.manage')) throw new MemoryError('PROTECTED_REVISION')
+        if (previous.meta.agreement !== undefined) throw new MemoryError('AGREEMENT_MANAGEMENT_REQUIRED')
+        if (previous.meta.lifecycle?.tier === 'cold') throw new MemoryError('LIFECYCLE_MANAGEMENT_REQUIRED')
         if (previous.meta.revision !== args.expected_revision) throw new MemoryError('REVISION_CONFLICT')
         const record = await this._proposal(args, context, previous)
         this._authorize(context, 'memory.write')
@@ -299,7 +323,7 @@ export class MemoryStoreV2 {
   async queryMemory(args, context) {
     try {
       this._authorize(context, 'memory.read')
-      assertOnly(args, ['record_id', 'query', 'subject_id', 'depth', 'at', 'include_inactive', 'limit'])
+      assertOnly(args, ['record_id', 'query', 'subject_id', 'depth', 'at', 'include_inactive', 'include_cold', 'limit'])
       if (args.query !== undefined && typeof args.query !== 'string') throw new MemoryError('INVALID_QUERY')
       if (args.subject_id !== undefined) assertId(args.subject_id, 'subject_id')
       if (!args.record_id && !String(args.query ?? '').trim()) this._authorize(context, 'memory.list')
@@ -307,6 +331,7 @@ export class MemoryStoreV2 {
       const depth = args.depth ?? 'gist'
       if (!['index', 'gist', 'detail', 'raw'].includes(depth)) throw new MemoryError('INVALID_DEPTH')
       if (depth === 'raw') this._authorize(context, 'memory.raw')
+      if (args.include_cold !== undefined && typeof args.include_cold !== 'boolean') throw new MemoryError('INVALID_COLD_OPTION')
       if (args.include_inactive) this._authorize(context, 'memory.manage')
       const at = args.at === undefined ? Date.now() : Date.parse(timestamp(args.at, 'query time', false))
       const query = String(args.query ?? '').trim().toLowerCase()
@@ -318,18 +343,18 @@ export class MemoryStoreV2 {
         // Keep integrity validation request-local and complete, including raw
         // evidence for index/gist queries. Reuse each validated view instead of
         // reopening the same five files during filtering and result projection.
-        for (const dir of readdirSync(this.paths.records, { withFileTypes: true })) {
-          if (!dir.isDirectory()) continue
+        for (const id of this._recordIds()) {
           let record
-          try { record = this._readRecord(assertId(dir.name)) } catch (error) {
-            warnings.push({ record_id: dir.name, reason_code: error.code ?? 'INVALID_RECORD' })
+          try { record = this._readRecord(assertId(id)) } catch (error) {
+            warnings.push({ record_id: id, reason_code: error.code ?? 'INVALID_RECORD' })
             continue
           }
           const { meta } = record
           if (!this._visible(meta, context)) continue
           if (args.record_id && meta.record_id !== args.record_id) continue
           if (args.subject_id && meta.subject_id !== args.subject_id) continue
-          if (!args.include_inactive && meta.status !== 'active') continue
+          if (!args.include_inactive && meta.status !== 'active' && !(args.include_cold && meta.lifecycle?.tier === 'cold')) continue
+          if (!args.include_inactive && meta.agreement && (meta.agreement.state !== 'open' || meta.agreement.due_at && at >= Date.parse(meta.agreement.due_at))) continue
           if ((meta.valid_from && Date.parse(meta.valid_from) > at) || (meta.valid_to && Date.parse(meta.valid_to) <= at) || (meta.expires_at && Date.parse(meta.expires_at) <= at)) continue
           if (query && !`${meta.title}\n${record.gist}\n${meta.tags.join(' ')}`.toLowerCase().includes(query)) continue
           if (matches.length < limit) matches.push(record)

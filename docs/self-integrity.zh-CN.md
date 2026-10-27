@@ -1,6 +1,6 @@
 # 人格自身数据完整性与所有者升级
 
-当前存储API为**1.2.0**。事实和经历由根级record head核验；每个独立个体的self manifest、候选、稳定特征及历史由单独的self head核验。原始证据和成熟度仍以独立persona ledger为权威。手动改写的一组自洽文件不能自行取得人格权威。
+当前存储API为**1.3.0**。事实和经历由根级record head核验；每个独立个体的self manifest、候选、稳定特征及历史由单独的self head核验。原始证据和成熟度仍以独立persona ledger为权威。手动改写的一组自洽文件不能自行取得人格权威。
 
 正常写入先核验旧的完整self bundle，再在同一持久事务中提交下一版head。损坏或未锚定的self不能进入上下文。`PersonaSelfAdministration.restoreSelf`只恢复与已有可信head逐字节匹配的原件，不能任意指定人格值。
 

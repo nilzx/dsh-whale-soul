@@ -16,6 +16,7 @@ import { MEMORY_REVISION_REASON as REASON, verifyMemoryReceipt } from './memory-
 import { getPurgeState } from '../memory/v2/purge-ledger.js'
 import { personaBinding, normalizeIndividualKey } from '../memory/v2/persona-ledger.js'
 import { SessionIdentityFence, createSessionBoundary, observeSessionIdentityBoundary } from './session-fence.js'
+import { isMemoryMaintenanceHost } from './memory-maintenance-host.js'
 import { canonicalProtectionPath } from './protection.js'
 import { createInjectedSurfaceController, INJECTED_CONTEXT_NAMES } from './injected-surface.js'
 import { verifySelfIntegrity } from '../memory/v2/self-integrity.js'
@@ -71,6 +72,14 @@ export class PersonaRuntime {
       if (current !== true) throw new MemoryError('MEMORY_PROVIDER_CHANGED')
     }
   }
+  #memoryActivity(reason) { try { this.#options.getMemoryMaintenanceHost?.()?.notify(reason) } catch {} }
+  memoryMaintenanceState() { this.#assertLive(); return { pending_work: this.#pending.size, reflection_running: !!this.#maintenance } }
+  async maintainMemory(agent, options = {}) {
+    await this.attachAgent(agent)
+    const host = this.#options.getMemoryMaintenanceHost?.()
+    if (!isMemoryMaintenanceHost(host)) return { status: 'unavailable', reason_code: 'MEMORY_MAINTENANCE_HOST_UNAVAILABLE' }
+    return host.run(agent, options)
+  }
   #dream(phase, payload) {
     if (this.#disposed) return
     try { this.#options.onDream?.(phase, payload) } catch {}
@@ -82,7 +91,7 @@ export class PersonaRuntime {
     return this.state.resolveMemoryEvidence(id) !== null || this.#options.additionalEvidenceAllowed?.(id, _context, meta) === true
   }
   async #readFilters(state, args, context, signal) {
-    const query = Object.fromEntries(['query', 'at', 'subject_id', 'limit'].filter((key) => args[key] !== undefined).map((key) => [key, args[key]]))
+    const query = Object.fromEntries(['query', 'at', 'subject_id', 'limit', 'include_cold'].filter((key) => args[key] !== undefined).map((key) => [key, args[key]]))
     const lease = await this.#externalReads.prepare(query, context, { signal, authorize: () => {
       this.#assertLive(); check(state.controller.signal); state.fence.checkSync(); return true
     } })
@@ -303,12 +312,13 @@ export class PersonaRuntime {
     const result = state.queue.then(() => { this.#assertLive(); check(signal); state.fence.checkSync(); return this.#sessionBoundary.run(state.fence, () => this.#operation.run(signal, operation)) })
     state.queue = result.catch((error) => { state.lastError = code(error) })
     const queued = state.queue
-    this.#pending.add(queued)
-    queued.then(() => this.#pending.delete(queued))
+    this.#pending.add(queued); this.#memoryActivity('runtime-queued')
+    queued.then(() => { this.#pending.delete(queued); this.#memoryActivity('runtime-settled') })
     return result
   }
 
   async stageInbox(agent, event) {
+    this.#memoryActivity('runtime-inbox')
     const state = await this.attachAgent(agent)
     if (event?.type !== 'agent/inbox/spliced' || !Number.isSafeInteger(event.seq) || !Number.isFinite(event.time)) return
     for (const message of event.data?.inserted ?? []) {
@@ -344,6 +354,7 @@ export class PersonaRuntime {
     }
   }
   capture(agent, event, options = {}) {
+    this.#memoryActivity('runtime-capture')
     const task = this.#capture(agent, event, options)
     let active = this.#captures.get(agent)
     if (!active) this.#captures.set(agent, active = new Set())
@@ -588,7 +599,7 @@ export class PersonaRuntime {
   setStatus(agent, status) {
     const state = this.#agents.get(agent)
     if (!state) return
-    state.status = status; clearTimeout(state.timer)
+    state.status = status; this.#memoryActivity('runtime-status'); clearTimeout(state.timer)
     if (status !== 'idle') { state.job?.controller.abort(); return }
     if (this.#options.autoDream === false) return
     const idle = bounded(this.#options.idleMs, 300000, 86400000)
@@ -607,7 +618,7 @@ export class PersonaRuntime {
     const controller = new AbortController()
     let finish
     const job = { controller, verdicts: new Map(), cacheOnly: false, done: new Promise((resolve) => { finish = resolve }) }
-    state.job = job; this.#maintenance = job
+    state.job = job; this.#maintenance = job; this.#memoryActivity('runtime-reflection')
     const deadline = setTimeout(() => controller.abort(), bounded(this.#options.maintenanceTimeoutMs, 60000, 120000))
     const ctx = this.#context(state.sessionId), id = `maintenance-${digest({ session: state.sessionId, time: Date.now(), generation: this.state.stabilityPolicy.snapshot().generation }).slice(0, 40)}`
     this.#dream('start', { trigger: 'reflection' })
@@ -654,7 +665,7 @@ export class PersonaRuntime {
       return { status: 'completed', maintenance_id: id, results }
     })) } catch (error) { return { status: controller.signal.aborted ? 'cancelled' : 'failed', reason_code: code(error) } }
     finally {
-      clearTimeout(deadline); state.job = null; this.#maintenance = null
+      clearTimeout(deadline); state.job = null; this.#maintenance = null; this.#memoryActivity('runtime-reflection-settled')
       finish()
       this.#dream('end', { trigger: 'reflection' })
     }
@@ -673,8 +684,10 @@ export class PersonaRuntime {
   dispose() {
     if (this.#disposing) return this.#disposing
     this.#disposed = true; this.#lifetime.abort()
+    const memoryHost = this.#options.getMemoryMaintenanceHost?.()
+    const memoryHostDisposed = isMemoryMaintenanceHost(memoryHost) ? memoryHost.dispose() : Promise.resolve()
     const detached = [...this.#sessions.values()].map(({ agent }) => this.detachAgent(agent))
-    this.#disposing = Promise.allSettled([this.#ready, this.#factQueue, ...detached, ...this.#pending]).then(() => undefined)
+    this.#disposing = Promise.allSettled([this.#ready, this.#factQueue, memoryHostDisposed, ...detached, ...this.#pending]).then(() => undefined)
     return this.#disposing
   }
 }

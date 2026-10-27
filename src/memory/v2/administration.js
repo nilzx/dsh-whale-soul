@@ -8,7 +8,7 @@ import { getPurgeState, pathIsPurged, preparePurgeImport, referencesPurged } fro
 import { validateTransferArchive } from './transfer.js'
 import { loadPersonaLedger, validatePersonaAnchor } from './persona-ledger.js'
 import { validateBoundItemPayload } from './batch-bindings.js'
-import { loadRecordHead } from './record-integrity.js'
+import { loadRecordHead, recordBundlePath } from './record-integrity.js'
 
 const json = (value) => `${JSON.stringify(value, null, 2)}\n`
 
@@ -153,7 +153,7 @@ export class MemoryAdministration {
           record_ids: recordIds, evidence_ids: evidenceIds, related_evidence_ids: relatedEvidence, asset_files: assetFiles }
         descriptor.clear_legacy_narratives = args.include_legacy_narratives === true
         const changes = [
-          ...recordIds.flatMap((id) => ['records', 'cold', 'external-changes'].map((prefix) => ({ path: `${prefix}/${id}`, data: null }))),
+          ...recordIds.flatMap((id) => ['records', 'cold', 'cold/records', 'cold/transitions', 'external-changes'].map((prefix) => ({ path: `${prefix}/${id}`, data: null }))),
           ...evidenceIds.map((id) => ({ path: `evidence/${id}.json`, data: null })),
           ...assetFiles.map((file) => ({ path: `assets/${file}`, data: null })),
           ...derivedPaths.map((path) => ({ path, data: null })),
@@ -209,6 +209,7 @@ export class MemoryAdministration {
         if (payload) validateBoundItemPayload(anchor, item, payload)
         else if (!anchor.revoked_ids.includes(evidenceId)) throw new MemoryError('PERSONA_EVIDENCE_REPAIR_REQUIRED')
         files(this.store.paths.records)
+        files(join(this.store.paths.cold, 'records'))
         const scan = this.store._records()
         if (scan.warnings.length) throw new MemoryError('MEMORY_REPAIR_REQUIRED')
         const check = (record) => {
@@ -216,7 +217,7 @@ export class MemoryAdministration {
         }
         for (const meta of scan.records) {
           check(this.store._readRecord(meta.record_id))
-          const history = this.store.engine.resolvePath(`records/${meta.record_id}/revisions`)
+          const history = this.store.engine.resolvePath(`${recordBundlePath(loadRecordHead(this.store.root, this.store.memorySpaceId, meta.record_id))}/revisions`)
           for (const entry of readdirSync(history, { withFileTypes: true })) {
             if (!entry.isDirectory() || entry.isSymbolicLink()) throw new MemoryError('MEMORY_REPAIR_REQUIRED')
             check(this.store._readRecord(meta.record_id, entry.name))

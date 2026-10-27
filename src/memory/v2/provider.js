@@ -1,5 +1,6 @@
 import { MemoryStoreV2 } from './store.js'
 import { API_VERSION, FORMAT_VERSION, MemoryError } from './contracts.js'
+import { createMaintenanceWriterRegistry, MAINTENANCE_WRITER_CAPABILITY } from './maintenance-writers.js'
 import { join, resolve } from 'node:path'
 
 export const MEMORY_PROVIDER_PROTOCOL = '1.0.0'
@@ -29,15 +30,17 @@ export function assertProviderStore(store, { root, memory_space_id }) {
 export function createLocalMemoryProvider() {
   let active = true
   const assertAvailable = () => { if (!active) throw new MemoryError('MEMORY_PROVIDER_UNAVAILABLE') }
+  const maintenanceWriters = createMaintenanceWriterRegistry({ assertAvailable })
   return Object.freeze({
+    capabilities: Object.freeze([MAINTENANCE_WRITER_CAPABILITY]), maintenance_writers: maintenanceWriters,
     protocol_version: MEMORY_PROVIDER_PROTOCOL,
     api_version: API_VERSION,
     format_version: FORMAT_VERSION,
     assertAvailable,
     createStore(options) {
       assertAvailable()
-      return new MemoryStoreV2({ ...options, providerGuard: assertAvailable })
+      return maintenanceWriters.registerStore(new MemoryStoreV2({ ...options, providerGuard: assertAvailable }))
     },
-    dispose() { active = false },
+    dispose() { active = false; maintenanceWriters.dispose() },
   })
 }

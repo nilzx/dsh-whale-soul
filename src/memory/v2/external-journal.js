@@ -8,9 +8,10 @@ const identity = (path) => { try { const st = lstatSync(path); return { dev: st.
 const same = (actual, expected) => actual && !actual.symlink && actual.directory && actual.dev === expected.dev && actual.ino === expected.ino
 
 function validate(value) {
-  assertOnly(value, ['schema_version', 'action', 'record_id', 'change_id', 'source_identity', 'source_change_id', 'bundle_hash', 'publication_id', 'resolution'])
+  assertOnly(value, ['schema_version', 'action', 'record_id', 'change_id', 'source_identity', 'source_change_id', 'bundle_hash', 'publication_id', 'resolution', 'bundle_location'])
   if (value.schema_version !== 1 || !['capture', 'publish'].includes(value.action)) throw new MemoryError('INVALID_EXTERNAL_DESCRIPTOR')
   assertId(value.record_id); assertId(value.change_id)
+  if (value.bundle_location !== undefined && !['records', 'cold'].includes(value.bundle_location)) throw new MemoryError('RECORD_LOCATION_INVALID')
   if (value.source_change_id !== undefined) assertId(value.source_change_id)
   if (value.action === 'capture' && (!value.source_identity || !Number.isSafeInteger(value.source_identity.dev) || !Number.isSafeInteger(value.source_identity.ino))) throw new MemoryError('INVALID_EXTERNAL_DESCRIPTOR')
   if (value.action === 'publish' && (!/^[a-f0-9]{64}$/.test(value.bundle_hash) || !/^[a-f0-9]{64}$/.test(value.publication_id))) throw new MemoryError('INVALID_EXTERNAL_DESCRIPTOR')
@@ -25,7 +26,7 @@ function validate(value) {
 export function applyExternalCapture(engine, value, write, checkpoint = () => {}) {
   validate(value)
   if (value.action !== 'capture') throw new MemoryError('INVALID_EXTERNAL_DESCRIPTOR')
-  const current = engine.resolvePath(value.source_change_id ? `quarantine/${value.record_id}/${value.source_change_id}/source` : `records/${value.record_id}`)
+  const current = engine.resolvePath(value.source_change_id ? `quarantine/${value.record_id}/${value.source_change_id}/source` : `${value.bundle_location === 'cold' ? 'cold/records' : 'records'}/${value.record_id}`)
   const saved = engine.resolvePath(`quarantine/${value.record_id}/${value.change_id}/source`)
   const marker = engine.resolvePath(`external-changes/${value.record_id}/${value.change_id}/capture.json`)
   const old = identity(saved), present = identity(current)
@@ -50,7 +51,7 @@ export function applyExternalPublish(engine, value, write, checkpoint = () => {}
   validate(value)
   if (value.action !== 'publish') throw new MemoryError('INVALID_EXTERNAL_DESCRIPTOR')
   const stage = engine.resolvePath(`external-changes/${value.record_id}/${value.change_id}/staged/${value.publication_id}`)
-  const current = engine.resolvePath(`records/${value.record_id}`)
+  const current = engine.resolvePath(`${value.bundle_location === 'cold' ? 'cold/records' : 'records'}/${value.record_id}`)
   const marker = engine.resolvePath(`external-changes/${value.record_id}/${value.change_id}/publication-${value.publication_id}.json`)
   const ownership = () => {
     try {
@@ -62,7 +63,7 @@ export function applyExternalPublish(engine, value, write, checkpoint = () => {}
     try {
       if (identity(current)?.symlink || !identity(current)?.directory) return false
       if (!ownership()) return false
-      const hashes = Object.fromEntries(RECORD_FILES.map((name) => [name, digest(readFileSync(engine.resolvePath(`records/${value.record_id}/${name}`)))]))
+      const hashes = Object.fromEntries(RECORD_FILES.map((name) => [name, digest(readFileSync(engine.resolvePath(`${value.bundle_location === 'cold' ? 'cold/records' : 'records'}/${value.record_id}/${name}`)))]))
       return digest(hashes) === value.bundle_hash
     } catch { return false }
   }
@@ -73,6 +74,7 @@ export function applyExternalPublish(engine, value, write, checkpoint = () => {}
     ours = ownership()
     if (!ours) return 'publication_conflict'
   } else {
+    mkdirSync(dirname(current), { recursive: true, mode: 0o700 })
     try { mkdirSync(current, { mode: 0o700 }) } catch (error) { if (error.code === 'EEXIST') return 'publication_conflict'; throw error }
     const own = identity(current)
     write(marker, json({ publication_id: value.publication_id, dev: own.dev, ino: own.ino }))

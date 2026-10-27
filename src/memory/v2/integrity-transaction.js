@@ -9,18 +9,24 @@ export const RECORD_FILES = Object.freeze(['meta.json', 'gist.md', 'detail.md', 
 export function descriptorsForChanges(root, spaceId, changes, operationId, explicit = [], purgeDescriptor = null) {
   const result = [...explicit]
   const covered = new Set(explicit.map((item) => item.next.record_id))
-  const current = new Map(), history = new Map()
+  const current = new Map(), history = new Map(), locations = new Map()
   for (const change of changes) {
     if (change.data === null) continue
-    let match = /^records\/([^/]+)\/(meta\.json|gist\.md|detail\.md|evidence\.jsonl|integrity\.json)$/.exec(change.path)
+    let match = /^(cold\/)?records\/([^/]+)\/(meta\.json|gist\.md|detail\.md|evidence\.jsonl|integrity\.json)$/.exec(change.path)
     if (match) {
-      assertId(match[1]); const files = current.get(match[1]) ?? {}; files[match[2]] = change.data; current.set(match[1], files)
+      const id = assertId(match[2]), location = match[1] ? 'cold' : 'records'
+      if (locations.has(id) && locations.get(id) !== location) throw new MemoryError('AMBIGUOUS_RECORD_LOCATION')
+      locations.set(id, location)
+      const files = current.get(id) ?? {}; files[match[3]] = change.data; current.set(id, files)
       continue
     }
-    match = /^records\/([^/]+)\/revisions\/([^/]+)\/(meta\.json|gist\.md|detail\.md|evidence\.jsonl|integrity\.json)$/.exec(change.path)
+    match = /^(cold\/)?records\/([^/]+)\/revisions\/([^/]+)\/(meta\.json|gist\.md|detail\.md|evidence\.jsonl|integrity\.json)$/.exec(change.path)
     if (match) {
-      assertId(match[1]); assertId(match[2]); const byRecord = history.get(match[1]) ?? new Map()
-      const files = byRecord.get(match[2]) ?? {}; files[match[3]] = change.data; byRecord.set(match[2], files); history.set(match[1], byRecord)
+      const id = assertId(match[2]), revision = assertId(match[3]), location = match[1] ? 'cold' : 'records'
+      if (locations.has(id) && locations.get(id) !== location) throw new MemoryError('AMBIGUOUS_RECORD_LOCATION')
+      locations.set(id, location)
+      const byRecord = history.get(id) ?? new Map()
+      const files = byRecord.get(revision) ?? {}; files[match[4]] = change.data; byRecord.set(revision, files); history.set(id, byRecord)
     }
   }
   for (const [id, files] of current) {
@@ -41,7 +47,7 @@ export function descriptorsForChanges(root, spaceId, changes, operationId, expli
       if (!head || head.head_revision !== meta.revision - 1) throw new MemoryError('INTEGRITY_HISTORY_REQUIRED')
     }
     const mode = head?.head_revision_id === meta.revision_id ? 'repair' : 'append'
-    result.push(buildRecordDescriptor({ root, spaceId, meta, files, operationId, mode, previousHead: head }))
+    result.push(buildRecordDescriptor({ root, spaceId, meta, files, operationId, mode, previousHead: head, ...(locations.get(id) === 'cold' || head?.schema_version === 2 ? { bundleLocation: locations.get(id) } : {}) }))
   }
   for (const id of purgeDescriptor?.record_ids ?? []) {
     if (covered.has(id)) continue

@@ -5,7 +5,7 @@ import { recordRetentionAllowed } from './read-policy.js'
 import { retrieveMemory } from './retrieval.js'
 
 const same = (a, b) => digest(a) === digest(b)
-const active = (meta) => meta.status === 'active' && (!meta.valid_from || Date.parse(meta.valid_from) <= Date.now()) &&
+const active = (meta, includeCold = false) => (meta.status === 'active' || includeCold && meta.status === 'archived' && meta.lifecycle?.tier === 'cold') && (!meta.valid_from || Date.parse(meta.valid_from) <= Date.now()) &&
   (!meta.valid_to || Date.now() < Date.parse(meta.valid_to)) && (!meta.expires_at || Date.now() < Date.parse(meta.expires_at))
 const plain = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
 
@@ -51,7 +51,9 @@ export function createExternalReadAuthority({ store, maxRecords = 10 } = {}) {
   if (!Number.isInteger(maxRecords) || maxRecords < 1 || maxRecords > 10) throw new MemoryError('INVALID_EXTERNAL_READ_BUDGET')
   return Object.freeze({
     async prepare(args = {}, context, { signal, authorize = () => true } = {}) {
-      assertOnly(args, ['query', 'at', 'subject_id', 'limit'])
+      assertOnly(args, ['query', 'at', 'subject_id', 'limit', 'include_cold'])
+      if (args.include_cold !== undefined && typeof args.include_cold !== 'boolean') throw new MemoryError('INVALID_COLD_OPTION')
+      const includeCold = args.include_cold === true
       if (signal !== undefined && !(signal instanceof AbortSignal)) throw new MemoryError('INVALID_SIGNAL')
       if (args.limit !== undefined && (!Number.isSafeInteger(args.limit) || args.limit < 1 || args.limit > 10)) throw new MemoryError('INVALID_LIMIT')
       if (typeof authorize !== 'function') throw new MemoryError('TRUSTED_AUTHORIZER_REQUIRED')
@@ -75,10 +77,10 @@ export function createExternalReadAuthority({ store, maxRecords = 10 } = {}) {
               const head = loadRecordHead(store.root, store.memorySpaceId, item.meta.record_id)
               if (!head || head.state !== 'clean' || head.head_revision_id !== item.meta.revision_id) continue
               const record = store._readRecord(item.meta.record_id)
-              if (!same(record.meta, item.meta) || !active(record.meta) || !store._visible(record.meta, context) ||
+              if (!same(record.meta, item.meta) || !active(record.meta, includeCold) || !store._visible(record.meta, context) ||
                 record.meta.visibility?.kind === 'private' && record.meta.persona_id !== context.persona_id) continue
               const proof = quotationProof(store, record, head)
-              if (proof) rows.set(record.meta.record_id, { headHash: digest(head), metaHash: digest(record.meta), proof })
+              if (proof) rows.set(record.meta.record_id, { headHash: digest(head), metaHash: digest(record.meta), tier: record.meta.lifecycle?.tier ?? 'active', proof })
             } catch { /* One malformed record cannot authorize itself or hide a valid neighbour. */ }
           }
           check()
@@ -92,7 +94,7 @@ export function createExternalReadAuthority({ store, maxRecords = 10 } = {}) {
           const binding = rows.get(id), head = loadRecordHead(store.root, store.memorySpaceId, id)
           if (!binding || !head || head.state !== 'clean' || digest(head) !== binding.headHash) return false
           const record = store._readRecord(id)
-          if (digest(record.meta) !== binding.metaHash || !active(record.meta) || !store._visible(record.meta, context) ||
+          if (digest(record.meta) !== binding.metaHash || (record.meta.lifecycle?.tier ?? 'active') !== binding.tier || !active(record.meta, includeCold) || !store._visible(record.meta, context) ||
             record.meta.visibility?.kind === 'private' && record.meta.persona_id !== context.persona_id) return false
           const proof = quotationProof(store, record, head)
           check()
@@ -101,7 +103,7 @@ export function createExternalReadAuthority({ store, maxRecords = 10 } = {}) {
       }
       const recordIds = Object.freeze([...rows.keys()])
       return Object.freeze({
-        generation: digest({ purgeGeneration, bindings: [...rows] }), recordIds,
+        generation: digest({ purgeGeneration, include_cold: includeCold, bindings: [...rows] }), recordIds,
         growth_eligible: false, maturity_eligible: false,
         isCurrent: () => { try { check(); return getPurgeState(store.root, store.memorySpaceId).generation === purgeGeneration && recordIds.every(fresh) } catch { return false } },
         evidenceAllowed(id, suppliedContext, meta) {

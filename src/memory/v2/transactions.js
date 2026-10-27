@@ -13,6 +13,8 @@ import { commitImportedSelfHead } from './self-transfer.js'
 import { commitSelfDescriptor, validateSelfDescriptor } from './self-integrity.js'
 import { prepareSelfTransaction } from './self-transaction.js'
 import { applyExternalCapture, applyExternalPublish, applyRootUpgrade } from './external-journal.js'
+import { commitMaintenanceDescriptor, reconcileMaintenanceState, validateMaintenanceDescriptor } from './lifecycle-ledger.js'
+import { applyLifecycleTransition, declareLifecycleCapability, validateLifecycleDescriptor } from './lifecycle-journal.js'
 import { repairCompletedRecordChanges } from './record-recovery.js'
 
 function syncDir(path) {
@@ -193,6 +195,17 @@ export class TransactionEngine {
     if (transaction.source_protection_descriptor) commitSourceProtection(this.lockRoot, transaction.source_protection_descriptor, atomicWrite, phase => this._checkpoint(phase, { operation_id: transaction.operation_id }))
     if (transaction.root_upgrade) applyRootUpgrade(this.lockRoot, transaction.root_upgrade, atomicWrite)
     const purgeState = getPurgeState(this.lockRoot, this.memorySpaceId)
+    if ([...(transaction.record_imports ?? []), ...(transaction.record_descriptors ?? [])].some((descriptor) => descriptor.next.schema_version === 2)) declareLifecycleCapability(this, atomicWrite)
+    const lifecycle = transaction.lifecycle_descriptor
+    if (lifecycle) {
+      if (purgeState.record_ids.includes(lifecycle.record_id)) return { ...transaction.receipt.result, status: 'purged', reason_code: 'PURGED_BY_MANAGEMENT', affected_ids: [] }
+      const status = applyLifecycleTransition(this, lifecycle, atomicWrite, (point, info) => this._checkpoint(point, info))
+      if (status !== 'published') return { ...transaction.receipt.result, status: 'conflict', reason_code: 'LIFECYCLE_PUBLICATION_CONFLICT', affected_ids: [], pending: false }
+      commitRecordDescriptor(this.lockRoot, this.root, lifecycle.record_descriptor, atomicWrite)
+      this._checkpoint('after_lifecycle_head', { record_id: lifecycle.record_id })
+    }
+    commitMaintenanceDescriptor(this.lockRoot, this.root, transaction.maintenance_descriptor, atomicWrite)
+    if (transaction.maintenance_descriptor) this._checkpoint('after_maintenance_ledger', { operation_id: transaction.operation_id })
     const external = transaction.external_descriptor
     const externalPurged = external && purgeState.record_ids.includes(external.record_id)
     for (const imported of transaction.record_imports ?? []) {
@@ -278,7 +291,7 @@ export class TransactionEngine {
   }
 
   async read(callback) {
-    return this.locked(() => { this._recover(); reconcilePurgeState(this.lockRoot, this.root, atomicWrite); reconcilePersonaState(this.lockRoot, this.root, atomicWrite); return callback() })
+    return this.locked(() => { this._recover(); reconcilePurgeState(this.lockRoot, this.root, atomicWrite); reconcilePersonaState(this.lockRoot, this.root, atomicWrite); reconcileMaintenanceState(this.lockRoot, this.root, atomicWrite); return callback() })
   }
 
   async run(operationId, request, build, { authorize = () => {} } = {}) {
@@ -287,6 +300,7 @@ export class TransactionEngine {
       this._recover()
       reconcilePurgeState(this.lockRoot, this.root, atomicWrite)
       reconcilePersonaState(this.lockRoot, this.root, atomicWrite)
+      reconcileMaintenanceState(this.lockRoot, this.root, atomicWrite)
       authorize()
       const receiptKey = digest(operationId)
       const requestHash = digest(request)
@@ -306,6 +320,8 @@ export class TransactionEngine {
       built = { ...built, ...prepareSelfTransaction(this.lockRoot, this.memorySpaceId, built, operationId, getPurgeState(this.lockRoot, this.memorySpaceId)) }
       for (const descriptor of built.self_descriptors) validateSelfDescriptor(descriptor)
       if (built?.source_protection_descriptor) validateSourceProtectionDescriptor(built.source_protection_descriptor)
+      if (built?.maintenance_descriptor) validateMaintenanceDescriptor(built.maintenance_descriptor)
+      if (built?.lifecycle_descriptor) validateLifecycleDescriptor(built.lifecycle_descriptor)
       if (built?.session_descriptor) validateSessionDescriptor(built.session_descriptor)
       if (built?.purge_descriptor) validateManagedPurgeArtifacts(this.lockRoot, this.memorySpaceId)
       if (!built || !Array.isArray(built.changes)) throw new MemoryError('INVALID_TRANSACTION')
@@ -332,9 +348,11 @@ export class TransactionEngine {
         ...(built.persona_descriptors ? { persona_descriptors: built.persona_descriptors } : {}),
         ...(built.self_imports?.length ? { self_imports: built.self_imports } : {}),
         ...(built.self_descriptors.length ? { self_descriptors: built.self_descriptors } : {}),
-        record_descriptors: descriptorsForChanges(this.lockRoot, this.memorySpaceId, built.changes.filter((change) => !(built.record_imports ?? []).some((item) => change.path.startsWith(`records/${item.next.record_id}/`))), operationId, built.record_descriptors ?? [], built.purge_descriptor),
+        record_descriptors: descriptorsForChanges(this.lockRoot, this.memorySpaceId, built.changes.filter((change) => !(built.record_imports ?? []).some((item) => change.path.startsWith(`records/${item.next.record_id}/`) || change.path.startsWith(`cold/records/${item.next.record_id}/`))), operationId, built.record_descriptors ?? [], built.purge_descriptor),
         ...(built.record_imports ? { record_imports: built.record_imports } : {}),
         ...(built.external_descriptor ? { external_descriptor: built.external_descriptor } : {}),
+        ...(built.lifecycle_descriptor ? { lifecycle_descriptor: built.lifecycle_descriptor } : {}),
+        ...(built.maintenance_descriptor ? { maintenance_descriptor: built.maintenance_descriptor } : {}),
         ...(built.root_upgrade ? { root_upgrade: built.root_upgrade } : {}),
         ...(built.source_protection_descriptor ? { source_protection_descriptor: built.source_protection_descriptor } : {}),
         receipt: { operation_id: operationId, request_hash: requestHash, result: built.result },
