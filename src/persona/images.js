@@ -21,7 +21,7 @@ export function imagesForAgent(agent) {
 
 /** Session-bound image authorization comes exclusively from real user events. */
 export class PersonaImages {
-  #runtime; #attachments; #llm; #owns; #preview; #slots = new Map(); #agents = new Set(); #pending = new Set(); #disposed = false
+  #runtime; #attachments; #llm; #owns; #preview; #slots = new Map(); #agents = new Set(); #pending = new Set(); #disposed = false; #captures = new WeakMap()
   constructor({ runtime, getAttachments, getLlm, ownsAgent, assetPreview } = {}) {
     if (!runtime?.store || typeof getAttachments !== 'function' || typeof ownsAgent !== 'function') throw new MemoryError('TRUSTED_IMAGE_ADAPTERS_REQUIRED')
     if (getLlm !== undefined && typeof getLlm !== 'function') throw new MemoryError('TRUSTED_IMAGE_ADAPTERS_REQUIRED')
@@ -53,6 +53,9 @@ export class PersonaImages {
       return
     }
     this.attachAgent(agent)
+    const confirmation = this.#runtime.confirmSession(agent)
+    this.#captures.set(agent, confirmation); this.#pending.add(confirmation)
+    confirmation.catch(() => {}).finally(() => this.#pending.delete(confirmation))
     previous?.controller.abort()
     const controller = new AbortController()
     const caption = parts.filter((part) => part?.type === 'text' && typeof part.text === 'string').map((part) => part.text).join('\n')
@@ -74,8 +77,10 @@ export class PersonaImages {
     if (!slot?.grant || slot.grant.consent_id !== id) throw new MemoryError('IMAGE_CONSENT_REQUIRED')
     const attachments = this.#attachments()
     const provider = original(attachments)
-    const isCurrent = () => this.owns(slot.agent) && this.#slots.get(context.session_id) === slot && !slot.controller.signal.aborted &&
-      slot.attachmentProvider === provider && original(this.#attachments()) === provider
+    const isCurrent = () => {
+      try { return this.#runtime.checkSession(slot.agent) && this.owns(slot.agent) && this.#slots.get(context.session_id) === slot && !slot.controller.signal.aborted &&
+        slot.attachmentProvider === provider && original(this.#attachments()) === provider } catch { return false }
+    }
     if (!isCurrent()) throw new MemoryError('IMAGE_CONSENT_REVOKED')
     if (typeof attachments?.readImage !== 'function') throw new MemoryError('IMAGE_ATTACHMENT_UNAVAILABLE')
     let image
@@ -86,6 +91,7 @@ export class PersonaImages {
   }
   async view(agent, args = {}, { signal } = {}) {
     try {
+      await this.#confirm(agent)
       assertOnly(args, ['recent_image'])
       if (args.recent_image !== true) throw new MemoryError('CURRENT_ATTACHMENT_ONLY')
       this.attachAgent(agent)
@@ -100,7 +106,7 @@ export class PersonaImages {
       const current = () => this.owns(agent) && agent.session === session && this.#slots.get(session.id) === slot &&
         !slot.controller.signal.aborted && !signal?.aborted && original(this.#attachments()) === original(attachments) &&
         original(this.#llm?.()) === original(llm) && JSON.stringify(route()) === JSON.stringify(selected)
-      const check = () => { if (!current()) throw new MemoryError('IMAGE_VIEW_REVOKED') }
+      const check = () => { this.#runtime.checkSession(agent); if (!current()) throw new MemoryError('IMAGE_VIEW_REVOKED') }
       check()
       const joined = AbortSignal.any([slot.controller.signal, ...(signal ? [signal] : []), AbortSignal.timeout(10000)])
       const task = (async () => {
@@ -123,12 +129,14 @@ export class PersonaImages {
   }
   #context(agent) {
     this.attachAgent(agent)
+    this.#runtime.checkSession(agent)
     return this.#runtime.state.issueContext(agent.session.id, ['memory.read', 'memory.write'])
   }
   async #url(asset, agent) {
     if (!this.owns(agent) || typeof this.#preview !== 'function') return null
     try {
       const candidate = await this.#preview(asset, agent)
+      this.#runtime.checkSession(agent)
       if (typeof candidate !== 'string') return null
       const url = new URL(candidate)
       if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash ||
@@ -138,6 +146,7 @@ export class PersonaImages {
   }
   async save(agent, args = {}, { signal } = {}) {
     try {
+      await this.#confirm(agent)
       assertOnly(args, ['recent_image', 'description', 'tags'])
       if (args.recent_image !== undefined && args.recent_image !== true) throw new MemoryError('CURRENT_ATTACHMENT_ONLY')
       const context = this.#context(agent), slot = this.#slots.get(agent.session.id)
@@ -148,16 +157,20 @@ export class PersonaImages {
       try { result = await task } finally { this.#pending.delete(task) }
       if (result.status !== 'committed' || !result.asset) return unavailable(result.reason_code)
       const preview = await this.#url(result.asset, agent)
+      this.#runtime.checkSession(agent)
       return { status: 'committed', asset_id: result.asset_id, ...(preview ? { preview_url: preview } : {}),
         text: `这张图我收进贝壳里了。\nasset_id: ${result.asset_id}\n\n${preview ? `![已保存的图片](${preview})` : '当前没有可展示地址。'}` }
     } catch (error) { return unavailable(error.code) }
   }
   async find(agent, args = {}) {
+    await this.#confirm(agent)
     const values = await this.assets.list({ asset_id: args.asset_id, query: args.query ?? '', tag: args.tag ?? '', limit: 1 }, this.#context(agent))
+    this.#runtime.checkSession(agent)
     return values[0] ?? null
   }
   async recall(agent, args = {}) {
     try {
+      await this.#confirm(agent)
       assertOnly(args, ['asset_id', 'query', 'tag', 'limit'])
       const values = await this.assets.list(args, this.#context(agent)), items = []
       for (const asset of values) {
@@ -165,10 +178,17 @@ export class PersonaImages {
         items.push({ asset_id: asset.id, description: asset.description, tags: asset.tags, mime: asset.mime,
           ...(preview ? { preview_url: preview } : {}) })
       }
+      this.#runtime.checkSession(agent)
       return { status: 'ok', items, text: items.length ? items.map((item) => `asset_id: ${item.asset_id}\n${item.preview_url ? `![已保存的图片](${item.preview_url})` : '当前没有可展示地址。'}`).join('\n\n') : '口袋里没有找到这张图。' }
     } catch (error) { return unavailable(error.code) }
   }
   evidenceAllowed(id, context, meta) { return this.assets.evidenceAllowed(id, context, meta) }
+  async #confirm(agent) {
+    if (!this.owns(agent)) throw new MemoryError('IMAGE_AGENT_SCOPE_DENIED')
+    await this.#captures.get(agent)
+    await this.#runtime.confirmSession(agent)
+    this.#runtime.checkSession(agent)
+  }
   detachAgent(agent) {
     const slot = this.#slots.get(agent?.session?.id)
     if (slot?.agent === agent) { slot.controller.abort(); this.#slots.delete(agent.session.id) }

@@ -100,7 +100,8 @@
     "@deepseek-ai/dsh-bash-sandbox": ">=0.2.1-rc.3 <0.3.0",
     "@deepseek-ai/dsh-tool-fs": ">=0.2.1-rc.3 <0.3.0",
     "@deepseek-ai/dsh-tool-bash": ">=0.2.1-rc.3 <0.3.0",
-    "@deepseek-ai/dsh-tool-fs-search": ">=0.2.1-rc.3 <0.3.0"
+    "@deepseek-ai/dsh-tool-fs-search": ">=0.2.1-rc.3 <0.3.0",
+    "zod": ">=4.4.3 <5"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/cordis": {
@@ -149,6 +150,9 @@
       "optional": true
     },
     "@deepseek-ai/dsh-tool-fs-search": {
+      "optional": true
+    },
+    "zod": {
       "optional": true
     }
   }

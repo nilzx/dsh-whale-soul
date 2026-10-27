@@ -13,6 +13,9 @@ import { createGrowthReflector } from './reflection.js'
 import { getWhaleCore, getWhaleCorePrompt } from './core.js'
 import { MEMORY_REVISION_REASON as REASON, verifyMemoryReceipt } from './memory-receipt.js'
 import { getPurgeState } from '../memory/v2/purge-ledger.js'
+import { personaBinding } from '../memory/v2/persona-ledger.js'
+import { SessionIdentityFence, createSessionBoundary, observeSessionIdentityBoundary } from './session-fence.js'
+import { canonicalProtectionPath } from './protection.js'
 
 const capabilities = ['memory.read', 'memory.write', 'memory.list', 'memory.raw', 'self.write', 'self.evaluate']
 const code = (error) => typeof error?.code === 'string' && /^[A-Z][A-Z0-9_]{0,99}$/.test(error.code) ? error.code : 'PERSONA_RUNTIME_FAILURE'
@@ -25,6 +28,9 @@ export class PersonaRuntime {
   #options; #agents = new WeakMap(); #sessions = new Map(); #lifetime = new AbortController()
   #ready; #maintenance = null; #disposed = false; #disposing
   #operation = new AsyncLocalStorage(); #factQueue = Promise.resolve(); #pending = new Set()
+  #sessionBoundary = new AsyncLocalStorage()
+  #attaching = new WeakMap()
+  #captures = new WeakMap()
   constructor(options = {}) {
     this.#options = options
     this.core = options.core ?? getWhaleCore()
@@ -32,7 +38,7 @@ export class PersonaRuntime {
     this.store = new MemoryStoreV2({ root: options.root, memory_space_id: options.memorySpaceId ?? 'owner',
       evidenceResolver: (id) => this.state?.resolveMemoryEvidence(id), faultInjector: (phase, data) => {
         options.faultInjector?.(phase, data)
-        if (phase === 'after_prepare') { this.#assertLive(); check(this.#operation.getStore()); check(this.#lifetime.signal) }
+        if (phase === 'after_prepare') { this.#assertLive(); check(this.#operation.getStore()); check(this.#lifetime.signal); this.#sessionBoundary.getStore()?.checkSync() }
       } })
     this.state = new PersonaState({ store: this.store, persona_id: this.core.persona_id,
       core_version: this.core.version, mode: options.stabilityMode ?? 'auto', subject_id: options.subjectId ?? 'owner' })
@@ -203,6 +209,13 @@ export class PersonaRuntime {
   }
 
   async attachAgent(agent) {
+    const pending = this.#attaching.get(agent)
+    if (pending) return pending
+    const task = this.#attachAgent(agent)
+    this.#attaching.set(agent, task)
+    try { return await task } finally { if (this.#attaching.get(agent) === task) this.#attaching.delete(agent) }
+  }
+  async #attachAgent(agent) {
     this.#assertLive(); await this.#ready
     this.#assertLive()
     const existing = this.#agents.get(agent)
@@ -211,12 +224,25 @@ export class PersonaRuntime {
     if (typeof sessionId !== 'string') throw new MemoryError('LIVE_AGENT_REQUIRED')
     const occupied = this.#sessions.get(sessionId)
     if (occupied && occupied.agent !== agent) throw new MemoryError('DUPLICATE_AGENT_SESSION')
+    const host = this.#options.sessionHost
+    if (typeof host?.scopeChainOf !== 'function' || typeof host?.resolveDshHome !== 'function') throw new MemoryError('TRUSTED_SESSION_BINDINGS_REQUIRED')
+    const profile = agent.ctx.get('profileContext'), profileHome = profile?.home
+    const home = canonicalProtectionPath(host.resolveDshHome(profileHome))
+    if (typeof host.ownsAgent !== 'function') throw new MemoryError('TRUSTED_SESSION_BINDINGS_REQUIRED')
+    const ownsAgent = host.ownsAgent
+    const observer = host.observer ?? observeSessionIdentityBoundary(agent.ctx, ownsAgent, host.z)
+    const boundary = createSessionBoundary({ agent, observer, scopeChainOf: host.scopeChainOf, ownsAgent })
+    const fence = new SessionIdentityFence({ store: this.store,
+      owner: { ...this.state.identity, binding_id: personaBinding(this.core.persona_id, this.state.identity.subject_id) }, boundary, home,
+      isCurrent: () => !this.#disposed && agent.ctx.get('profileContext') === profile && profile?.home === profileHome && canonicalProtectionPath(host.resolveDshHome(profileHome)) === home && ownsAgent(agent) === true,
+      faultInjector: this.#options.sessionFaultInjector })
+    try { await fence.authorize({ seal: false }) } catch (error) { if (!host.observer) observer.dispose(); throw error }
     const controller = new AbortController()
     const llm = this.#options.llm, createAssembler = this.#options.createAssembler
     const route = { llm, createAssembler, agent, signal: controller.signal,
       timeoutMs: this.#options.assessmentTimeoutMs ?? 15000 }
     const state = { agent, sessionId, controller, queue: Promise.resolve(), lastQuery: '', latest: null,
-      lastActivity: Date.now(), timer: null, job: null, cache: null, writes: 0, lastMaintenance: 0, status: agent.status ?? 'idle', inboxSources: new Map() }
+      lastActivity: Date.now(), timer: null, job: null, cache: null, writes: 0, lastMaintenance: 0, status: agent.status ?? 'idle', inboxSources: new Map(), fence, ownedObserver: host.observer ? null : observer }
     state.selector = this.#options.selectorFactory?.(agent) ?? createMemoryBatchSelector({
       assess: createMemoryBatchSelectionAssessor(route), timeoutMs: route.timeoutMs })
     state.assess = this.#options.assessorFactory?.(agent) ?? createGrowthAssessor({ ...route, coreInstructions: this.coreInstructions })
@@ -237,7 +263,7 @@ export class PersonaRuntime {
     return state
   }
   #enqueue(state, operation, signal = state.controller.signal) {
-    const result = state.queue.then(() => { this.#assertLive(); check(signal); return this.#operation.run(signal, operation) })
+    const result = state.queue.then(() => { this.#assertLive(); check(signal); state.fence.checkSync(); return this.#sessionBoundary.run(state.fence, () => this.#operation.run(signal, operation)) })
     state.queue = result.catch((error) => { state.lastError = code(error) })
     const queued = state.queue
     this.#pending.add(queued)
@@ -255,6 +281,7 @@ export class PersonaRuntime {
       if (!existing) state.inboxSources.set(message.id, { message, hash: digest(message), seq: event.seq, time: event.time, controller: new AbortController() })
       while (state.inboxSources.size > 64) state.inboxSources.delete(state.inboxSources.keys().next().value)
     }
+    await state.fence.authorize()
   }
   discardInboxMessage(agent, message) {
     const state = this.#agents.get(agent), source = state?.inboxSources.get(message?.id)
@@ -279,9 +306,22 @@ export class PersonaRuntime {
       try { await source.promise } catch (error) { check(signal); if (this.#disposed) throw error }
     }
   }
-  async capture(agent, event, { signal, fromInbox = false } = {}) {
+  capture(agent, event, options = {}) {
+    const task = this.#capture(agent, event, options)
+    let active = this.#captures.get(agent)
+    if (!active) this.#captures.set(agent, active = new Set())
+    active.add(task); this.#pending.add(task)
+    task.finally(() => { active.delete(task); this.#pending.delete(task) }).catch(() => {})
+    return task
+  }
+  async #waitCaptures(agent) {
+    let active
+    while ((active = [...(this.#captures.get(agent) ?? [])]).length) await Promise.allSettled(active)
+  }
+  async #capture(agent, event, { signal, fromInbox = false } = {}) {
     const state = await this.attachAgent(agent)
     if (event?.type !== 'user/message' || event.data?.role !== 'user' || event.data?.source?.kind !== 'user') return { status: 'ignored', reason_code: 'NON_USER_SOURCE' }
+    await state.fence.authorize()
     const staged = state.inboxSources.get(event.data.id)
     if (!fromInbox && staged?.accepted) {
       if (staged.hash !== digest(event.data)) throw new MemoryError('INBOX_SOURCE_CONFLICT')
@@ -364,7 +404,8 @@ export class PersonaRuntime {
   }
 
   async prepareContext(agent, { signal } = {}) {
-    const state = await this.attachAgent(agent); await state.queue
+    const state = await this.attachAgent(agent); await this.#waitCaptures(agent); await state.queue
+    if ((await state.fence.authorize({ seal: false })).status !== 'confirmed') return { memory: '', growth: '' }
     check(signal); check(state.controller.signal); await this.state.refresh()
     const ctx = this.#context(state.sessionId)
     const memory = await buildMemoryContext(this.store, { query: state.lastQuery,
@@ -384,22 +425,37 @@ export class PersonaRuntime {
       try { return !this.#disposed && !state.controller.signal.aborted && memory.isCurrent?.() &&
         [...files].every(([file, hash]) => digest(readFileSync(file)) === hash) } catch { return false }
     }
+    state.fence.checkSync()
     state.cache = { memory: memory.context ?? '', growth: growth.traits?.length ? growth.context ?? '' : '', isCurrent: fingerprint }
     return this.contextFor(agent)
   }
   contextFor(agent) {
     const state = this.#agents.get(agent), cache = state?.cache
     if (!cache?.isCurrent()) return { memory: '', growth: '' }
+    state.fence.checkSync()
     return { memory: cache.memory, growth: cache.growth }
   }
   async waitCurrent(agent, { signal } = {}) {
     const state = await this.attachAgent(agent)
+    await this.#waitCaptures(agent)
     await state.queue
+    await state.fence.authorize()
     this.#assertLive(); check(signal); check(state.controller.signal)
+    state.fence.checkSync()
+  }
+  async confirmSession(agent, { seal = true } = {}) {
+    const state = await this.attachAgent(agent)
+    return state.fence.authorize({ seal })
+  }
+  checkSession(agent) {
+    const state = this.#agents.get(agent)
+    if (!state) throw new MemoryError('SESSION_IDENTITY_NOT_CONFIRMED')
+    return state.fence.checkSync()
   }
   operationContextFor(agent) {
     const state = this.#agents.get(agent), operation = state?.operation
     if (this.#disposed || state?.controller.signal.aborted || state?.operationSignal?.aborted || !operation || operation.epoch !== state.captureEpoch) return ''
+    state.fence.checkSync()
     const { epoch, ...summary } = operation
     const encoded = JSON.stringify({ ...summary, selected_count: operation.selected_count ?? 0, coverage: operation.coverage ?? 'none' })
       .replace(/[<>&]/g, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`)
@@ -411,13 +467,16 @@ export class PersonaRuntime {
   }
   async recall(agent, args) {
     const state = await this.attachAgent(agent); await state.queue
+    await state.fence.authorize()
     const result = await retrieveMemory(this.store, args, this.#context(state.sessionId),
       { evidenceAllowed: (id, context, meta) => this.#evidenceAllowed(id, context, meta), recordAllowed: recordRetentionAllowed })
     const { isCurrent, ...data } = result
+    state.fence.checkSync()
     return data
   }
   async rememberCurrent(agent) {
     const state = await this.attachAgent(agent); await state.queue
+    await state.fence.authorize(); state.fence.checkSync()
     return state.latest ?? { decision: 'ignore', reason_code: 'NO_APPROVED_CURRENT_EVIDENCE' }
   }
   sessionAgent(session) { return this.#sessions.get(session?.id ?? session?.header?.id)?.agent }
@@ -434,6 +493,7 @@ export class PersonaRuntime {
 
   async maintain(agent, { force = false } = {}) {
     const state = await this.attachAgent(agent); await state.queue
+    await state.fence.authorize()
     this.#assertLive(); check(state.controller.signal)
     if (state.job || this.#maintenance) return { status: 'busy' }
     if (state.status !== 'idle') return { status: 'busy' }
@@ -446,7 +506,7 @@ export class PersonaRuntime {
     const deadline = setTimeout(() => controller.abort(), bounded(this.#options.maintenanceTimeoutMs, 60000, 120000))
     const ctx = this.#context(state.sessionId), id = `maintenance-${digest({ session: state.sessionId, time: Date.now(), generation: this.state.stabilityPolicy.snapshot().generation }).slice(0, 40)}`
     this.#dream('start', { trigger: 'reflection' })
-    try { return await this.#operation.run(controller.signal, async () => {
+    try { return await this.#sessionBoundary.run(state.fence, () => this.#operation.run(controller.signal, async () => {
       const evidence = await this.state.listEvidence({ limit: 32, growth_only: true })
       check(controller.signal)
       if (!evidence.length) return { status: 'no_evidence' }
@@ -487,7 +547,7 @@ export class PersonaRuntime {
       }
       state.writes = 0; state.lastMaintenance = Date.now(); state.cache = null
       return { status: 'completed', maintenance_id: id, results }
-    }) } catch (error) { return { status: controller.signal.aborted ? 'cancelled' : 'failed', reason_code: code(error) } }
+    })) } catch (error) { return { status: controller.signal.aborted ? 'cancelled' : 'failed', reason_code: code(error) } }
     finally {
       clearTimeout(deadline); state.job = null; this.#maintenance = null
       finish()
@@ -498,6 +558,7 @@ export class PersonaRuntime {
     const state = this.#agents.get(agent)
     if (!state) return Promise.resolve()
     state.controller.abort(); state.job?.controller.abort(); clearTimeout(state.timer)
+    state.fence.dispose(); state.ownedObserver?.dispose()
     state.cache = null; state.latest = null; state.operation = null; state.lastQuery = ''; state.inboxSources.clear()
     this.#sessions.delete(state.sessionId); this.#agents.delete(agent)
     const drained = Promise.allSettled([state.queue, state.job?.done].filter(Boolean))

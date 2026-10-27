@@ -2,6 +2,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync } f
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { MemoryError, assertId, assertOnly, digest } from './contracts.js'
 import { validatePersonaAnchor, validatePortablePersonaShape } from './persona-ledger.js'
+import { validateSessionDescriptor } from './session-bindings.js'
 
 export const PURGE_LEDGER_PATH = '.administration/purge-ledger.json'
 const json = (value) => `${JSON.stringify(value, null, 2)}\n`
@@ -163,7 +164,7 @@ function walkFiles(root, callback, prefix = '') {
 function managedJournal(name, spaceId) { return name.split('/').includes(spaceId) && /(?:^|\/)journal\/[^/]+\/prepared\.json$/.test(name) }
 function validateJournal(value) {
   try {
-    assertOnly(value, ['transaction_id','operation_id','receipt_key','generation','changes','purge_descriptor','persona_descriptor','persona_descriptors','receipt'])
+    assertOnly(value, ['transaction_id','operation_id','receipt_key','generation','changes','purge_descriptor','persona_descriptor','persona_descriptors','session_descriptor','receipt'])
     assertId(value.transaction_id);assertId(value.operation_id)
     if (!/^[a-f0-9]{64}$/.test(value.receipt_key) || !Number.isSafeInteger(value.generation) || value.generation < 0 || !Array.isArray(value.changes)) throw new Error()
     for (const change of value.changes) {
@@ -171,6 +172,7 @@ function validateJournal(value) {
       if (typeof change.path !== 'string' || isAbsolute(change.path) || change.path.includes('\\') || change.path.split('/').some((part)=>!part||part==='.'||part==='..')) throw new Error()
       if (change.data !== null && (typeof change.data !== 'string' || Buffer.from(change.data,'base64').toString('base64') !== change.data)) throw new Error()
     }
+    if (value.session_descriptor) validateSessionDescriptor(value.session_descriptor)
     for (const descriptor of value.persona_descriptors ?? (value.persona_descriptor ? [value.persona_descriptor] : [])) { assertOnly(descriptor,['expected_revision','anchor']);validatePersonaAnchor(descriptor.anchor) }
     if (value.operation_id.startsWith('persona-batch-')) {
       assertOnly(value.receipt,['operation_id','request_hash','result'])

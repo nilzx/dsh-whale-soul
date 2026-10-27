@@ -10,6 +10,8 @@ import { getWhaleCorePrompt } from './core.js'
 import { PersonaImages, createPersonaImageTools } from './images.js'
 import { registerAssetRoutes } from '../memory/asset-route.js'
 import { assetUrl } from '../memory/assets.js'
+import { observeSessionIdentityBoundary } from './session-fence.js'
+import { installSessionDispatch } from './session-dispatch.js'
 
 export const name = 'whale-soul-persona'
 export const inject = ['systemPrompt', 'tools', 'llm', 'sandboxPolicy', 'fs', 'subprocess', 'sandbox', 'agents']
@@ -21,6 +23,10 @@ const serviceTools = ['soul_recall', 'soul_remember', 'soul_forget', 'soul_view_
 /** Explicit constructors make the host composition testable without global state. */
 export async function installPersonaPlugin(ctx, config = {}, host) {
   if (typeof host.scopeOf !== 'function' || typeof host.scopeChainOf !== 'function' || !host.scopeOf(ctx)) throw new Error('whale-soul: trusted persona scope required')
+  const ownerScope = host.scopeOf(ctx)
+  const ownsAgent = (agent) => host.scopeChainOf(agent).includes(ownerScope) && ctx.get('agents')?.get(agent.id) === agent
+  const observer = observeSessionIdentityBoundary(ctx, ownsAgent, host.z)
+  ctx.effect(() => () => observer.dispose(), 'whale-soul.persona.session-observer()')
   const root = resolveMemoryRoot(config)
   mkdirSync(root, { recursive: true, mode: 0o700 })
   const resolvePrivateRoots = createHostPrivateRoots(ctx, host.privateRootBindings)
@@ -35,21 +41,28 @@ export async function installPersonaPlugin(ctx, config = {}, host) {
     if (!plugin) throw new Error('whale-soul: official protected tool bindings required')
     await capabilityContext.plugin(plugin, options).await()
   }
+  let runtime
   await capabilityContext.plugin(FileImage, {
     ownsAgent: (agent) => host.scopeChainOf(agent).includes(host.scopeOf(ctx)) &&
       ctx.get('agents')?.get(agent.id) === agent,
     captureBoundary: (exec) => {
       const snapshot = resolvePrivateRoots()
-      return () => snapshot.isCurrent() && protection.status.initialized && protection.status.readIsolation && protection.policy.guard(exec) === undefined
+      return () => {
+        try { return runtime?.checkSession(exec.agent) === true && snapshot.isCurrent() && protection.status.initialized && protection.status.readIsolation && protection.policy.guard(exec) === undefined }
+        catch { return false }
+      }
     },
   }).await()
   let images
-  const runtime = new PersonaRuntime({ ...config, root, llm: ctx.llm, createAssembler: () => new host.BlockAssembler(),
+  runtime = new PersonaRuntime({ ...config, root, llm: { prepareCall: (...args) => ctx.get('llm').prepareCall(...args) }, createAssembler: () => new host.BlockAssembler(),
+    sessionHost: { scopeChainOf: host.scopeChainOf, resolveDshHome: host.privateRootBindings.resolveDshHome, observer, z: host.z, ownsAgent },
     additionalEvidenceAllowed: (id, context, meta) => images?.evidenceAllowed(id, context, meta) ?? false,
     onDream: (phase, payload) => ctx.emit(`whale-soul/dream-${phase}`, payload) })
   runtimes.set(ctx, runtime)
   ctx.effect(() => () => runtime.dispose(), 'whale-soul.persona.runtime()')
   await runtime.ready()
+  const dispatch = installSessionDispatch(ctx, { runtime, ownsAgent, scopeChainOf: host.scopeChainOf, resolveDshHome: host.privateRootBindings.resolveDshHome, serviceTools })
+  ctx.effect(() => () => dispatch.dispose(), 'whale-soul.persona.session-dispatch()')
   const assetRoute = registerAssetRoutes(ctx, { root: runtime.store.spaceRoot })
   const assetPreview = (asset) => {
     try {
@@ -60,7 +73,6 @@ export async function installPersonaPlugin(ctx, config = {}, host) {
       return assetUrl(origin.origin, asset, runtime.store.spaceRoot)
     } catch { return null }
   }
-  const ownerScope = host.scopeOf(ctx)
   images = new PersonaImages({ runtime, getAttachments: () => ctx.get('attachments'),
     getLlm: () => ctx.get('llm'), ownsAgent: (agent) => host.scopeChainOf(agent).includes(ownerScope), assetPreview })
   ctx.effect(() => () => images.dispose(), 'whale-soul.persona.images()')
@@ -77,7 +89,9 @@ export async function installPersonaPlugin(ctx, config = {}, host) {
     required: true, interpolate: false, text: (context) => runtime.operationContextFor(context.agent),
   }), 'whale-soul.persona.operation-context()')
   ctx.effect(() => ctx.on('agent/request', async ({ agent, signal }, next) => {
+    await dispatch.ensure(agent)
     await runtime.waitCurrent(agent, { signal })
+    await runtime.prepareContext(agent, { signal })
     return next()
   }), 'whale-soul.persona.await-current-memory()')
   ctx.effect(() => ctx.on('agent/pre-step', async ({ agent, signal }, next) => {
@@ -108,10 +122,12 @@ export async function installPersonaPlugin(ctx, config = {}, host) {
   }), 'whale-soul.persona.events()')
   for (const definition of createPersonaTools(runtime)) ctx.effect(() => ctx.tools.register(definition), `whale-soul.persona.tool(${definition.name})`)
   for (const definition of createPersonaImageTools(images)) ctx.effect(() => ctx.tools.register(definition), `whale-soul.persona.tool(${definition.name})`)
-  return { runtime, images, protection, capabilityContext, assetRoute }
+  return { runtime, images, protection, capabilityContext, assetRoute, dispatch }
 }
 
 export async function apply(ctx, config = {}) {
+  let zod
+  try { zod = await import('zod') } catch { throw new Error('whale-soul: session identity protection requires the host zod package (>=4.4.3 <5)') }
   const [llm, sandbox, scope, bashSandbox, fsTools, bashTools, fsSearchTools, home, credentials, persistence, storageJson, storage, attachments] = await Promise.all([
     '@deepseek-ai/dsh-llm', '@deepseek-ai/dsh-sandbox', '@deepseek-ai/dsh-scope',
     '@deepseek-ai/dsh-bash-sandbox', '@deepseek-ai/dsh-tool-fs', '@deepseek-ai/dsh-tool-bash', '@deepseek-ai/dsh-tool-fs-search',
@@ -119,7 +135,7 @@ export async function apply(ctx, config = {}) {
     '@deepseek-ai/dsh-storage-json', '@deepseek-ai/dsh-storage', '@deepseek-ai/dsh-attachment-local',
   ].map((specifier) => import(specifier)))
   await installPersonaPlugin(ctx, config, { BlockAssembler: llm.BlockAssembler, writableRoots: sandbox.writableRoots,
-    scopeOf: scope.scopeOf, scopeChainOf: scope.scopeChainOf, BashSandbox: bashSandbox.default,
+    scopeOf: scope.scopeOf, scopeChainOf: scope.scopeChainOf, z: zod.z, BashSandbox: bashSandbox.default,
     FsTools: fsTools, BashTools: bashTools, FsSearchTools: fsSearchTools, privateRootBindings: {
       resolveDshHome: home.resolveDshHome, LocalCredentialProvider: credentials.LocalCredentialProvider, resolveCredentialSpec: credentials.resolveSpec,
       SessionPersistencePlugin: persistence, StorageJsonPlugin: storageJson, JsonStorageBackend: storageJson.JsonStorageBackend,

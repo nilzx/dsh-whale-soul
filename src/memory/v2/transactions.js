@@ -4,6 +4,7 @@ import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readF
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { MemoryError, assertId, digest } from './contracts.js'
 import { commitPersonaDescriptor, reconcilePersonaState } from './persona-ledger.js'
+import { commitSessionDescriptor, validateSessionDescriptor } from './session-bindings.js'
 import { commitPurgeDescriptor, filterRecoveryChanges, getPurgeState, pathIsPurged, reconcilePurgeState, referencesPurged, validateManagedPurgeArtifacts } from './purge-ledger.js'
 
 function syncDir(path) {
@@ -179,6 +180,8 @@ export class TransactionEngine {
   _apply(transaction) {
     commitPurgeDescriptor(this.lockRoot, this.root, transaction.purge_descriptor, atomicWrite)
     if (transaction.purge_descriptor) this._checkpoint('after_purge_ledger', { operation_id: transaction.operation_id })
+    commitSessionDescriptor(this.lockRoot, this.root, transaction.session_descriptor, atomicWrite)
+    if (transaction.session_descriptor) this._checkpoint('after_session_ledger', { operation_id: transaction.operation_id })
     const personaDescriptors = transaction.persona_descriptors ?? (transaction.persona_descriptor ? [transaction.persona_descriptor] : [])
     for (let index = 0; index < personaDescriptors.length; index++) {
       commitPersonaDescriptor(this.lockRoot, this.root, personaDescriptors[index], atomicWrite)
@@ -246,6 +249,7 @@ export class TransactionEngine {
       }
       const built = await build()
       authorize()
+      if (built?.session_descriptor) validateSessionDescriptor(built.session_descriptor)
       if (built?.purge_descriptor) validateManagedPurgeArtifacts(this.lockRoot, this.memorySpaceId)
       if (!built || !Array.isArray(built.changes)) throw new MemoryError('INVALID_TRANSACTION')
       const changes = built.changes.map((change) => {
@@ -266,6 +270,7 @@ export class TransactionEngine {
         transaction_id: randomUUID(), operation_id: operationId, receipt_key: receiptKey,
         generation: this.generationProvider(), changes,
         ...(built.purge_descriptor ? { purge_descriptor: built.purge_descriptor } : {}),
+        ...(built.session_descriptor ? { session_descriptor: built.session_descriptor } : {}),
         ...(built.persona_descriptor ? { persona_descriptor: built.persona_descriptor } : {}),
         ...(built.persona_descriptors ? { persona_descriptors: built.persona_descriptors } : {}),
         receipt: { operation_id: operationId, request_hash: requestHash, result: built.result },
