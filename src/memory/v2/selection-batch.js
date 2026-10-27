@@ -11,6 +11,7 @@ const keyPattern = /^[a-z][a-z0-9_]*(?:[.:-][a-z0-9_]+)*$/
 const factLabelPrefix = /^(?:更正|纠正|修正|更新|修改|补充)(?:(?:饮品|饮料|食物|点心|口味|颜色|沟通|语言)(?:的)?)?(?:偏好|事实|信息|资料|称呼|姓名|记忆|记录)[：:][ \t]*/u
 // A natural update request must lead into a first-person preference statement.
 const preferenceUpdatePrefix = /^(?:(?:饮品|饮料|食物|点心|口味|颜色|沟通|语言)(?:的)?)?偏好(?:请)?(?:改|修改|调整|更新|更正|修正)一下[，,:：][ \t]*(?=我(?:们)?(?:现在|目前|平时|通常|一直|最近)?(?:更|不太|不)?(?:喜欢|偏好|习惯|倾向|想要|希望))/u
+const correctionRequestPrefix = /^(?:请|麻烦)?(?:更正|纠正|修正|更新|修改)(?:一下)?[：:，,][ \t]*(?=我(?:们)?)/u
 // Omit complete, deictic storage or current-operation wording/source notes.
 // A factual payload or lasting interpersonal boundary is not such a control.
 const contentControlAnchors = [
@@ -182,7 +183,7 @@ export function createMemoryBatchSelector({ assess, clock = Date.now, timeoutMs 
         const end = start + quote.length
         if (start < 0 || event.content.indexOf(quote, start + 1) >= 0 || spans.some(([left, right]) => start < right && end > left)) fail('BATCH_INVALID_EXACT_SPAN')
         spans.push([start, end])
-        const label = factLabelPrefix.exec(quote)?.[0] ?? preferenceUpdatePrefix.exec(quote)?.[0]
+        const label = factLabelPrefix.exec(quote)?.[0] ?? preferenceUpdatePrefix.exec(quote)?.[0] ?? correctionRequestPrefix.exec(quote)?.[0]
         if (label && label.length < quote.length) { start += label.length; quote = quote.slice(label.length) }
         if (candidate.time_quote !== null && !quote.includes(candidate.time_quote)) fail('BATCH_TIME_OUTSIDE_ITEM')
         if (isContentControlOnly(quote)) {
