@@ -3,10 +3,6 @@ export const PRESET_TEXT = {
     zh: { name: '鲸鱼娘', description: '一只住在 DSH 里的鲸鱼娘。会跟着主人换语言，傲娇又黏人；只把摘要目录带进会话，需要时再想起细节。' },
     en: { name: 'Whale Chan', description: 'A Whale Chan who lives in DSH. She follows your language, is tsundere and affectionate, and carries only a light memory index into a session.' },
   },
-  'whale-girl': {
-    zh: { name: '鲸鱼娘（旧会话）', description: '旧会话的兼容入口；新会话请选择鲸鱼娘。' },
-    en: { name: 'Whale Chan (Legacy)', description: 'Compatibility entry for older sessions; choose Whale Chan for new sessions.' },
-  },
 }
 
 /** Only names owned by this package participate; user-authored names stay literal. */

@@ -1,4 +1,6 @@
 <p align="center">
+
+Only the `whale-soul` preset is registered. Sessions that reference a retired preset must select the current preset in the host before resuming. This change does not rewrite session history or stored memories.
   <img src="assets/icon.png" alt="Whale Chan" width="128" height="128">
 </p>
 

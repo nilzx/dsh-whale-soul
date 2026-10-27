@@ -1,4 +1,6 @@
 <p align="center">
+
+仅注册 `whale-soul` 预设。历史会话若引用已移除的预设，恢复前需在宿主中改选当前预设；此变更不改写会话历史或已存记忆。
   <img src="assets/icon.png" alt="鲸鱼娘" width="128" height="128">
 </p>
 
