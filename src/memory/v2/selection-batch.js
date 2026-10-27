@@ -12,6 +12,8 @@ const factLabelPrefix = /^(?:更正|纠正|修正|更新|修改|补充)(?:(?:饮
 // A natural update request must lead into a first-person preference statement.
 const preferenceUpdatePrefix = /^(?:(?:饮品|饮料|食物|点心|口味|颜色|沟通|语言)(?:的)?)?偏好(?:请)?(?:改|修改|调整|更新|更正|修正)一下[，,:：][ \t]*(?=我(?:们)?(?:现在|目前|平时|通常|一直|最近)?(?:更|不太|不)?(?:喜欢|偏好|习惯|倾向|想要|希望))/u
 const correctionRequestPrefix = /^(?:请|麻烦)?(?:更正|纠正|修正|更新|修改)(?:一下)?[：:，,][ \t]*(?=我(?:们)?)/u
+const boundPreferenceUpdatePrefix = /^[^，,；;。.!?！？\n]{0,40}?(?:把|将)[^，,；;。.!?！？\n]{1,160}?(?:更新为|改为|换成|改成)[ \t]*/u
+const preferenceRestatementPrefix = /^(?:不是[^，,；;。.!?！？\n]{1,80}[，,][ \t]*)?(?:我说的是|我的意思是|我是说)[ \t]*/u
 // Omit complete, deictic storage or current-operation wording/source notes.
 // A factual payload or lasting interpersonal boundary is not such a control.
 const contentControlAnchors = [
@@ -50,11 +52,21 @@ const preferenceTopics = new Map([
   ['preference.language', /语言|中文|英文|日语|法语|德语|\b(?:language|chinese|english|japanese|french|german)\b/iu],
   ['preference.address', /称呼|叫我|\b(?:nickname|call me|address me)\b/iu],
 ])
-const preferenceChange = /更正|纠正|修正|改成|改为|不再|不是|更喜欢|更偏好|喜欢的是|偏好的是|\b(?:actually|correction|instead|no longer)\b/iu
+const preferenceChange = /更正|纠正|修正|更新为|换成|改成|改为|不再|不是|更喜欢|更偏好|喜欢的是|偏好的是|\b(?:actually|correction|instead|no longer)\b/iu
 function preferenceStatementContext(content, start, end) {
   while (start > 0 && !/[；;。.!?！？\n]/u.test(content[start - 1])) start--
   while (end < content.length && !/[；;。.!?！？\n]/u.test(content[end])) end++
-  return content.slice(start, end)
+  return { content: content.slice(start, end), start, end }
+}
+function boundPreferenceValue(context, selectedStart, selectedEnd) {
+  const prefix = boundPreferenceUpdatePrefix.exec(context.content)?.[0] ?? preferenceRestatementPrefix.exec(context.content)?.[0]
+  if (!prefix) return null
+  const rest = context.content.slice(prefix.length), clause = /^[^，,；;。.!?！？\n]*/u.exec(rest)[0]
+  const value = clause.trim(), start = context.start + prefix.length + clause.indexOf(value), end = start + value.length
+  if (selectedStart >= end) return null
+  if (!value || !/[\p{L}\p{N}]/u.test(value) || /^(?:它|这个|那个|前者|后者|同上|待定|原来那样|你决定|你看着办|随便|合适的那个)$/u.test(value) ||
+    selectedEnd <= start) fail('BATCH_CORRECTION_TARGET_AMBIGUOUS')
+  return { quote: value, start, end }
 }
 function sharesPreferenceTopic(left, right, canonical = null) {
   const topic = canonical === null ? null : preferenceTopics.get(normalizeMemorySlotKey(canonical))
@@ -219,24 +231,35 @@ export function createMemoryBatchSelector({ assess, clock = Date.now, timeoutMs 
       let maturity = false
       for (const candidate of await coalesceGrowthBoundary(verdict.items, event, { clock, timeoutMs, signal })) {
         let quote = candidate.evidence_quote, start = event.content.indexOf(quote)
-        const end = start + quote.length
+        let end = start + quote.length
         if (start < 0 || event.content.indexOf(quote, start + 1) >= 0 || spans.some(([left, right]) => start < right && end > left)) fail('BATCH_INVALID_EXACT_SPAN')
         spans.push([start, end])
         if (isQuestionSelectionSpan(event.content, start, end)) continue
         const label = factLabelPrefix.exec(quote)?.[0] ?? preferenceUpdatePrefix.exec(quote)?.[0] ?? correctionRequestPrefix.exec(quote)?.[0]
         if (label && label.length < quote.length) { start += label.length; quote = quote.slice(label.length) }
-        if (candidate.time_quote !== null && !quote.includes(candidate.time_quote)) fail('BATCH_TIME_OUTSIDE_ITEM')
         if (isContentControlOnly(quote)) {
           if (candidate.target_ref !== null || candidate.canonical_key !== null) fail('BATCH_CONTROL_SLOT_FORBIDDEN')
           continue
         }
         const { target_ref, ...singleVerdict } = candidate
+        const context = preferenceStatementContext(event.content, start, end)
+        const offeredTarget = target_ref === null ? null : knownSlots?.slots.find(slot => slot.target_ref === target_ref)
+        const preferenceValue = candidate.kind === 'preference' ? boundPreferenceValue(context, start, end) ?? boundPreferenceValue({ content: quote, start, end }, start, end) : null
+        if (preferenceValue && (!offeredTarget || offeredTarget.type !== 'preference')) fail('BATCH_CORRECTION_TARGET_REQUIRED')
+        const selectionSource = preferenceValue ? event.content.slice(context.start, preferenceValue.end) : quote
+        if (candidate.time_quote !== null && !selectionSource.includes(candidate.time_quote)) fail('BATCH_TIME_OUTSIDE_ITEM')
+        if (preferenceValue) {
+          quote = preferenceValue.quote; start = preferenceValue.start; end = preferenceValue.end
+          if (spans.slice(0, -1).some(([left, right]) => start < right && end > left)) fail('BATCH_INVALID_EXACT_SPAN')
+          spans[spans.length - 1] = [start, end]
+        }
         singleVerdict.evidence_quote = quote
         // Reuse the proven eligibility/time rules on this item's local source,
         // so a second clause's temporary restriction cannot taint the first.
-        const single = await createMemorySelector({ clock, timeoutMs, assess: () => singleVerdict }).select({ ...event, content: quote }, { signal })
+        const single = await createMemorySelector({ clock, timeoutMs, assess: () => singleVerdict }).select({ ...event, content: selectionSource }, { signal })
         if (single.decision === 'reject') fail(single.reason_code)
         if (!single.evidence) continue
+        if (preferenceValue && single.decision === 'temporary') fail('BATCH_CORRECTION_TARGET_AMBIGUOUS')
         maturity ||= single.maturity_eligible === true
         let target = null, canonical = single.proposal?.canonical_key ?? null
         if (target_ref !== null) {
@@ -255,10 +278,9 @@ export function createMemoryBatchSelector({ assess, clock = Date.now, timeoutMs 
           if (knownSlots?.slots.some((slot) => normalizeMemorySlotKey(slot.canonical_key) === canonical)) fail('BATCH_EXISTING_SLOT_REQUIRES_REFERENCE')
         }
         if (single.allow_persist && single.decision !== 'temporary' && single.proposal.type === 'preference') {
-          const context = preferenceStatementContext(event.content, start, end)
           // The proposed topic is only an ambiguity hint; persistence still uses the host-bound target key.
-          assertPreferenceCorrectionTarget(quote, context, target_ref, canonical, single.proposal.canonical_key ?? null, knownSlots?.slots ?? [],
-            preferenceChange.test(context) || !!label && /更正|纠正|修正|更新|修改|改/u.test(label))
+          assertPreferenceCorrectionTarget(quote, context.content, target_ref, canonical, single.proposal.canonical_key ?? null, knownSlots?.slots ?? [],
+            preferenceChange.test(context.content) || !!label && /更正|纠正|修正|更新|修改|改/u.test(label))
         }
         if (canonical !== null) {
           const normalized = normalizeMemorySlotKey(canonical) ?? canonical, key = `${single.proposal.type}\0${normalized}`
