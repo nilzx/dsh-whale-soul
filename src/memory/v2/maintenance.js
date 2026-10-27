@@ -9,14 +9,14 @@ const identityKeys = ['memory_space_id', 'subject_id', 'persona_id', 'agent_iden
 export class MemoryMaintenance {
   #store; #lifecycle; #clock; #activity; #contextFactory; #policy; #timer = null; #running = null; #disposed = false; #controller = new AbortController(); #setTimer; #clearTimer
   constructor({ store, getActivity, clock = () => Date.now(), contextFactory, automaticCold = false, automatic = false,
-    days = 7, writes = 40, idleMs = 300000, minAgeDays = 30, batchLimit = 32, scanLimit = 256, intervalMs = 60000,
+    maxBatchBytes, maxBatchMs, monotonic, days = 7, writes = 40, idleMs = 300000, minAgeDays = 30, batchLimit = 32, scanLimit = 256, intervalMs = 60000,
     setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
     if (typeof store?.managedTransaction !== 'function' || typeof getActivity !== 'function' || typeof clock !== 'function' ||
       typeof automaticCold !== 'boolean' || typeof automatic !== 'boolean' || typeof setTimer !== 'function' || typeof clearTimer !== 'function') throw new MemoryError('TRUSTED_MAINTENANCE_BINDINGS_REQUIRED')
     if (!Number.isSafeInteger(idleMs) || idleMs < 0 || !Number.isSafeInteger(intervalMs) || intervalMs < 1 || intervalMs > 3600000) throw new MemoryError('INVALID_MAINTENANCE_POLICY')
     this.#store = store; this.#clock = clock; this.#activity = getActivity; this.#contextFactory = contextFactory; this.#setTimer = setTimer; this.#clearTimer = clearTimer
     this.#policy = Object.freeze({ automaticCold, automatic, days, writes, idleMs, minAgeDays, batchLimit, scanLimit, intervalMs })
-    this.#lifecycle = new MemoryLifecycle({ store, clock })
+    this.#lifecycle = new MemoryLifecycle({ store, clock, ...(maxBatchBytes === undefined ? {} : { maxBatchBytes }), ...(maxBatchMs === undefined ? {} : { maxBatchMs }), ...(monotonic === undefined ? {} : { monotonic }) })
   }
 
   #authorize(context, signal) {
@@ -27,7 +27,7 @@ export class MemoryMaintenance {
   #idle(context, captured, signal) {
     this.#authorize(context, signal)
     const value = this.#activity(), now = lifecycleTime(this.#clock())
-    if (!value || typeof value !== 'object' || value && typeof value.then === 'function' || identityKeys.some((key) => value[key] !== context[key]) ||
+    if (!value || value.scope_coverage !== 'memory_space' || typeof value !== 'object' || value && typeof value.then === 'function' || identityKeys.some((key) => value[key] !== context[key]) ||
       !Number.isSafeInteger(value.epoch) || value.epoch < 0 || typeof value.running !== 'boolean' || typeof value.disposed !== 'boolean' ||
       !Number.isSafeInteger(value.queued_inputs) || value.queued_inputs < 0 || !Number.isSafeInteger(value.inflight_requests) || value.inflight_requests < 0) throw new MemoryError('INVALID_HOST_ACTIVITY')
     if (value.disposed || value.running || value.queued_inputs || value.inflight_requests) throw new MemoryError('HOST_NOT_IDLE')
@@ -39,7 +39,7 @@ export class MemoryMaintenance {
 
   async initialize(context) {
     this.#authorize(context)
-    return this.#store.managedTransaction(`maintenance-baseline-${this.#store.memorySpaceId}`, { action: 'initializeLifecycleMaintenance' }, ({ manifest }) => {
+    return this.#store.managedTransaction(`maintenance-baseline-${digest(identityKeys.map((key) => context[key])).slice(0, 40)}`, { action: 'initializeLifecycleMaintenance' }, ({ manifest }) => {
       this.#authorize(context)
       const existing = loadMaintenanceState(this.#store.root, this.#store.memorySpaceId)
       if (existing) return { changes: [], result: { status: 'unchanged', state: existing } }

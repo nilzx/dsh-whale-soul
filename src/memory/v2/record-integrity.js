@@ -2,6 +2,7 @@ import { lstatSync, readFileSync, readdirSync } from 'node:fs'
 import { isAbsolute, join, parse, relative, resolve, sep } from 'node:path'
 import { MEMORY_TYPES, MemoryError, assertId, digest, validateRecord } from './contracts.js'
 import { normalizeMemorySlotKey } from './slot-policy.js'
+import { validateAgreementMetadata } from './agreement-policy.js'
 import { validateLifecycleMetadata } from './lifecycle-policy.js'
 
 const FILES = ['meta.json', 'gist.md', 'detail.md', 'evidence.jsonl', 'integrity.json']
@@ -116,6 +117,7 @@ function readBundle(files) {
   const meta = parseJson(files['meta.json'])
   try { validateRecord(meta) } catch { fail('RECORD_BUNDLE_INVALID') }
   validateLifecycleMetadata(meta)
+  validateAgreementMetadata(meta)
   const integrity = parseJson(files['integrity.json'])
   object(integrity, ['revision_id', 'files'], 'RECORD_BUNDLE_INVALID')
   object(integrity.files, DATA_FILES, 'RECORD_BUNDLE_INVALID')

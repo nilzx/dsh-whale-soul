@@ -12,7 +12,7 @@ const json = (value) => `${JSON.stringify(value, null, 2)}\n`
 const clone = (value) => JSON.parse(JSON.stringify(value))
 const fail = (code) => { throw new MemoryError(code) }
 const allowedFields = ['title', 'tags', 'gist', 'detail']
-const metadataFields = new Set(['schema_version', 'record_id', 'revision_id', 'revision', 'memory_space_id', 'subject_id', 'actor_ids', 'persona_id', 'agent_identity_id', 'created_at', 'observed_at', 'updated_at', 'valid_from', 'valid_to', 'expires_at', 'retention', 'claim_kind', 'confidence', 'title', 'type', 'tags', 'canonical_key', 'provenance_refs', 'visibility', 'pinned', 'status', 'supersedes', 'revision_history', 'layers', 'assets', 'asset_metadata_hash', 'legacy', 'external_revision', 'lifecycle'])
+const metadataFields = new Set(['schema_version', 'record_id', 'revision_id', 'revision', 'memory_space_id', 'subject_id', 'actor_ids', 'persona_id', 'agent_identity_id', 'created_at', 'observed_at', 'updated_at', 'valid_from', 'valid_to', 'expires_at', 'retention', 'claim_kind', 'confidence', 'title', 'type', 'tags', 'canonical_key', 'provenance_refs', 'visibility', 'pinned', 'status', 'supersedes', 'revision_history', 'layers', 'assets', 'asset_metadata_hash', 'legacy', 'external_revision', 'lifecycle', 'agreement'])
 const bytes = (value) => Buffer.isBuffer(value) ? value : Buffer.from(value)
 const decode = (value) => { try { return new TextDecoder('utf-8', { fatal: true }).decode(value) } catch { fail('INVALID_EXTERNAL_UNICODE') } }
 const safeStat = (path) => { try { return lstatSync(path) } catch (error) { if (error.code === 'ENOENT') return null; throw error } }
@@ -397,7 +397,9 @@ export class MemoryExternalChanges {
         if (chosen.revision_id === head.head_revision_id) { record = chosen.candidate.record; files = chosen.candidate.files; mode = 'repair' }
         else {
           record = clone(chosen.candidate.record); mode = 'adopt'
-          const currentLifecycle = this.#candidate(head, head.head_revision_id)?.record.meta.lifecycle
+          const currentMeta = this.#candidate(head, head.head_revision_id)?.record.meta
+          const currentLifecycle = currentMeta?.lifecycle
+          if (currentMeta?.agreement) record.meta = { ...record.meta, status: currentMeta.status, agreement: clone(currentMeta.agreement) }
           if (head.bundle_location === 'cold' && !currentLifecycle) fail('TRUSTED_REVISION_UNAVAILABLE')
           record.meta = { ...record.meta, ...(currentLifecycle ? { status: currentLifecycle.tier === 'active' ? 'active' : 'archived', lifecycle: clone(currentLifecycle) } : {}), revision_id: randomUUID(), revision: head.head_revision + 1, supersedes: head.head_revision_id, updated_at: now,
             external_revision: { protected: true, source: 'owner_restore', change_id: entry.change_id, restored_from: chosen.revision_id } }

@@ -14,3 +14,4 @@ export { MEMORY_PROVIDER_PROTOCOL, assertMemoryProvider, assertProviderStore, cr
 export { MemoryLifecycle } from './lifecycle.js'
 export { LIFECYCLE_CAPABILITY, LIFECYCLE_POLICY_VERSION, classifyLifecycle } from './lifecycle-policy.js'
 export { MemoryMaintenance } from './maintenance.js'
+export { MemoryAgreements } from './agreements.js'

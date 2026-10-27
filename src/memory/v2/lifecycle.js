@@ -1,3 +1,4 @@
+import { performance } from 'node:perf_hooks'
 import { randomUUID } from 'node:crypto'
 import { existsSync, lstatSync } from 'node:fs'
 import { API_VERSION, MemoryError, assertId, assertOnly, digest, failure } from './contracts.js'
@@ -12,9 +13,10 @@ const plans = new WeakMap()
 
 /** Owner-managed deterministic lifecycle. It is never registered as a model tool. */
 export class MemoryLifecycle {
-  constructor({ store, clock = () => Date.now() } = {}) {
+  constructor({ store, clock = () => Date.now(), monotonic = () => performance.now(), maxBatchBytes = 64 * 1024 * 1024, maxBatchMs = 5000 } = {}) {
     if (typeof store?.managedTransaction !== 'function' || typeof clock !== 'function') throw new MemoryError('MANAGED_MEMORY_REQUIRED')
-    this.store = store; this.clock = clock
+    if (typeof monotonic !== 'function' || !Number.isSafeInteger(maxBatchBytes) || maxBatchBytes < 1 || maxBatchBytes > 1024 * 1024 * 1024 || !Number.isFinite(maxBatchMs) || maxBatchMs < 1 || maxBatchMs > 30000) throw new MemoryError('INVALID_LIFECYCLE_BUDGET')
+    this.store = store; this.clock = clock; this.monotonic = monotonic; this.maxBatchBytes = maxBatchBytes; this.maxBatchMs = maxBatchMs
   }
 
   async preview(args = {}, context) {
@@ -36,7 +38,7 @@ export class MemoryLifecycle {
   }
 
   async apply({ operation_id = randomUUID(), plan } = {}, context, hostOptions = {}) {
-    const results = []
+    const results = []; const started = this.monotonic(); let totalBytes = 0
     try {
       this.store._authorize(context, 'memory.manage')
       assertId(operation_id); assertOnly(hostOptions, ['authorize', 'signal'])
@@ -44,6 +46,8 @@ export class MemoryLifecycle {
       const capture = plans.get(plan)
       if (!capture || capture.store !== this.store || digest(capture.scope) !== digest(scope(context))) throw new MemoryError('TRUSTED_LIFECYCLE_PLAN_REQUIRED')
       const checkHost = () => {
+        const elapsed = this.monotonic() - started
+        if (!Number.isFinite(elapsed) || elapsed < 0 || elapsed > this.maxBatchMs) throw new MemoryError('LIFECYCLE_TIME_BUDGET_EXCEEDED')
         this.store._authorize(context, 'memory.manage')
         if (hostOptions.signal?.aborted) throw new MemoryError('LIFECYCLE_CANCELLED')
         if (hostOptions.authorize) {
@@ -84,6 +88,8 @@ export class MemoryLifecycle {
           if (existsSync(this.store.engine.resolvePath(targetBase))) throw new MemoryError('LIFECYCLE_DESTINATION_EXISTS')
           const targetFiles = Object.fromEntries(Object.entries(sourceFiles).filter(([name]) => name.startsWith('revisions/')))
           Object.assign(targetFiles, files, Object.fromEntries(Object.entries(files).map(([name, data]) => [`revisions/${revisionId}/${name}`, data])))
+          totalBytes += [...Object.values(sourceFiles), ...Object.values(targetFiles)].reduce((size, value) => size + Buffer.byteLength(value), 0)
+          if (totalBytes > this.maxBatchBytes) throw new MemoryError('LIFECYCLE_BATCH_BYTES_EXCEEDED')
           const manifest = this.store._manifest(), watermark = manifest.revision_watermark + 1
           const other = this.store._records().records.filter((meta) => meta.record_id !== action.record_id)
           prepared = true

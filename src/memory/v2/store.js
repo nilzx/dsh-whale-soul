@@ -306,6 +306,7 @@ export class MemoryStoreV2 {
         const previous = this._readRecord(args.record_id)
         if (!this._visible(previous.meta, context) || (previous.meta.agent_identity_id !== context.agent_identity_id && !context.capabilities.includes('memory.manage'))) throw new MemoryError('RECORD_DENIED')
         if ((previous.meta.external_revision?.protected === true || previous.meta.legacy?.user_edited === true) && !context.capabilities.includes('memory.manage')) throw new MemoryError('PROTECTED_REVISION')
+        if (previous.meta.agreement !== undefined) throw new MemoryError('AGREEMENT_MANAGEMENT_REQUIRED')
         if (previous.meta.lifecycle?.tier === 'cold') throw new MemoryError('LIFECYCLE_MANAGEMENT_REQUIRED')
         if (previous.meta.revision !== args.expected_revision) throw new MemoryError('REVISION_CONFLICT')
         const record = await this._proposal(args, context, previous)
@@ -349,6 +350,7 @@ export class MemoryStoreV2 {
           if (args.record_id && meta.record_id !== args.record_id) continue
           if (args.subject_id && meta.subject_id !== args.subject_id) continue
           if (!args.include_inactive && meta.status !== 'active' && !(args.include_cold && meta.lifecycle?.tier === 'cold')) continue
+          if (!args.include_inactive && meta.agreement && (meta.agreement.state !== 'open' || meta.agreement.due_at && at >= Date.parse(meta.agreement.due_at))) continue
           if ((meta.valid_from && Date.parse(meta.valid_from) > at) || (meta.valid_to && Date.parse(meta.valid_to) <= at) || (meta.expires_at && Date.parse(meta.expires_at) <= at)) continue
           if (query && !`${meta.title}\n${record.gist}\n${meta.tags.join(' ')}`.toLowerCase().includes(query)) continue
           if (matches.length < limit) matches.push(record)

@@ -58,7 +58,9 @@ export function reconcileMaintenanceState(root, spaceRoot, write) {
   if (!state) return null
   const manifest = read(safe(root, join(spaceRoot, 'manifest.json')))
   if (manifest && manifest.revision_watermark < (state.processed_revision_watermark ?? state.baseline_revision_watermark)) throw new MemoryError('MAINTENANCE_WATERMARK_ROLLBACK')
-  const path = safe(root, join(spaceRoot, 'index/lifecycle-maintenance.json')), projection = read(path)
+  const path = safe(root, join(spaceRoot, 'index/lifecycle-maintenance.json'))
+  let projection
+  try { projection = read(path) } catch (error) { if (error.code !== 'MAINTENANCE_STATE_REPAIR_REQUIRED') throw error; projection = null }
   if (digest(projection) !== digest(state)) write(path, json(state))
   return state
 }

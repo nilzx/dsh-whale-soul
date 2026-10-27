@@ -123,6 +123,7 @@ export function inspectMemoryRoot(root, memorySpaceId) {
   if (!plain(manifest)) throw new MemoryError('INVALID_ROOT_MANIFEST')
   if (manifest.format_version !== FORMAT_VERSION) throw new MemoryError('UNSUPPORTED_FORMAT_VERSION')
   if (manifest.lifecycle_capabilities !== undefined && (!Array.isArray(manifest.lifecycle_capabilities) || manifest.lifecycle_capabilities.some((value) => value !== 'physical-cold-v1') || new Set(manifest.lifecycle_capabilities).size !== manifest.lifecycle_capabilities.length)) throw new MemoryError('UNSUPPORTED_LIFECYCLE_CAPABILITY')
+  if (manifest.lifecycle_state_spaces !== undefined && (!validIds(manifest.lifecycle_state_spaces) || manifest.lifecycle_state_spaces.some((id) => !manifest.spaces?.includes(id)))) throw new MemoryError('INVALID_ROOT_MANIFEST')
   if (!validIds(manifest.spaces)) throw new MemoryError('INVALID_ROOT_MANIFEST')
   if (manifest.api_version === undefined || manifest.api_version === '1.0.0') throw new MemoryError('INTEGRITY_BASELINE_REQUIRED')
   if (manifest.api_version !== API_VERSION) throw new MemoryError('UNSUPPORTED_API_VERSION')

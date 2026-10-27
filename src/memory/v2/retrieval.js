@@ -31,7 +31,8 @@ function terms(value) {
     ? new RegExp(`(^|[^a-z0-9])${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=$|[^a-z0-9])`, 'i') : term)
 }
 const activeAt = (meta, at, includeCold = false) => (meta.status === 'active' || includeCold && meta.lifecycle?.tier === 'cold') && (!meta.valid_from || Date.parse(meta.valid_from) <= at) &&
-  (!meta.valid_to || at < Date.parse(meta.valid_to)) && (!meta.expires_at || at < Date.parse(meta.expires_at))
+  (!meta.valid_to || at < Date.parse(meta.valid_to)) && (!meta.expires_at || at < Date.parse(meta.expires_at)) &&
+  (!meta.agreement || meta.agreement.state === 'open' && (!meta.agreement.due_at || at < Date.parse(meta.agreement.due_at)))
 function score(record, queryTerms) {
   const fields = [[record.meta.title, 3], [(record.meta.tags ?? []).join(' '), 4], [record.meta.canonical_key ?? '', 2], [record.gist, 1]]
   let total = 0
@@ -148,7 +149,7 @@ export async function retrieveMemory(store, args = {}, context, hostOptions = {}
         try {
           const current = store._readRecord(assertId(id))
           if (!visible(store, current.meta, context, args.subject_id)) continue
-          if (!historical && (current.meta.status === 'active' || args.include_cold && current.meta.lifecycle?.tier === 'cold')) for (const value of [current.meta.valid_from, current.meta.valid_to, current.meta.expires_at]) {
+          if (!historical && (current.meta.status === 'active' || args.include_cold && current.meta.lifecycle?.tier === 'cold')) for (const value of [current.meta.valid_from, current.meta.valid_to, current.meta.expires_at, current.meta.agreement?.due_at]) {
             if (value && Date.parse(value) > at) temporalTransitions.push(Date.parse(value))
           }
           let record = current
@@ -237,7 +238,7 @@ export async function buildMemoryContext(store, args = {}, context, hostOptions 
       const line = JSON.stringify({ id: item.meta.record_id, type: item.meta.type, subject: item.meta.subject_id, title: item.meta.title,
         ...(item.gist === undefined ? {} : { gist: item.gist }), claim: item.meta.claim_kind,
         from: item.meta.valid_from, until: item.meta.valid_to ?? item.meta.expires_at,
-        actor: item.meta.agent_identity_id, persona: item.meta.persona_id, evidence: item.meta.provenance_refs })
+        actor: item.meta.agent_identity_id, persona: item.meta.persona_id, ...(item.meta.agreement ? { agreement: { state: item.meta.agreement.state, due_at: item.meta.agreement.due_at, participants: item.meta.agreement.participants } } : {}), evidence: item.meta.provenance_refs })
         .replaceAll('&', '\\u0026').replaceAll('<', '\\u003c').replaceAll('>', '\\u003e') + '\n'
       if (prefix.length + body.length + line.length + suffix.length > budget) continue
       body += line; ids.push(item.meta.record_id)
