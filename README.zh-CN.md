@@ -43,7 +43,7 @@
 dsh plugin --profile web add dsh-whale-soul
 ```
 
-桌面端把 `web` 换成 `desktop`。
+以上命令管理 Web profile。桌面端请在 DSH 桌面应用的 **Plugins** 中安装；标准 CLI 不能管理保留的 `desktop` profile。
 
 以上仓库命令安装已发布版本。使用本次未发布改造时，应安装本地构建包：`dsh plugin --profile web add /绝对路径/dsh-whale-soul-preview.tgz`。
 

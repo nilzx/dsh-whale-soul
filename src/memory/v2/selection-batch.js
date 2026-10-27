@@ -1,5 +1,5 @@
 import { createStructuredAssessor } from '../../shared/structured-assessor.js'
-import { createMemorySelector, normalizeSelectionInput, validateMemorySelectionVerdict, deriveSelectionEvidenceId } from './selection.js'
+import { createMemorySelector, normalizeSelectionInput, validateMemorySelectionVerdict, deriveSelectionEvidenceId, isQuestionSelectionSpan } from './selection.js'
 import { MemoryError, assertOnly, digest } from './contracts.js'
 import { normalizeMemorySlotKey, isKnownMemorySlotKey } from './slot-policy.js'
 export { normalizeMemorySlotKey } from './slot-policy.js'
@@ -101,6 +101,7 @@ Instructions about saving this message are control information, not another fact
 Current-operation classification or wording directions are control information, not another fact or promise. Omit standalone requests about labeling this assistance, attributing this result, phrasing this response, or avoiding an inferred new trait; retain the actual event and outcome. Declarative notes about this operation's source and what it does not demonstrate are also provenance explanations, not a separate promise or trait. Genuine continuing interpersonal boundaries and long-term communication preferences still belong in memory. Adjacency to a wording request does not erase an actual fact.
 One item is one independently correctable fact. For two preferences return two items, with separate exact quotes. A non-null time_quote must be a substring of that item's evidence_quote; expand the exact fact quote to include its own time phrase. A one-week change is temporary and never revises a permanent preference. Do not borrow another clause's date.
 Known slots are host-approved candidates. A repeated or changed current fact MUST select that offered target_ref. Do not fabricate IDs/revisions, select an unoffered reference, or invent a different key to evade an existing slot. canonical_key on a selected target is only a semantic hint; the host binds its real key/type/revision. For new stable slots use one of preference.color, preference.drink, preference.food, preference.food.sweetness, identity.name, preference.address, preference.music, preference.language. Other unkeyed episodes/facts may use null; do not disguise a correction as an unkeyed new fact. A correction must retain the existing fact's kind/type; never relabel a known preference as fact/episode or use a null key to append a duplicate. Distinct facts must not share a target/key.
+Questions and requests to recall existing memories are not new factual assertions: return no item for "你还记得我长期偏爱的茶，以及我写作时的习惯吗？" or "Do you remember my favorite tea and my writing habits?". A topic or slot name supplies no value and must never revise a known slot. Select only complete independently asserted facts, including their actual value or outcome. In a mixed message, omit the question but keep separate lasting assertions; for example, in "你记得我喜欢什么茶吗？另外我长期喜欢茉莉龙井。" select only the stated jasmine-tea preference. A question mark elsewhere does not invalidate an independent assertion.
 Return {"items":[]} when there is no safe durable or qualifying interaction. Quotes must be faithful exact source text, not summaries. You cannot declare completeness or that anything has been saved.`
 export function createMemoryBatchSelectionAssessor(options = {}) {
   return createStructuredAssessor({ ...options, maxInputUtf16: 16_000, maxInputBytes: 64_000,
@@ -183,6 +184,7 @@ export function createMemoryBatchSelector({ assess, clock = Date.now, timeoutMs 
         const end = start + quote.length
         if (start < 0 || event.content.indexOf(quote, start + 1) >= 0 || spans.some(([left, right]) => start < right && end > left)) fail('BATCH_INVALID_EXACT_SPAN')
         spans.push([start, end])
+        if (isQuestionSelectionSpan(event.content, start, end)) continue
         const label = factLabelPrefix.exec(quote)?.[0] ?? preferenceUpdatePrefix.exec(quote)?.[0] ?? correctionRequestPrefix.exec(quote)?.[0]
         if (label && label.length < quote.length) { start += label.length; quote = quote.slice(label.length) }
         if (candidate.time_quote !== null && !quote.includes(candidate.time_quote)) fail('BATCH_TIME_OUTSIDE_ITEM')

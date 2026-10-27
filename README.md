@@ -43,7 +43,7 @@ Open **Plugins** in DSH and install `dsh-whale-soul`. Restart DSH if it asks you
 dsh plugin --profile web add dsh-whale-soul
 ```
 
-Use `--profile desktop` instead of `web` if you use the desktop profile.
+The command above manages the web profile. For desktop, install the plugin from **Plugins** in the DSH desktop app; the standard CLI cannot manage the reserved desktop profile.
 
 These registry commands install the published release. To use this unreleased refactor, install its locally built archive instead: `dsh plugin --profile web add /absolute/dsh-whale-soul-preview.tgz`.
 

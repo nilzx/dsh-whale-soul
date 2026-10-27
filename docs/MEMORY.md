@@ -38,6 +38,8 @@ Before the main reply, the runtime selects durable facts, important experiences 
 
 A save instruction is control information: “remember that I prefer white tea” retains the preference, not a second memory about the request to save it. The reply may confirm only the excerpts that actually committed. Ambiguous matches stay unresolved rather than silently replacing an unrelated record.
 
+A question asking what the Agent remembers supplies no new preference value. It must not replace a known fact with a topic such as “my favorite tea”. Separately asserted facts in the same message can still be selected; quoted questions inside a real experience do not make that experience a recall request.
+
 Corrections target a specific record/revision and preserve earlier versions and sources. An explicit natural correction can locate a cold fact and commit its restoration plus revision together; the admitted target and revision must still match. Protected title, tags, pinned and protection metadata remain intact, and the earlier body stays in history. Owner-reviewed text stays attributed as a quotation; it does not become an invented user statement or growth event. Direct external edits use the separate [review workflow](external-review-api.md), not automatic adoption by modification time.
 
 ## Explicit agreements
