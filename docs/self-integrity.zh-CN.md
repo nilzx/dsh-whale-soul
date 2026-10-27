@@ -6,17 +6,17 @@
 
 完整导出使用transfer v3，携带无正文的`self_integrity_state`。导入除原有身份、清除和record完整性接纳外，还要求`identity_mode: preserve`与明确`accept_self_integrity: true`。宿主当前稳定性档位优先；不同self快照不按文件时间猜测合并，普通备份恢复不能降低独立成熟度水位。
 
-## 升级API1.1旧根
+## 升级API1.1或1.2旧根
 
 先停止旧源写入与维护，保全原目录，选择互不重叠的新目标。在人格受限工具进程之外运行：
 
 ```sh
-dsh-whale-soul-manage upgrade-self --root /absolute/new-root --space owner \
+node /absolute/plugin/src/manage.js upgrade-self --root /absolute/new-root --space owner \
   --source /absolute/old-root --source-quiescent \
   --legacy-self-policy preserve-opaque
 ```
 
-审阅预览与`source_snapshot`后，同一命令增加`--snapshot HASH --apply`。源目录保持原样；身份和证据资格保留，旧的未锚成长逐字节归档到`cold/legacy-self/`，不加载为稳定特征；宿主当前档位继续有效。
+审阅预览与`source_snapshot`后，同一命令增加`--snapshot HASH --apply`。源目录保持原样，身份和证据资格保留。可信API1.2成长保留原锚与活跃特征；API1.1未锚成长逐字节归档到`cold/legacy-self/`，不加载为稳定特征。宿主当前档位继续有效。
 
 目标保存本机旧源路径保护清单，清单不进入可移植归档。声明需要却缺失权威时拒绝启动；已COMMIT但尚未安装的限制也会在恢复前生效。这不会删除旧源，也不能远程停止已经运行的旧writer。
 

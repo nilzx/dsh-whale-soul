@@ -4,6 +4,8 @@ import { MemoryAgreements } from '../memory/v2/agreements.js'
 import { MemoryError, assertId, digest, timestamp } from '../memory/v2/contracts.js'
 import { retentionBlockReason } from '../memory/v2/retention.js'
 import { explicitSelectionEnd } from '../memory/v2/selection-time.js'
+import { validateAgreementMetadata } from '../memory/v2/agreement-policy.js'
+import { lifecycleTime } from '../memory/v2/lifecycle-policy.js'
 
 const scopeKeys = ['memory_space_id', 'subject_id', 'persona_id', 'agent_identity_id']
 const explicitDeadline = /直到|截至|截止|(?:^|[，,；;\s])到\s*(?:\d|今年|明年|[一二三四五六七八九十]+月)|(?:持续|接下来|未来)\s*\d+\s*天|\b(?:until|through|before)\b|\bfor\s+\d+\s+days?\b/i
@@ -109,10 +111,19 @@ export class PersonaAgreementBridge {
   }
   async #items(ctx, options, states = ['proposed', 'open']) {
     this.#check(ctx, options)
-    const result = await this.service.list({ states, limit: 32 }, ctx)
-    this.#check(ctx, options)
-    if (result.status !== 'ok') throw new MemoryError(result.reason_code ?? 'AGREEMENT_UNAVAILABLE')
-    return result.items.map((item) => ({ ...item, terms: this.store._readRecord(item.record_id).detail }))
+    // Lifecycle matching must consider every agreement. The bounded public list
+    // is a display projection and older fulfilled items must not hide a target.
+    return this.store.managedRead(ctx, ({ records }) => {
+      this.#check(ctx, options)
+      const now = lifecycleTime(this.clock())
+      const items = records.filter((meta) => meta.agreement && scopeKeys.every((key) => meta[key] === ctx[key]) && states.includes(meta.agreement.state))
+        .sort((a, b) => a.record_id.localeCompare(b.record_id))
+        .map((meta) => ({ record_id: meta.record_id, revision: meta.revision, agreement: clone(validateAgreementMetadata(meta)),
+          window_closed: !!meta.agreement.due_at && now >= Date.parse(meta.agreement.due_at), title: meta.title,
+          terms: this.store._readRecord(meta.record_id).detail }))
+      this.#check(ctx, options)
+      return items
+    })
   }
   async pending(ctx, options = {}) {
     const items = await this.#items(ctx, options), current = []

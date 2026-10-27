@@ -2,7 +2,7 @@
 #
 # The bundle declares one Agent preset. The preset mounts:
 #   - the persona row;
-#   - the memory plugin (package root entry);
+#   - the V2 persona runtime (package ./persona entry);
 #   - the optional body adapter (package ./body entry).
 #
 # The body row is a one-way, optional bridge. It silently degrades when no

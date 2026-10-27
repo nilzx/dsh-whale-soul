@@ -24,7 +24,7 @@ The body row accepts:
 | Option | Default | Meaning |
 |---|---:|---|
 | `baseUrl` | auto | Override the dsh-pet origin. |
-| `petId` | automatic | Exact dsh-pet instance to drive. An explicit missing/invalid ID disables the bridge. When omitted, prefer `main`, then the first configured instance. The bundled presets explicitly select `main`. |
+| `petId` | automatic | Exact dsh-pet instance to drive. An explicit missing/invalid ID disables the bridge. When omitted, prefer `main`, then the first configured instance. The bundled preset explicitly selects `main`. |
 | `surface` | `any` | `web`, `desktop`, `both`, or `any`. |
 | `maxBubbleChars` | `100` | Maximum bubble text. |
 | `rateLimitMs` | `4000` | Minimum gap between explicit reactions. |

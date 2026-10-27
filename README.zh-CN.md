@@ -51,6 +51,8 @@ dsh plugin --profile web add dsh-whale-soul
 
 安装后新建会话，在 Agent 模式选择器里选 **鲸鱼娘**（英文界面显示 Whale Chan）。已有会话保持启动时的模式。
 
+如果用过V1版本，请保全原记忆目录，先按[V1迁移流程](docs/management.zh-CN.md)迁移到独立根，再用当前运行时接续这些数据。旧根会返回`LEGACY_MIGRATION_REQUIRED`，安装不会自动迁移。早期V2 API1.1/1.2根使用独立的[存储升级流程](docs/self-integrity.zh-CN.md)。
+
 ## 使用
 
 - 选择 **鲸鱼娘**（英文界面显示 Whale Chan），正常聊天即可。文件、shell、网页、定时、skills 这些 Agent 能力都还在。
@@ -59,6 +61,25 @@ dsh plugin --profile web add dsh-whale-soul
 - 输入`/whale-context`查看鲸鱼娘占当前留存上下文的估算比例，细分人格核心、人格补完、记忆/召回、运行提示和工具，同时显示占总上下文和占鲸鱼娘内部的百分比。本地指令无需模型调用，结果不进入模型上下文或记忆；沿用DSH估算方式，不是计费token。
 - 旧记忆根升级至API1.3前，请阅读[人格完整性与所有者升级](docs/self-integrity.zh-CN.md)：1.1未锚定的成长只保全为不可自动加载的历史；1.2源必须已有可信self锚，缺锚拒绝。writer门槛与冷藏边界见[生命周期与更深回忆](docs/lifecycle.zh-CN.md)。
 - 管理操作使用[本地管理CLI](docs/management.zh-CN.md)。直接外改需明确[审查](docs/external-review-api.md)；存储、正文纯净和可移植性见[V2记忆设计](docs/MEMORY.zh-CN.md)。
+
+## 记忆位置与基础配置
+
+默认记忆根是`~/.dsh/whale-soul/memory`；设置`DSH_HOME`后为`$DSH_HOME/whale-soul/memory`，默认空间为`owner`。未另行配置时，Web与桌面profile使用同一根。
+
+在`dsh-whale-soul/persona`插件行设置：
+
+| 选项 | 默认值 | 用途 |
+|---|---|---|
+| `memoryRoot` | 上述默认根 | 选择记忆库，建议使用绝对路径或`~/…`。 |
+| `memorySpaceId` | `owner` | 选择根目录下的记忆空间。 |
+| `subjectId` | `owner` | 标识与该个体互动的人。 |
+| `individualKey` | `default` | 接续指定个体，修改后新建会话。 |
+| `stabilityMode` | `auto` | `variable`多变、`normal`普通、`stubborn`顽固、`auto`自动。 |
+| `autoDream` | `true` | 允许空闲人格反思，不会生成V2叙事梦日记。 |
+| `autoMemoryMaintenance` | `false` | 开启自动物理记忆维护。 |
+| `automaticCold` | `false` | 允许物理维护将符合条件的条目转入冷藏。 |
+
+修改根或空间只是选择数据，不会搬迁原库。跨根接续同一个体请使用[导出导入流程](docs/management.zh-CN.md)。如可选身体也使用自定义根或空间，其`memoryRoot`与`memorySpaceId`需与人格行一致。不要让独立的Web与桌面进程同时写同一根；物理维护只协调单个宿主进程。
 
 ## 隐私和安全
 

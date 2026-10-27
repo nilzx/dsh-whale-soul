@@ -29,4 +29,4 @@ Official rc.3 retains older runtime-context snapshots in the Session. The [injec
 
 The live provider identity is also checked through a trusted host callback; disposal or replacement cannot keep old cached owner reads active. No error body needs to contain file paths, credentials, record contents or provider secrets.
 
-中文摘要：所有者审核后的事实按“人工审核引用”读取，仍受身份、时间、清除、不记和敏感门阀约束，不能变成人格成长依据。官方会保留旧动态快照；旧的人工事实快照失效时，本阶段在主模型入口拒绝请求，可能需要新会话。尚未做历史净化或受保护事实的真实用户窄更正，不声称完整旅程已通过。
+中文摘要：所有者审核后的事实按“人工审核引用”读取，仍受身份、时间、清除、不记和敏感边界约束，不能变成人格成长依据。具备官方绑定时，宿主可移除活动上下文中已核验但失效的本插件快照，保留原始会话历史；重启后无法证明归属或存在未知旧快照时，仍可能需要新会话。受保护事实的真实用户更正由[独立更正路径](protected-fact-correction.md)处理，不由引文读取权限授予。

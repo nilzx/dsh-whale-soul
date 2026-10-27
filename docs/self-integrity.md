@@ -8,17 +8,17 @@ Full exports use transfer version 3 and carry `self_integrity_state` without pro
 
 Changing the persona core version is a separate flow: [core-upgrade review](core-upgrades.md) preserves old traits and candidates, rechecks them against the current core, and retains their previous revisions. It does not reset identity or maturity and does not require a storage-root migration.
 
-## Upgrade an API 1.1 root
+## Upgrade an API 1.1 or 1.2 root
 
 Stop the source's writers and maintenance, preserve the source, and use a separate non-overlapping destination. Run the CLI outside the persona's restricted process:
 
 ```sh
-dsh-whale-soul-manage upgrade-self --root /absolute/new-root --space owner \
+node /absolute/plugin/src/manage.js upgrade-self --root /absolute/new-root --space owner \
   --source /absolute/old-root --source-quiescent \
   --legacy-self-policy preserve-opaque
 ```
 
-Review `source_snapshot` and the preview. Apply the same command with `--snapshot HASH --apply`. The source remains unchanged. Existing identity and evidence credentials are preserved; old unanchored growth is archived under `cold/legacy-self/` and never loaded as stable traits. The current host mode remains authoritative.
+Review `source_snapshot` and the preview. Apply the same command with `--snapshot HASH --apply`. The source remains unchanged. Existing identity and evidence credentials are preserved. Trusted API 1.2 growth retains its anchors and active traits; unanchored API 1.1 growth is archived under `cold/legacy-self/` and never loaded as stable traits. The current host mode remains authoritative.
 
 The destination keeps a local, non-portable list of old source paths for persona file protection. A declared but missing authority fails closed; committed pending restrictions are enforced before normal recovery. This does not delete the old source or stop another already-running old writer.
 

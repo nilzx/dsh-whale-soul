@@ -51,6 +51,8 @@ Only the `whale-soul` preset is registered. Sessions that reference a retired pr
 
 After installation, start a new session and choose **Whale Chan** (shown as **鲸鱼娘** when DSH is in Chinese) in the Agent mode selector. Existing sessions keep the preset they started with.
 
+If you already used a V1 release, preserve its memory directory and follow [V1 migration](docs/management.md) into a separate root before using this runtime with that data. An old root is refused with `LEGACY_MIGRATION_REQUIRED`; installation does not migrate it automatically. Early V2 API 1.1/1.2 roots use the separate [storage upgrade](docs/self-integrity.md).
+
 ## Use
 
 - Choose **Whale Chan** and chat normally. She can still do normal Agent work: files, shell, web, schedules, skills, and so on.
@@ -59,6 +61,25 @@ After installation, start a new session and choose **Whale Chan** (shown as **�
 - Run `/whale-context en` to inspect Whale Soul's estimated share of the current retained context, split into persona core, growth, memory/recall, runtime hints and tools. Both whole-context and within-Whale percentages are shown. The local command makes no model call and does not add its output to model context or memory; counts use DSH's heuristic and are not billing tokens.
 - Read [self integrity and owner upgrades](docs/self-integrity.md) before moving an older memory root to API 1.3. Unanchored 1.1 growth remains opaque; a 1.2 source must retain its trusted self anchors, and missing anchors are rejected. See [lifecycle and deeper recall](docs/lifecycle.md) for the writer floor and cold-memory boundaries.
 - Use the [local management CLI](docs/management.md) for owner operations. Direct edits need explicit [external-change review](docs/external-review-api.md); [V2 memory design](docs/MEMORY.md) explains storage, content purity and portability.
+
+## Memory location and basic settings
+
+The default memory root is `~/.dsh/whale-soul/memory`, or `$DSH_HOME/whale-soul/memory` when `DSH_HOME` is set. The default space is `owner`. Web and desktop profiles use this same root unless configured differently.
+
+Set these options on the `dsh-whale-soul/persona` plugin row:
+
+| Option | Default | Purpose |
+|---|---|---|
+| `memoryRoot` | the root above | Select the store; an absolute path or `~/…` is recommended. |
+| `memorySpaceId` | `owner` | Select a memory space within the root. |
+| `subjectId` | `owner` | Attribute the person interacting with this individual. |
+| `individualKey` | `default` | Resume a named individual; use a new Session after changing it. |
+| `stabilityMode` | `auto` | Choose `variable`, `normal`, `stubborn` or `auto`. |
+| `autoDream` | `true` | Allow idle personality reflection; this does not create V2 narrative dream diaries. |
+| `autoMemoryMaintenance` | `false` | Opt in to automatic physical memory maintenance. |
+| `automaticCold` | `false` | Allow eligible records to move to cold storage during physical maintenance. |
+
+Changing a root or space selects data; it does not move the previous store. Use the [export/import workflow](docs/management.md) to preserve an individual when moving data. If you use the optional body with a custom root or space, keep its `memoryRoot` and `memorySpaceId` aligned with the persona row. Do not run independent web and desktop writers against the same root at the same time; physical maintenance coordinates one host process only.
 
 ## Privacy and safety
 

@@ -4,6 +4,8 @@
 
 Run `node /absolute/plugin/src/manage.js help`. Every data command requires an explicit absolute `--root` and a `--space`; the CLI never chooses the real default memory directory. It is a standalone owner process, not an Agent tool or a way for a model to obtain management permissions.
 
+Replace `/absolute/plugin` in the examples with the installed or unpacked package directory containing `package.json` and `src/manage.js`. This does not require a global npm installation. Use the persona's actual `memoryRoot` and `memorySpaceId`; their defaults are `~/.dsh/whale-soul/memory` (or `$DSH_HOME/whale-soul/memory`) and `owner`. Expand the root to an absolute path for these commands.
+
 The CLI trusts a local process that can access this root outside the persona's isolation as the owner management entry. It cannot distinguish a human from other processes running as the same OS user. It runs with the caller's filesystem permissions: no `sudo`, user switching, core edits, fabricated evidence or arbitrary historical rewrites. `--apply` selects an action; it cannot remove the persona process's kernel boundary. A copied CLI run by a persona tool remains restricted. No management tool is registered in ordinary Whale Chan chat. This boundary does not claim that every standard/third-party Agent or the entire OS is isolated; standard mode's lack of automatic private-memory loading is a separate layer from filesystem access.
 
 ## Preview first
