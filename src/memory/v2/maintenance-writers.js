@@ -34,7 +34,8 @@ export function maintenanceRoot(root) {
   for (;;) {
     try {
       const stat = lstatSync(current)
-      if (stat.isSymbolicLink() || !stat.isDirectory()) fail('UNSAFE_STORAGE_PATH')
+      if (stat.isSymbolicLink()) fail('UNSAFE_STORAGE_PATH')
+      if (!stat.isDirectory()) fail('INVALID_STORAGE_ROOT')
       return join(realpathSync.native(current), ...suffix.reverse())
     } catch (error) {
       if (error.code !== 'ENOENT') throw error
