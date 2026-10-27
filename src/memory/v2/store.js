@@ -1,3 +1,4 @@
+import { registerMemoryStoreWriter } from './maintenance-writers.js'
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -36,6 +37,7 @@ export class MemoryStoreV2 {
     this.contexts = new WeakSet()
     this.engine = new TransactionEngine({ root: this.spaceRoot, lockRoot: this.root, memorySpaceId: this.memorySpaceId, faultInjector, lockWaitMs, generationProvider, recoveryGuard })
     this.initialized = false
+    registerMemoryStoreWriter(this)
   }
 
   async initialize() {

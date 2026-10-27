@@ -46,19 +46,19 @@ export function maintenanceRoot(root) {
 }
 
 export function assertMaintenanceWriterPort(provider) {
-  const port = provider?.maintenance_writers
+  const declared = provider?.maintenance_writers
+  const port = declared?.coordinator ?? declared
   if (!Array.isArray(provider?.capabilities) || !provider.capabilities.includes(MAINTENANCE_WRITER_CAPABILITY) ||
-    port?.protocol_version !== MAINTENANCE_WRITER_PROTOCOL || ['admitStore', 'snapshot', 'acquire', 'subscribe'].some((name) => typeof port?.[name] !== 'function')) fail('MEMORY_MAINTENANCE_COVERAGE_UNVERIFIED')
+    declared?.protocol_version !== MAINTENANCE_WRITER_PROTOCOL || port?.protocol_version !== MAINTENANCE_WRITER_PROTOCOL || ['admitStore', 'snapshot', 'acquire', 'subscribe'].some((name) => typeof port?.[name] !== 'function')) fail('MEMORY_MAINTENANCE_COVERAGE_UNVERIFIED')
   return port
 }
 
 /** Complete process-local coverage for stores created by one trusted provider. */
-export function createMaintenanceWriterRegistry({ assertAvailable } = {}) {
-  if (typeof assertAvailable !== 'function') fail('TRUSTED_WRITER_PROVIDER_REQUIRED')
+function createWriterCore() {
   const records = new Map(), byStore = new WeakMap(), listeners = new Set(), spaces = new Map(), operations = new AsyncLocalStorage()
   const contextLeases = new WeakMap()
-  let serial = 0, disposed = false
-  const live = () => { if (disposed) fail('MEMORY_PROVIDER_UNAVAILABLE'); assertAvailable() }
+  let serial = 0
+  const live = () => {}
   const keyOf = (root, spaceId) => `${maintenanceRoot(root)}\0${assertId(spaceId)}`
   const space = (key) => { let state = spaces.get(key); if (!state) spaces.set(key, state = { generation: 0, lease: null }); return state }
   const emit = (record, reason) => {
@@ -81,7 +81,7 @@ export function createMaintenanceWriterRegistry({ assertAvailable } = {}) {
     return result === true
   }
   const enter = async (record, method, callback) => {
-    live()
+    live(); record.assertAvailable?.()
     if (record.retired) fail('MEMORY_WRITER_RETIRED')
     const parent = operations.getStore(), state = space(record.key), lease = state.lease
     if (lease && parent?.lease !== lease) {
@@ -103,44 +103,48 @@ export function createMaintenanceWriterRegistry({ assertAvailable } = {}) {
     try { return await operations.run({ lease: parent?.lease ?? null, active: new Set([...(parent?.active ?? []), record]), engineStage: method, publicStore: parent?.publicStore }, callback) }
     finally { record.active--; if (!lease) emit(record, 'operation-end') }
   }
+  const guarded = (target, name, wrap) => {
+    let implementation = wrap(target[name])
+    Object.defineProperty(target, name, { configurable: false, get: () => implementation, set(value) { if (typeof value !== 'function') fail('INVALID_WRITER_OVERRIDE'); implementation = wrap(value) } })
+  }
   const registry = {
     protocol_version: MAINTENANCE_WRITER_PROTOCOL,
     registerStore(store) {
       live()
-      if (!store?.engine || typeof store.engine.run !== 'function' || typeof store.engine.locked !== 'function' || byStore.has(store)) fail('INVALID_WRITER_STORE')
-      const record = { id: `writer-${++serial}`, root: maintenanceRoot(store.root), spaceId: assertId(store.memorySpaceId), store: new WeakRef(store), engine: new WeakRef(store.engine), owner: null, host: null, isCurrent: null, retired: false, active: 0 }
+      if (!store?.engine || typeof store.engine.run !== 'function' || typeof store.engine.locked !== 'function') fail('INVALID_WRITER_STORE')
+      if (byStore.has(store)) return store
+      const record = { provider: null, assertAvailable: null, id: `writer-${++serial}`, root: maintenanceRoot(store.root), spaceId: assertId(store.memorySpaceId), store: new WeakRef(store), engine: new WeakRef(store.engine), owner: null, host: null, isCurrent: null, retired: false, active: 0 }
       record.key = keyOf(record.root, record.spaceId); byStore.set(store, record); records.set(record.id, record)
       for (const name of ['run', 'locked']) {
-        const actual = store.engine[name]
-        Object.defineProperty(store.engine, name, { configurable: false, writable: false, value: function (...args) { return enter(record, name, () => actual.apply(this, args)) } })
+        guarded(store.engine, name, (actual) => function (...args) { return enter(record, name, () => actual.apply(this, args)) })
       }
-      const issueContext = store.issueContext, authorize = store._authorize
-      record.issueContext = issueContext
-      Object.defineProperty(store, 'issueContext', { configurable: false, writable: false, value: function (...args) {
+      guarded(store, 'issueContext', (issueContext) => function (...args) {
+        record.assertAvailable?.()
         if (record.retired) fail('MEMORY_WRITER_RETIRED')
         const context = issueContext.apply(this, args), current = operations.getStore(), lease = space(record.key).lease
         if (lease && current?.minting === record && current.lease === lease) contextLeases.set(context, lease.token)
         return context
-      } })
-      Object.defineProperty(store, '_authorize', { configurable: false, writable: false, value: function (context, ...args) {
+      })
+      guarded(store, '_authorize', (authorize) => function (context, ...args) {
+        record.assertAvailable?.()
         if (record.retired) fail('MEMORY_WRITER_RETIRED')
         const lease = space(record.key).lease, token = contextLeases.get(context)
         if (lease && (token !== lease.token || operations.getStore()?.lease !== lease)) { emit(record, 'held-context-authorization'); fail('MEMORY_WRITER_CONTEXT_NOT_ADMITTED') }
+        if (lease) lease.check()
         if (!lease && token) fail('MEMORY_MAINTENANCE_CONTEXT_EXPIRED')
         return authorize.call(this, context, ...args)
-      } })
+      })
       const contextIndex = { proposeMemory: 1, reviseMemory: 1, queryMemory: 1, rebuildIndex: 0, managedTransaction: 3, managedRead: 0 }
       for (const [name, index] of Object.entries(contextIndex)) {
-        const actual = store[name]
-        if (typeof actual !== 'function') fail('INVALID_WRITER_STORE')
-        Object.defineProperty(store, name, { configurable: false, writable: false, value: function (...args) {
+        if (typeof store[name] !== 'function') fail('INVALID_WRITER_STORE')
+        guarded(store, name, (actual) => function (...args) {
           const lease = space(record.key).lease, parent = operations.getStore()
           if (lease && parent?.lease === lease) {
             if (contextLeases.get(args[index]) !== lease.token) { emit(record, 'held-context-authorization'); return Promise.resolve(failure(new MemoryError('MEMORY_WRITER_CONTEXT_NOT_ADMITTED'))) }
             return operations.run({ ...parent, publicStore: record }, () => actual.apply(this, args))
           }
           return actual.apply(this, args)
-        } })
+        })
       }
       emit(record, 'store-created')
       return store
@@ -186,13 +190,47 @@ export function createMaintenanceWriterRegistry({ assertAvailable } = {}) {
         lease.check(); const record = byStore.get(store)
         if (!record || record.key !== key || !owners.has(record.owner) || record.host !== host || record.retired) fail('INVALID_WRITER_ADMISSION')
         return operations.run({ lease, active: new Set(), minting: record }, () => store.issueContext(options))
-      }, check: lease.check, run: lease.run, release: lease.release, generation })
+      }, cancel() { controller.abort(new MemoryError('MEMORY_WRITER_LEASE_CHANGED')) }, check: lease.check, run: lease.run, release: lease.release, generation })
     },
     subscribe(listener) { live(); if (typeof listener !== 'function') fail('INVALID_WRITER_OBSERVER'); listeners.add(listener); return () => listeners.delete(listener) },
-    dispose() { if (disposed) return; disposed = true; for (const state of spaces.values()) state.lease?.controller.abort(new MemoryError('MEMORY_PROVIDER_UNAVAILABLE')); for (const record of records.values()) record.retired = true; listeners.clear() },
+
   }
   const port = Object.freeze(registry)
   catalog.ports.add(new WeakRef(port))
   for (const listener of catalog.listeners) { try { listener(port) } catch {} }
-  return port
+  return { protocol_version: MAINTENANCE_WRITER_PROTOCOL, port,
+    adopt(store, provider, assertAvailable) {
+      port.registerStore(store); const record = byStore.get(store)
+      if (record.provider && record.provider !== provider) fail('MEMORY_WRITER_PROVIDER_CONFLICT')
+      record.provider = provider; record.assertAvailable = assertAvailable
+      return record.id
+    },
+    retire(provider) {
+      for (const record of records.values()) if (record.provider === provider && !record.retired) {
+        record.retired = true; record.owner = null; record.host = null; record.isCurrent = null; emit(record, 'provider-retired')
+      }
+    },
+  }
+}
+
+const coreKey = Symbol.for('dsh.whale-soul.maintenance-writer-core.v1')
+const core = globalThis[coreKey] ??= createWriterCore()
+if (core.protocol_version !== MAINTENANCE_WRITER_PROTOCOL || typeof core.port?.registerStore !== 'function' || typeof core.adopt !== 'function' || typeof core.retire !== 'function') fail('MEMORY_WRITER_CATALOG_CONFLICT')
+
+/** Constructor-level registration also covers public standalone Store/engine handles. */
+export function registerMemoryStoreWriter(store) { return core.port.registerStore(store) }
+
+/** A provider facet retires only its own stores; the shared core outlives it. */
+export function createMaintenanceWriterRegistry({ assertAvailable } = {}) {
+  if (typeof assertAvailable !== 'function') fail('TRUSTED_WRITER_PROVIDER_REQUIRED')
+  const provider = {}, live = () => { if (disposed) fail('MEMORY_PROVIDER_UNAVAILABLE'); assertAvailable() }
+  let disposed = false
+  return Object.freeze({ protocol_version: MAINTENANCE_WRITER_PROTOCOL, coordinator: core.port,
+    registerStore(store) { live(); core.adopt(store, provider, live); return store },
+    admitStore(...args) { live(); return core.port.admitStore(...args) },
+    snapshot(...args) { live(); return core.port.snapshot(...args) },
+    acquire(...args) { live(); return core.port.acquire(...args) },
+    subscribe(...args) { live(); return core.port.subscribe(...args) },
+    dispose() { if (disposed) return; disposed = true; core.retire(provider) },
+  })
 }
