@@ -226,6 +226,7 @@ export async function buildMemoryContext(store, args = {}, context, hostOptions 
       if (![item.meta.title, item.gist ?? ''].every((value) => typeof value === 'string' && value.isWellFormed())) continue
       const line = JSON.stringify({ id: item.meta.record_id, type: item.meta.type, subject: item.meta.subject_id, title: item.meta.title,
         ...(item.gist === undefined ? {} : { gist: item.gist }), claim: item.meta.claim_kind,
+        ...(item.meta.claim_kind === 'quotation' && item.meta.external_revision?.protected === true ? { source: 'owner_reviewed_quotation' } : {}),
         from: item.meta.valid_from, until: item.meta.valid_to ?? item.meta.expires_at,
         actor: item.meta.agent_identity_id, persona: item.meta.persona_id, evidence: item.meta.provenance_refs })
         .replaceAll('&', '\\u0026').replaceAll('<', '\\u003c').replaceAll('>', '\\u003e') + '\n'

@@ -7,9 +7,9 @@ const original = (value) => value?.[Symbol.for('cordis.original')] ?? value
 const fail = (code) => { throw new MemoryError(code, `${code}：当前会话的身份边界已变化，请新建会话后继续。`) }
 
 /** Host lifetime registry; each replacement public service gets its own hooks. */
-export function installSessionDispatch(ctx, { runtime, ownsAgent, scopeChainOf, resolveDshHome, serviceTools } = {}) {
+export function installSessionDispatch(ctx, { runtime, ownsAgent, scopeChainOf, resolveDshHome, isAgentLoopRequest, serviceTools } = {}) {
   const host = ctx.root, tools = original(ctx.get('tools')), llm = original(ctx.get('llm'))
-  if (!host?.on || !tools?.ctx || !llm?.ctx || typeof ownsAgent !== 'function' || typeof scopeChainOf !== 'function' || typeof resolveDshHome !== 'function' || !Array.isArray(serviceTools)) fail('TRUSTED_SESSION_DISPATCH_REQUIRED')
+  if (!host?.on || !tools?.ctx || !llm?.ctx || typeof ownsAgent !== 'function' || typeof scopeChainOf !== 'function' || typeof resolveDshHome !== 'function' || typeof isAgentLoopRequest !== 'function' || !Array.isArray(serviceTools)) fail('TRUSTED_SESSION_DISPATCH_REQUIRED')
   let manager = managers.get(host)
   if (!manager) {
     const registrations = new Set(), wrapped = new Map(), confirmedSessions = new Set(), toolInstances = new WeakSet(), llmInstances = new WeakSet()
@@ -89,6 +89,8 @@ export function installSessionDispatch(ctx, { runtime, ownsAgent, scopeChainOf, 
           const finalCheck = () => {
             if (original(host.get('llm')) !== service) fail('SESSION_LLM_SERVICE_CHANGED')
             if (agent) check(agent)
+            const registration = agent ? owner(agent) : null
+            if (registration?.isAgentLoopRequest(options) === true) registration.runtime.assertMemoryRequestCurrent(agent, options)
           }
           if (agent && (candidates(agent).length || confirmedSessions.has(agent.session.id) || bound(agent))) { prepared.claim(options); await ensure(agent) }
           const stream = await next(); finalCheck()
@@ -107,7 +109,7 @@ export function installSessionDispatch(ctx, { runtime, ownsAgent, scopeChainOf, 
     manager = { registrations, ensure, check, clear, installTools, installLlm }; managers.set(host, manager)
   }
   manager.installTools(tools); manager.installLlm(llm)
-  const registration = { runtime, ownsAgent, scopeChainOf, serviceTools: [...serviceTools] }
+  const registration = { runtime, ownsAgent, scopeChainOf, isAgentLoopRequest, serviceTools: [...serviceTools] }
   manager.registrations.add(registration)
   let disposed = false
   return Object.freeze({ ensure: manager.ensure, check: manager.check,

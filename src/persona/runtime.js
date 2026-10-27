@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { assertMemoryProvider, assertProviderStore, createLocalMemoryProvider } from '../memory/v2/provider.js'
 import { buildMemoryContext, retrieveMemory } from '../memory/v2/retrieval.js'
 import { recordRetentionAllowed } from '../memory/v2/read-policy.js'
+import { createExternalReadAuthority } from '../memory/v2/external-read-authority.js'
 import { createKnownSlotCatalog, createMemoryBatchSelector, createMemoryBatchSelectionAssessor, isBatchSelectionDecision, normalizeMemorySlotKey } from '../memory/v2/selection-batch.js'
 import { MemoryError, digest } from '../memory/v2/contracts.js'
 import { PersonaState } from './state.js'
@@ -32,6 +33,7 @@ export class PersonaRuntime {
   #sessionBoundary = new AsyncLocalStorage()
   #attaching = new WeakMap()
   #captures = new WeakMap()
+  #externalReads
   constructor(options = {}) {
     this.#options = options
     this.core = options.core ?? getWhaleCore()
@@ -43,6 +45,7 @@ export class PersonaRuntime {
         if (phase === 'after_prepare') { this.#assertLive(); check(this.#operation.getStore()); check(this.#lifetime.signal); this.#sessionBoundary.getStore()?.checkSync() }
       } }
     this.store = assertProviderStore(this.memoryProvider.createStore(storageOptions), storageOptions)
+    this.#externalReads = createExternalReadAuthority({ store: this.store })
     this.state = new PersonaState({ store: this.store, persona_id: this.core.persona_id,
       core_version: this.core.version, mode: options.stabilityMode ?? 'auto', subject_id: options.subjectId ?? 'owner' })
     this.#ready = this.#initialize()
@@ -54,7 +57,16 @@ export class PersonaRuntime {
   }
   ready() { return this.#ready }
   get disposed() { return this.#disposed }
-  #assertLive() { if (this.#disposed) throw new MemoryError('PERSONA_DISPOSED'); this.memoryProvider.assertAvailable() }
+  #assertLive() {
+    if (this.#disposed) throw new MemoryError('PERSONA_DISPOSED')
+    this.memoryProvider.assertAvailable()
+    if (this.#options.isMemoryProviderCurrent) {
+      let current
+      try { current = this.#options.isMemoryProviderCurrent() } catch { throw new MemoryError('MEMORY_PROVIDER_CHANGED') }
+      if (current && typeof current.then === 'function') Promise.resolve(current).catch(() => {})
+      if (current !== true) throw new MemoryError('MEMORY_PROVIDER_CHANGED')
+    }
+  }
   #dream(phase, payload) {
     if (this.#disposed) return
     try { this.#options.onDream?.(phase, payload) } catch {}
@@ -64,6 +76,17 @@ export class PersonaRuntime {
   #evidenceAllowed(id, _context, meta) {
     if (meta?.claim_kind === 'legacy' && meta.legacy && typeof id === 'string' && id.startsWith('legacy-')) return true
     return this.state.resolveMemoryEvidence(id) !== null || this.#options.additionalEvidenceAllowed?.(id, _context, meta) === true
+  }
+  async #readFilters(state, args, context, signal) {
+    const query = Object.fromEntries(['query', 'at', 'subject_id', 'limit'].filter((key) => args[key] !== undefined).map((key) => [key, args[key]]))
+    const lease = await this.#externalReads.prepare(query, context, { signal, authorize: () => {
+      this.#assertLive(); check(state.controller.signal); state.fence.checkSync(); return true
+    } })
+    return { lease, options: {
+      evidenceAllowed: (id, ctx, meta) => this.#evidenceAllowed(id, ctx, meta) || lease.evidenceAllowed(id, ctx, meta),
+      recordAllowed: (record, ctx) => recordRetentionAllowed(record) &&
+        (!(record.meta.claim_kind === 'quotation' && record.meta.external_revision?.protected === true) || lease.recordAllowed(record, ctx)),
+    } }
   }
 
   #commitFact(evidence) {
@@ -162,9 +185,10 @@ export class PersonaRuntime {
 
   async #knownSlots(state, record, signal) {
     const context = this.#context(state.sessionId)
-    const view = await retrieveMemory(this.store, { query: record.content.slice(0, 2000).toWellFormed(), depth: 'gist', limit: 8, signal }, context,
-      { evidenceAllowed: (id, ctx, meta) => this.#evidenceAllowed(id, ctx, meta), recordAllowed: recordRetentionAllowed })
-    if (view.status !== 'ok') throw new MemoryError('MEMORY_CATALOG_UNAVAILABLE')
+    const args = { query: record.content.slice(0, 2000).toWellFormed(), depth: 'gist', limit: 8, signal }
+    const filters = await this.#readFilters(state, args, context, signal)
+    const view = await retrieveMemory(this.store, args, context, filters.options)
+    if (view.status !== 'ok' || !filters.lease.isCurrent() || !view.isCurrent?.()) throw new MemoryError('MEMORY_CATALOG_UNAVAILABLE')
     return createKnownSlotCatalog(view, context)
   }
 
@@ -245,7 +269,8 @@ export class PersonaRuntime {
     const route = { llm, createAssembler, agent, signal: controller.signal,
       timeoutMs: this.#options.assessmentTimeoutMs ?? 15000 }
     const state = { agent, sessionId, controller, queue: Promise.resolve(), lastQuery: '', latest: null,
-      lastActivity: Date.now(), timer: null, job: null, cache: null, writes: 0, lastMaintenance: 0, status: agent.status ?? 'idle', inboxSources: new Map(), fence, ownedObserver: host.observer ? null : observer }
+      lastActivity: Date.now(), timer: null, job: null, cache: null, writes: 0, lastMaintenance: 0, status: agent.status ?? 'idle', inboxSources: new Map(), fence, ownedObserver: host.observer ? null : observer,
+      externalSnapshots: new Map(), requestSnapshots: new WeakMap() }
     state.selector = this.#options.selectorFactory?.(agent) ?? createMemoryBatchSelector({
       assess: createMemoryBatchSelectionAssessor(route), timeoutMs: route.timeoutMs })
     state.assess = this.#options.assessorFactory?.(agent) ?? createGrowthAssessor({ ...route, coreInstructions: this.coreInstructions })
@@ -411,9 +436,9 @@ export class PersonaRuntime {
     if ((await state.fence.authorize({ seal: false })).status !== 'confirmed') return { memory: '', growth: '' }
     check(signal); check(state.controller.signal); await this.state.refresh()
     const ctx = this.#context(state.sessionId)
-    const memory = await buildMemoryContext(this.store, { query: state.lastQuery,
-      maxChars: bounded(this.#options.maxContextChars, 2400, 2400) }, ctx,
-    { evidenceAllowed: (id, context, meta) => this.#evidenceAllowed(id, context, meta), recordAllowed: recordRetentionAllowed })
+    const memoryArgs = { query: state.lastQuery, maxChars: bounded(this.#options.maxContextChars, 2400, 2400), signal }
+    const filters = await this.#readFilters(state, memoryArgs, ctx, signal)
+    const memory = await buildMemoryContext(this.store, memoryArgs, ctx, filters.options)
     const growth = await state.growth.loadGrowth(ctx)
     if (growth.status !== 'ok') throw new MemoryError(growth.reason_code ?? 'PERSONA_GROWTH_UNAVAILABLE')
     check(signal); check(state.controller.signal)
@@ -428,14 +453,46 @@ export class PersonaRuntime {
     observe(selfHead)
     observe(join(this.store.spaceRoot, 'manifest.json'))
     const fingerprint = () => {
-      try { return !this.#disposed && !state.controller.signal.aborted && memory.isCurrent?.() &&
+      try { return !this.#disposed && !state.controller.signal.aborted && filters.lease.isCurrent() && memory.isCurrent?.() &&
         [...files].every(([file, hash]) => digest(readFileSync(file)) === hash) } catch { return false }
     }
     state.fence.checkSync()
     const selfHeadHash = files.get(selfHead)
-    state.cache = { memory: memory.context ?? '', growth: growth.traits?.length ? growth.context ?? '' : '', isCurrent: fingerprint,
+    const external = filters.lease.recordIds.some((id) => memory.record_ids?.includes(id))
+    state.cache = { memory: memory.context ?? '', growth: growth.traits?.length ? growth.context ?? '' : '', external, isCurrent: fingerprint,
       authorityCurrent: () => { try { return digest(readFileSync(selfHead)) === selfHeadHash } catch { return false } } }
+    if (external && state.cache.memory) {
+      state.externalSnapshots.set(digest(state.cache.memory), { text: state.cache.memory, isCurrent: () => filters.lease.isCurrent() })
+      while (state.externalSnapshots.size > 32) state.externalSnapshots.delete(state.externalSnapshots.keys().next().value)
+    }
     return this.contextFor(agent)
+  }
+  memoryContextNameFor(agent) {
+    return this.#agents.get(agent)?.cache?.external ? 'whale-soul:owner-reviewed-memory' : 'whale-soul:memory'
+  }
+  /** Called only for an official branded main request at the final dispatch boundary. */
+  assertMemoryRequestCurrent(agent, request) {
+    if (this.#options.sessionHost?.isAgentLoopRequest?.(request) !== true || !Object.isFrozen(request) ||
+      !Array.isArray(request.messages) || !Object.isFrozen(request.messages)) throw new MemoryError('EXTERNAL_MAIN_REQUEST_REQUIRED')
+    const state = this.#agents.get(agent)
+    if (!state || this.#disposed) throw new MemoryError('EXTERNAL_CONTEXT_UNAVAILABLE')
+    state.fence.checkSync(); check(state.controller.signal); this.#assertLive()
+    if (!state.requestSnapshots.has(request)) {
+      const snapshots = []
+      for (const message of request.messages ?? []) {
+        if (message.source?.kind !== 'runtime-context' || !Array.isArray(message.source.sections)) continue
+        for (const section of message.source.sections) if (section.name === 'whale-soul:owner-reviewed-memory') {
+          if (!Object.isFrozen(message) || !Object.isFrozen(message.source) || !Object.isFrozen(message.source.sections) || !Object.isFrozen(section)) throw new MemoryError('EXTERNAL_MAIN_REQUEST_REQUIRED')
+          const issued = typeof section.text === 'string' ? state.externalSnapshots.get(digest(section.text)) : null
+          if (!issued || issued.text !== section.text) throw new MemoryError('EXTERNAL_CONTEXT_UNBOUND')
+          snapshots.push({ message, section, issued })
+        }
+      }
+      state.requestSnapshots.set(request, snapshots)
+    }
+    if (!state.requestSnapshots.get(request).every(({ message, section, issued }) =>
+      message.source.sections.includes(section) && section.text === issued.text && issued.isCurrent())) throw new MemoryError('EXTERNAL_CONTEXT_REVOKED')
+    return true
   }
   contextFor(agent) {
     const state = this.#agents.get(agent), cache = state?.cache
@@ -477,8 +534,9 @@ export class PersonaRuntime {
   async recall(agent, args) {
     const state = await this.attachAgent(agent); await state.queue
     await state.fence.authorize()
-    const result = await retrieveMemory(this.store, args, this.#context(state.sessionId),
-      { evidenceAllowed: (id, context, meta) => this.#evidenceAllowed(id, context, meta), recordAllowed: recordRetentionAllowed })
+    const context = this.#context(state.sessionId), filters = await this.#readFilters(state, args, context, args.signal)
+    const result = await retrieveMemory(this.store, args, context, filters.options)
+    if (result.status === 'ok' && (!filters.lease.isCurrent() || !result.isCurrent?.())) throw new MemoryError('EXTERNAL_CONTEXT_REVOKED')
     const { isCurrent, ...data } = result
     state.fence.checkSync()
     return data
