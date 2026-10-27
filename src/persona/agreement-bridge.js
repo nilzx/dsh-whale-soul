@@ -14,6 +14,26 @@ const accept = /^(?:我(?:确认)?接受|我同意|就按)(?:这个|这项|刚�
 const cancel = /^(?:我(?:想|要)?(?:取消|撤回)|取消)(?:这个|这项|刚才的|我们刚才的)?约定(?:[，,:：。.!！\s]|$)|^(?:I\s+)?(?:cancel|withdraw)\s+(?:this|that|the)\s+agreement\b/i
 const proposal = /^(?:(?:我们(?:来)?|我想(?:和|跟)你|(?:我想)?(?:和|跟)你)(?:做个|定个)?约定(?:一下)?|咱们约定)\s*[：:，,]?\s*([\s\S]+)$|^(?:let['’]s\s+(?:agree|make an agreement)|I\s+propose\s+(?:an?\s+)?agreement)\s*[:：,]?\s*([\s\S]+)$/i
 const clone = (value) => structuredClone(value)
+const todoQuote = /(?:待办(?:项|任务)?|\btodo(?:\s+(?:item|task))?)\s*(?:[「『“"]([^」』”"]+)[」』”"]|'([^']+)')/giu
+function validTodos(value) {
+  return Array.isArray(value) && value.every((item) => item && typeof item.content === 'string' && item.content.trim() === item.content && item.content.length > 0 &&
+    ['pending', 'in_progress', 'completed'].includes(item.status)) && new Set(value.map((item) => item.content)).size === value.length
+}
+function bindTodo(terms, snapshot, sessionId) {
+  if (snapshot?.session_id !== sessionId || !Number.isSafeInteger(snapshot.seq) || snapshot.seq < 0 || !validTodos(snapshot.todos)) return null
+  const matches = [...terms.matchAll(todoQuote)]
+  if (matches.length !== 1) return null
+  const match = matches[0], content = match[1] ?? match[2]
+  const before = terms.slice(Math.max(0, match.index - 24), match.index), after = terms.slice(match.index + match[0].length)
+  const clauseBefore = before.split(/[，,。.!?！？；;]/u).at(-1)
+  if (/(?:不要|不许|禁止|别|do\s+not|don't|never)/iu.test(clauseBefore)) return null
+  // The receipt proves a status update, not the work described in the todo title.
+  const marksChineseStatus = /^\s*标(?:记)?(?:为|成)\s*完成/u.test(after)
+  const marksEnglishStatus = /\bmark\s+(?:the\s+)?$/iu.test(before) && /^\s+as\s+completed\b/iu.test(after)
+  if (!marksChineseStatus && !marksEnglishStatus) return null
+  const item = snapshot.todos.find((entry) => entry.content === content)
+  return item && item.status !== 'completed' ? { kind: 'todo', session_id: sessionId, content, origin_seq: snapshot.seq } : null
+}
 
 /** A narrow host bridge. Ordinary promises and tool success never create completion. */
 export class PersonaAgreementBridge {
@@ -38,7 +58,7 @@ export class PersonaAgreementBridge {
     try { value = JSON.parse(readFileSync(path, 'utf8')) } catch { throw new MemoryError('AGREEMENT_EVIDENCE_UNAVAILABLE') }
     return value.evidence_id === id ? { ...value, allow_persist: true } : null
   }
-  #event(record, action, target, terms, ctx, options, dueAt = null) {
+  #event(record, action, target, terms, ctx, options, dueAt = null, delivery = null) {
     this.#check(ctx, options)
     if (scopeKeys.some((key) => record[key] !== ctx[key]) || record.session_id !== ctx.session_id) throw new MemoryError('AGREEMENT_SCOPE_MISMATCH')
     const eventId = assertId(record.message_id), occurredAt = timestamp(record.occurred_at, 'agreement event time', false)
@@ -50,30 +70,32 @@ export class PersonaAgreementBridge {
       content: terms, allow_persist: true, growth_eligible: false, maturity_eligible: false }
     this.#sources.set(evidenceId, evidence)
     const grant = { ...Object.fromEntries(scopeKeys.map((key) => [key, ctx[key]])), event_id: eventId, action, agreement_id: target,
-      participant, source: user ? 'user' : 'host_agent_commitment', occurred_at: occurredAt, evidence_id: evidenceId,
+      participant, source: user ? 'user' : action === 'fulfill' ? 'host_tool' : 'host_agent_commitment', occurred_at: occurredAt, evidence_id: evidenceId,
       session_id: ctx.session_id, assertion: 'direct', allow_persist: true, signal: options.signal,
       isCurrent: () => { try { this.#check(ctx, options); return true } catch { return false } },
-      ...(action === 'propose' ? { participants: [{ kind: 'subject', id: ctx.subject_id }, { kind: 'agent_identity', id: ctx.agent_identity_id }], due_at: dueAt } : {}) }
+      ...(action === 'propose' ? { participants: [{ kind: 'subject', id: ctx.subject_id }, { kind: 'agent_identity', id: ctx.agent_identity_id }], due_at: dueAt } : {}),
+      ...(delivery ? { delivery: clone(delivery) } : {}) }
     this.#events.set(eventId, grant)
     return { event_id: eventId, evidence_id: evidenceId, operation_id: `agreement-${digest({ eventId, session: ctx.session_id, action, target, participant }).slice(0, 40)}` }
   }
-  async #replay(record, action, ctx, options) {
+  async #replay(record, action, ctx, options, targetOnly = null) {
     this.#check(ctx, options)
     return this.store.managedRead(ctx, ({ records }) => {
       this.#check(ctx, options)
       for (const meta of records) {
-        if (!meta.agreement || scopeKeys.some((key) => meta[key] !== ctx[key])) continue
+        if (!meta.agreement || targetOnly && meta.record_id !== targetOnly || scopeKeys.some((key) => meta[key] !== ctx[key])) continue
         const target = action === 'propose' ? null : meta.record_id
-        const participant = { kind: 'subject', id: ctx.subject_id }
+        const user = record.source === 'user' || record.source?.kind === 'user'
+        const participant = { kind: user ? 'subject' : 'agent_identity', id: user ? ctx.subject_id : ctx.agent_identity_id }
         const key = { eventId: record.message_id, session: ctx.session_id, action, target, participant }
         const evidenceId = `agreement-event-${digest(key).slice(0, 40)}`
         const refs = action === 'propose' ? meta.agreement.proposal_evidence_refs
           : action === 'accept' ? meta.agreement.accepted_by.filter((entry) => entry.participant.kind === 'subject').map((entry) => entry.evidence_id)
-            : meta.agreement.state === 'cancelled' ? meta.agreement.transition_evidence_refs : []
+            : action === 'fulfill' && meta.agreement.state === 'fulfilled' || action === 'cancel' && meta.agreement.state === 'cancelled' ? meta.agreement.transition_evidence_refs : []
         if (!refs.includes(evidenceId)) continue
         const value = this.store._readRecord(meta.record_id)
         const source = value.evidence.find((item) => item.evidence_id === evidenceId)
-        if (!source || source.message_id !== record.message_id || source.session_id !== ctx.session_id || source.claim_kind !== 'user_statement') continue
+        if (!source || source.message_id !== record.message_id || source.session_id !== ctx.session_id || source.claim_kind !== (user ? 'user_statement' : 'tool_observation')) continue
         const operationId = `agreement-${digest(key).slice(0, 40)}`
         const path = this.store.engine.resolvePath(`operations/${digest(operationId)}.json`)
         let receipt
@@ -85,9 +107,9 @@ export class PersonaAgreementBridge {
       return null
     })
   }
-  async #items(ctx, options) {
+  async #items(ctx, options, states = ['proposed', 'open']) {
     this.#check(ctx, options)
-    const result = await this.service.list({ states: ['proposed', 'open'], limit: 32 }, ctx)
+    const result = await this.service.list({ states, limit: 32 }, ctx)
     this.#check(ctx, options)
     if (result.status !== 'ok') throw new MemoryError(result.reason_code ?? 'AGREEMENT_UNAVAILABLE')
     return result.items.map((item) => ({ ...item, terms: this.store._readRecord(item.record_id).detail }))
@@ -99,7 +121,8 @@ export class PersonaAgreementBridge {
         await this.service.transition({ operation_id: `agreement-expire-${item.record_id}-${item.revision}`,
           record_id: item.record_id, expected_revision: item.revision, action: 'expire' }, ctx, options)
       } else if (!item.window_closed) current.push({ record_id: item.record_id, revision: item.revision, terms: item.terms,
-        agreement_state: item.agreement.state, window_closed: false, accepted_by: item.agreement.accepted_by.map((entry) => entry.participant.kind), due_at: item.agreement.due_at })
+        agreement_state: item.agreement.state, window_closed: false, accepted_by: item.agreement.accepted_by.map((entry) => entry.participant.kind), due_at: item.agreement.due_at,
+        ...(item.agreement.delivery ? { delivery: clone(item.agreement.delivery) } : {}) })
     }
     return { status: 'ok', items: current.slice(0, 8), truncated: current.length > 8 }
   }
@@ -137,9 +160,44 @@ export class PersonaAgreementBridge {
     if (!terms || terms.length > 800 || !future.test(terms) && !dueAt) return { handled: true, status: 'clarification_required', reason_code: 'AGREEMENT_TERMS_REQUIRED' }
     const same = items.filter((item) => !item.window_closed && item.terms === terms)
     if (same.length === 1) return { handled: true, status: 'existing', record_id: same[0].record_id, revision: same[0].revision, agreement_state: same[0].agreement.state, terms }
-    const event = this.#event(record, 'propose', null, terms, ctx, options, dueAt)
+    const delivery = bindTodo(terms, options.todosSnapshot, ctx.session_id)
+    const event = this.#event(record, 'propose', null, terms, ctx, options, dueAt, delivery)
     const result = await this.service.propose({ operation_id: event.operation_id, event_id: event.event_id }, ctx, options)
-    return { handled: true, ...result, terms }
+    return { handled: true, ...result, terms, ...(delivery ? { delivery } : {}) }
+  }
+  async observeToolResult(record, ctx, options = {}) {
+    this.#check(ctx, options)
+    if (record.source !== 'host' && record.source?.kind !== 'host') throw new MemoryError('TRUSTED_AGREEMENT_RESULT_REQUIRED')
+    const result = options.deliveryResult
+    if (result?.kind !== 'todo' || result.success !== true || result.session_id !== ctx.session_id || record.session_id !== ctx.session_id ||
+      typeof result.target_content !== 'string' || !result.target_content || result.target_content !== result.target_content.trim() ||
+      !Number.isSafeInteger(result.call_seq) || result.call_seq < 0 || !Number.isSafeInteger(result.continuity_start_seq) || result.continuity_start_seq < 0 ||
+      !validTodos(result.previous_todos) || !validTodos(result.current_todos)) return { status: 'ignored', reason_code: 'NO_VERIFIABLE_DELIVERY', items: [] }
+    assertId(result.call_id)
+    const observedAt = timestamp(record.occurred_at, 'agreement result time', false), items = []
+    for (const item of await this.#items(ctx, options, ['open', 'expired', 'fulfilled'])) {
+      const delivery = item.agreement.delivery
+      if (!delivery || delivery.kind !== 'todo' || delivery.session_id !== ctx.session_id || delivery.content !== result.target_content) continue
+      const replay = await this.#replay(record, 'fulfill', ctx, options, item.record_id)
+      if (replay) { items.push(replay); continue }
+      if (item.agreement.state === 'fulfilled' || result.call_seq <= delivery.origin_seq || result.continuity_start_seq > delivery.origin_seq ||
+        Date.parse(observedAt) < Date.parse(item.agreement.accepted_at)) continue
+      const previous = result.previous_todos.find((entry) => entry.content === delivery.content)
+      const current = result.current_todos.find((entry) => entry.content === delivery.content)
+      if (!previous || previous.status === 'completed' || current?.status !== 'completed') continue
+      let revision = item.revision
+      if (item.agreement.state === 'open' && item.agreement.due_at && Date.parse(observedAt) >= Date.parse(item.agreement.due_at)) {
+        const expired = await this.service.transition({ operation_id: `agreement-expire-${item.record_id}-${revision}`,
+          record_id: item.record_id, expected_revision: revision, action: 'expire' }, ctx, options)
+        if (expired.status !== 'committed') { items.push(expired); continue }
+        revision = expired.revision
+      }
+      const event = this.#event(record, 'fulfill', item.record_id, item.terms, ctx, options, null, delivery)
+      const fulfilled = await this.service.transition({ operation_id: event.operation_id, event_id: event.event_id,
+        record_id: item.record_id, expected_revision: revision, action: 'fulfill' }, ctx, options)
+      items.push({ ...fulfilled, terms: item.terms })
+    }
+    return { status: 'ok', items }
   }
   async acceptAgent(args, record, ctx, options = {}) {
     this.#check(ctx, options)

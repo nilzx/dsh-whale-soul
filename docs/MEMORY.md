@@ -42,7 +42,7 @@ Corrections target a specific record/revision and preserve earlier versions and 
 
 ## Explicit agreements
 
-The [first conversation bridge](agreements.md) recognizes explicit Chinese/English future-agreement proposals. A proposal stays `proposed`; an independent user confirmation and the Agent’s actual `soul_agreement_accept` action are both required for `open`. Clear cancellation and deadlines are handled separately. Storage instructions do not become agreements, and these events do not qualify as growth or maturity. Delivery-result matching, broad semantic coverage and actual Web acceptance remain open.
+The [conversation bridge](agreements.md) recognizes explicit Chinese/English future-agreement proposals. A proposal stays `proposed`; an independent user confirmation and the Agent’s actual `soul_agreement_accept` action are both required for `open`. An explicit agreement to mark an existing unfinished todo completed can bind its exact content and original Session. The matching continuous todo's successful state-update result can then mark that state-delivery agreement `fulfilled`. It does not prove a note, code change or other underlying work was delivered. Clear cancellation and deadlines are handled separately. Storage instructions do not become agreements, and these events do not qualify as growth or maturity. Arbitrary free-text delivery and broad semantic coverage remain outside this narrow adapter.
 
 ## Recall and lifecycle
 
@@ -55,6 +55,8 @@ Physical lifecycle maintenance is opt-in: `autoMemoryMaintenance` and `automatic
 Actual choices, outcomes and later feedback may support a growth proposal. Reflection and the configured stability thresholds determine when a compatible proposal becomes a stable tendency. Candidates are not loaded as stable personality. One event split into several facts still counts as one event; repetition and requests to change personality do not manufacture maturity.
 
 `variable`, `normal`, `stubborn` and default `auto` affect later growth thresholds. Core identity and factual correction remain continuous across modes. Auto becomes steadier with qualifying experiences. See [stability](stability.md) and [self integrity](self-integrity.md); long-term model behavior remains a separate acceptance scope.
+
+After a core version upgrade, old growth remains stored but is not automatically loaded. The [core-upgrade review](core-upgrades.md) rechecks it against the new core: compatible stable traits remain stable, compatible candidates remain candidates, and rejected items stay preserved and unloaded. Original text, evidence, identity and maturity remain unchanged; older revisions remain in history.
 
 ## Portability and owner operations
 

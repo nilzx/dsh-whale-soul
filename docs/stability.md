@@ -16,4 +16,6 @@ All three thresholds must be met. Counts alone do not prove a proposed trait: co
 
 Maturity belongs to an individual identity and persists through restart. A manual mode change preserves it; returning to auto resumes the corresponding mature stage. Existing facts and stable traits are not rewritten retroactively. An imported old snapshot cannot silently lower the independent trusted watermark or override the current host mode. Explicit authorized evidence revocation is recorded and may recompute maturity; it is different from choosing a more flexible mode.
 
+A [core-version review](core-upgrades.md) can continue compatible older growth without changing these counters. Stable traits stay stable and candidates stay candidates; a core upgrade is not new supporting experience.
+
 The numerical thresholds are policy version `1.1.0`. This refactor is still under end-to-end acceptance; component checks do not establish long-term model behavior.

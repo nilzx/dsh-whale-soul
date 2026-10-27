@@ -22,4 +22,6 @@ dsh-whale-soul-manage upgrade-self --root /absolute/new-root --space owner \
 
 API1.0的record基线只升至API1.1中间根；新reader仍拒绝，须继续上述独立self升级。目前record基线通过[外改审查文档](external-review-api.md)的明确owner API执行，CLI尚未自动串联这一步。保留其operation ID与已审阅快照，供精确恢复重试。
 
+人格核心版本变化是另一条流程：[核心升级重审](core-upgrades.zh-CN.md)保留旧稳定项及候选，按当前核心重审并保留旧修订；它不重置身份或成熟度，也不要求迁移存储根。
+
 参见[英文版本](self-integrity.md)和[本地管理CLI](management.zh-CN.md)。

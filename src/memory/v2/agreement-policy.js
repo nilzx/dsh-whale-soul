@@ -9,6 +9,13 @@ export function validateAgreementParticipant(value) {
   assertId(value.id)
   return value
 }
+export function validateAgreementDelivery(value) {
+  assertOnly(value, ['kind', 'session_id', 'content', 'origin_seq'])
+  if (value.kind !== 'todo' || typeof value.content !== 'string' || !value.content.trim() || value.content !== value.content.trim() ||
+    value.content.length > 800 || !value.content.isWellFormed() || !Number.isSafeInteger(value.origin_seq) || value.origin_seq < 0) fail('INVALID_AGREEMENT_DELIVERY')
+  assertId(value.session_id)
+  return value
+}
 function refs(value) {
   if (!Array.isArray(value) || new Set(value).size !== value.length || value.length > 64) fail('INVALID_AGREEMENT_EVIDENCE')
   value.forEach((id) => assertId(id)); return value
@@ -19,7 +26,7 @@ export function validateAgreementMetadata(meta) {
   const value = meta?.agreement
   if (value === undefined) return null
   assertOnly(value, ['schema_version', 'kind', 'state', 'participants', 'required_acceptances', 'accepted_by', 'proposed_at', 'accepted_at', 'due_at', 'closed_at',
-    'proposal_evidence_refs', 'acceptance_evidence_refs', 'transition_evidence_refs', 'last_transition', 'related_agreement_id'])
+    'proposal_evidence_refs', 'acceptance_evidence_refs', 'transition_evidence_refs', 'last_transition', 'related_agreement_id', 'delivery'])
   if (value.schema_version !== 1) fail('UNSUPPORTED_AGREEMENT_SCHEMA')
   if (value.kind !== 'commitment' || meta.type !== 'promise' || !AGREEMENT_STATES.includes(value.state) ||
     !Array.isArray(value.participants) || !value.participants.length || value.participants.length > 8) fail('INVALID_AGREEMENT_METADATA')
@@ -59,5 +66,6 @@ export function validateAgreementMetadata(meta) {
   if (last.event_id !== null) assertId(last.event_id)
   if (last.evidence_id !== null) { assertId(last.evidence_id); if (!meta.provenance_refs.includes(last.evidence_id)) fail('INVALID_AGREEMENT_EVIDENCE') }
   if (value.related_agreement_id !== null) assertId(value.related_agreement_id)
+  if (value.delivery !== undefined) validateAgreementDelivery(value.delivery)
   return value
 }

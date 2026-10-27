@@ -6,6 +6,8 @@ Normal writes verify the previous complete self bundle before deriving the next 
 
 Full exports use transfer version 3 and carry `self_integrity_state` without prose. Owner imports require `identity_mode: 'preserve'` and explicit `accept_self_integrity: true`, in addition to applicable persona, purge and record-integrity acceptance. Current host stability mode wins over a snapshot. Conflicting self snapshots do not merge by modification time. Ordinary backup restoration cannot lower trusted maturity watermarks.
 
+Changing the persona core version is a separate flow: [core-upgrade review](core-upgrades.md) preserves old traits and candidates, rechecks them against the current core, and retains their previous revisions. It does not reset identity or maturity and does not require a storage-root migration.
+
 ## Upgrade an API 1.1 root
 
 Stop the source's writers and maintenance, preserve the source, and use a separate non-overlapping destination. Run the CLI outside the persona's restricted process:

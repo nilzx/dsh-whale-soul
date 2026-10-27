@@ -152,6 +152,61 @@ export class PersonaRuntime {
       this.#assertLive(); check(state.controller.signal); state.fence.checkSync(); return true
     } }
   }
+  #todoSnapshot(session, beforeSeq = session.seq) {
+    for (let seq = beforeSeq - 1; seq >= 0; seq--) {
+      const event = session.eventAt(seq)
+      if (event?.type === 'todo/write') return { session_id: session.id, seq, todos: event.data.todos }
+    }
+    return null
+  }
+  async #captureToolResult(state, event, { signal } = {}) {
+    const session = state.agent.session
+    if (event?.type !== 'tool/result' || !Number.isSafeInteger(event.seq) || !session.eventAt(event.seq) || digest(session.eventAt(event.seq)) !== digest(event)) return { status: 'ignored' }
+    const [callSeq, ...otherSources] = event.sourceEventSeqs ?? []
+    if (!Number.isSafeInteger(callSeq) || callSeq >= event.seq || otherSources.length) return { status: 'ignored' }
+    const call = session.eventAt(callSeq), message = event.data?.message
+    if (call?.type !== 'tool/call' || call.data.name !== 'todo_write' || message?.role !== 'tool' ||
+      message.source?.kind !== 'tool' || message.source.callId !== call.data.callId || message.isError || event.data.error) return { status: 'ignored' }
+    let args = call.data.arguments
+    try { if (typeof args === 'string') args = JSON.parse(args) } catch { return { status: 'ignored' } }
+    if (!Array.isArray(args?.todos)) return { status: 'ignored' }
+    const canonical = args.todos.map(item => ({ content: typeof item?.content === 'string' ? item.content.trim() : '', status: item?.status }))
+    const writes = []
+    for (let seq = callSeq + 1; seq < event.seq; seq++) {
+      const current = session.eventAt(seq)
+      if (current?.type === 'todo/write') writes.push(current)
+    }
+    if (writes.length !== 1 || digest(writes[0].data.todos) !== digest(canonical)) return { status: 'ignored' }
+    const previous = this.#todoSnapshot(session, callSeq), current = writes[0]
+    const completed = canonical.filter(item => item.status === 'completed' && previous?.todos.some(before => before.content === item.content && before.status !== 'completed'))
+    if (!completed.length) return { status: 'ignored' }
+    const operationSignal = signal ? AbortSignal.any([state.controller.signal, signal]) : state.controller.signal
+    return this.#enqueue(state, async () => {
+      const results = []
+      for (const item of completed) {
+        let continuousSince = current.seq
+        for (let seq = current.seq - 1; seq >= 0; seq--) {
+          const snapshot = session.eventAt(seq)
+          if (snapshot?.type !== 'todo/write') continue
+          if (!snapshot.data.todos.some(todo => todo.content === item.content)) break
+          continuousSince = snapshot.seq
+        }
+        const record = { ...this.state.identity, event_id: message.id, message_id: message.id, session_id: state.sessionId,
+          occurred_at: new Date(event.time).toISOString(), source: 'host' }
+        const result = await this.agreements.observeToolResult(record, this.#hostContext(state.sessionId), {
+          ...this.#agreementOptions(state, operationSignal), deliveryResult: { kind: 'todo', success: true, session_id: state.sessionId,
+            call_id: call.data.callId, call_seq: callSeq, target_content: item.content, continuity_start_seq: continuousSince,
+            previous_todos: previous.todos, current_todos: current.data.todos } })
+        results.push(...(result.items ?? []))
+      }
+      if (results.length) {
+        state.cache = null
+        if (state.operation) state.operation.agreement_results = results
+        state.agreementView = await this.agreements.pending(this.#hostContext(state.sessionId), this.#agreementOptions(state, operationSignal))
+      }
+      return { status: 'ok', items: results }
+    }, operationSignal)
+  }
 
   #commitFact(evidence) {
     const operation = this.#factQueue.then(() => this.#commitFactNow(evidence))
@@ -382,6 +437,11 @@ export class PersonaRuntime {
       } })
     this.#agents.set(agent, state); this.#sessions.set(sessionId, state)
     await this.recoverPendingMemories({ sessionId, protectedOnly: true })
+    // A persisted successful result may precede the agreement commit at interruption.
+    for (let seq = 0; seq < agent.session.seq; seq++) {
+      const event = agent.session.eventAt(seq)
+      if (event?.type === 'tool/result') await this.#captureToolResult(state, event)
+    }
     return state
   }
   #enqueue(state, operation, signal = state.controller.signal) {
@@ -444,6 +504,7 @@ export class PersonaRuntime {
   }
   async #capture(agent, event, { signal, fromInbox = false } = {}) {
     const state = await this.attachAgent(agent)
+    if (event?.type === 'tool/result') return this.#captureToolResult(state, event, { signal })
     if (event?.type !== 'user/message' || event.data?.role !== 'user' || event.data?.source?.kind !== 'user') return { status: 'ignored', reason_code: 'NON_USER_SOURCE' }
     await state.fence.authorize()
     const staged = state.inboxSources.get(event.data.id)
@@ -484,7 +545,7 @@ export class PersonaRuntime {
       }
       const agreement = currentUserEvent()
         ? await this.agreements.observeUser({ memory_space_id: this.store.memorySpaceId, ...record }, this.#hostContext(state.sessionId), { ...agreementOptions,
-          authorize: () => agreementOptions.authorize() && currentUserEvent() })
+          todosSnapshot: this.#todoSnapshot(agent.session, event.seq), authorize: () => agreementOptions.authorize() && currentUserEvent() })
         : { handled: false }
       if (agreement.handled) {
         const { handled: _handled, ...result } = agreement
@@ -671,9 +732,9 @@ export class PersonaRuntime {
     const encoded = JSON.stringify({ ...summary, selected_count: operation.selected_count ?? 0, coverage: operation.coverage ?? 'none',
       ...(state.agreementView?.items?.length ? { agreements: state.agreementView.items } : {}) })
       .replace(/[<>&]/g, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`)
-    const agreementHint = operation.agreement || state.agreementView?.items?.length
+    const agreementHint = operation.agreement || operation.agreement_results?.length || state.agreementView?.items?.length
       ? '约定中proposed只是提议，只有open表示双方都接受；需要明确接受时可调用soul_agreement_accept，且用户仍须另行确认。' +
-        '不愿接受时自然说明，不要为迎合而承诺；普通工具成功或口头完成不代表约定已履行。' : ''
+        '不愿接受时自然说明，不要为迎合而承诺；只有agreement_results中的committed/fulfilled回执表示匹配目标已履行，普通工具成功或口头完成不代表约定已履行。' : ''
     return `<memory-operation-status>\n${encoded}\n` +
       '文字记忆仅确认status=saved的selected_excerpt（含items）；其余状态不可称已记住。' +
       'partial/selected_only只确认成功项，entire_excerpt也不超出所列摘录；不得扩称整条消息全保存。' +
@@ -741,6 +802,9 @@ export class PersonaRuntime {
     if (state.status !== 'idle') return { status: 'busy' }
     if (!force && (Date.now() - state.lastActivity < bounded(this.#options.idleMs, 300000, 86400000) ||
       state.writes < (this.#options.maintenanceWrites ?? 40) && Date.now() - state.lastMaintenance < (this.#options.checkIntervalMs ?? 900000))) return { status: 'not_due' }
+    const upgrades = await state.growth.listCoreUpgrade(this.#context(state.sessionId), { pendingOnly: true })
+    if (upgrades.status !== 'ok') return { status: 'failed', reason_code: upgrades.reason_code ?? 'CORE_UPGRADE_UNAVAILABLE' }
+    if (upgrades.items.length) return this.reviewCoreUpgrade(agent)
     const controller = new AbortController()
     let finish
     const job = { controller, verdicts: new Map(), cacheOnly: false, done: new Promise((resolve) => { finish = resolve }) }
@@ -802,6 +866,41 @@ export class PersonaRuntime {
       clearTimeout(deadline); state.job = null; this.#maintenance = null; this.#memoryActivity('runtime-reflection-settled')
       finish()
       this.#dream('end', { trigger: 'reflection' })
+    }
+  }
+  /** Host maintenance rechecks old growth against this core; it creates no experience. */
+  async reviewCoreUpgrade(agent, { signal } = {}) {
+    const state = await this.attachAgent(agent); await this.#waitCaptures(agent); await state.queue
+    await state.fence.authorize(); this.#assertLive(); check(signal); check(state.controller.signal)
+    if (state.job || this.#maintenance || state.status !== 'idle') return { status: 'busy' }
+    const ctx = this.#context(state.sessionId), listed = await state.growth.listCoreUpgrade(ctx, { pendingOnly: true })
+    if (listed.status !== 'ok') return { status: 'failed', reason_code: listed.reason_code ?? 'CORE_UPGRADE_UNAVAILABLE' }
+    if (!listed.items.length) return { status: 'no_core_upgrade', core_version: this.core.version, results: [] }
+    if (state.job || this.#maintenance) return { status: 'busy' }
+    const controller = new AbortController(), abort = () => controller.abort()
+    signal?.addEventListener('abort', abort, { once: true })
+    state.controller.signal.addEventListener('abort', abort, { once: true })
+    let finish
+    const job = { controller, verdicts: new Map(), cacheOnly: false, done: new Promise(resolve => { finish = resolve }) }
+    state.job = job; this.#maintenance = job; this.#memoryActivity('runtime-core-review')
+    const deadline = setTimeout(abort, bounded(this.#options.maintenanceTimeoutMs, 60000, 120000))
+    try {
+      return await this.#sessionBoundary.run(state.fence, () => this.#operation.run(controller.signal, async () => {
+        const results = []
+        for (const item of listed.items) {
+          check(controller.signal); state.fence.checkSync()
+          results.push(await state.growth.rebaseCore({ kind: item.kind, id: item.id, expected_revision: item.entry.revision,
+            from_core_version: item.from_core_version }, ctx))
+          check(controller.signal); state.fence.checkSync()
+        }
+        state.cache = null
+        return { status: results.some(item => !['rebased', 'not_rebased', 'current'].includes(item.status)) ? 'partial' : 'completed',
+          core_version: this.core.version, results, truncated: listed.truncated }
+      }))
+    } catch (error) { return { status: controller.signal.aborted ? 'cancelled' : 'failed', reason_code: code(error) } }
+    finally {
+      clearTimeout(deadline); signal?.removeEventListener('abort', abort); state.controller.signal.removeEventListener('abort', abort)
+      state.job = null; this.#maintenance = null; finish(); this.#memoryActivity('runtime-core-review-settled')
     }
   }
   detachAgent(agent) {

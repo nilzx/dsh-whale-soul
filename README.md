@@ -19,8 +19,8 @@ An in-character **Whale Chan (鲸鱼娘)** Agent mode for [DeepSeek Harness](htt
 - **A continuous persona** — ordinary chat does not rewrite her core identity. Host safety, privacy, permissions and stop controls remain effective.
 - **Language following** — the persona asks for replies and visible explanations in the language of the current message; model behavior is tested separately.
 - **Scoped long-term memory** — selected facts retain original evidence, revisions and identity attribution. Several facts in one message have separate outcomes.
-- **Explicit agreements** — a [narrow conversation bridge](docs/agreements.md) keeps proposals separate from mutual acceptance; clear cancellation and deadlines are supported. Delivery-result matching and broader model/Web acceptance remain open.
-- **Independent growth** — personality additions are stored apart from facts and the core, with evidence and later reflection before they become stable.
+- **Explicit agreements** — a [narrow conversation bridge](docs/agreements.md) keeps proposals separate from mutual acceptance. A todo-state adapter can verify an explicit agreement to mark one bound todo completed; it does not prove the work behind that todo was delivered.
+- **Independent growth** — personality additions are stored apart from facts and the core, with evidence and later reflection before they become stable. [Core upgrades](docs/core-upgrades.md) recheck compatible growth while preserving identity, text, history and maturity.
 - **Adjustable stability** — `variable`, `normal`, `stubborn` and default `auto` control growth thresholds. Auto becomes steadier with eligible experiences; chat commands and repeated self-descriptions do not qualify.
 - **Owner management** — explicit local preview, export, migration and precise purge live outside ordinary persona tools. Direct file changes do not gain core authority.
 - **Local storage** — plugin data lives under the configured memory root. Selected memories can be included in requests to your configured model provider.

@@ -2,7 +2,7 @@
 
 [中文](agreements.zh-CN.md)
 
-The first bridge handles a narrow set of explicit future-agreement phrases in Chinese and English. It connects real user messages and the Agent’s acceptance action to the existing agreement store. Ordinary promises, requests to save a fact and one-off task instructions are not automatically upgraded into mutual agreements.
+The bridge handles a narrow set of explicit future-agreement phrases in Chinese and English. It connects real user messages, the Agent’s acceptance action and supported delivery results to the existing agreement store. Ordinary promises, requests to save a fact and one-off task instructions are not automatically upgraded into mutual agreements.
 
 ## Proposal and acceptance
 
@@ -26,4 +26,16 @@ An explicit user cancellation such as “Cancel this agreement” closes the ide
 
 The bridge does not infer delivery from an ordinary tool success, an assistant saying “done,” or an idle session. Unknown free-text delivery remains open. It does not schedule background work merely because terms mention a future time.
 
-This first implementation covers proposal, separate acceptances, clear cancellation and deadlines. Matching a concrete delivery result, broad natural-language coverage and actual model/Web acceptance remain unfinished. Agreement state changes and provenance stay in metadata; memory prose contains the terms, not operation receipts or diagnostics.
+## Todo-state delivery adapter
+
+The first delivery adapter verifies a state update, not arbitrary work behind a todo. Start with an existing unfinished todo, then explicitly propose, for example: “Let's agree: next time mark todo "Organize reading notes" as completed.” After both sides accept, the real successful `todo_write` result must change that exact continuous target from `pending` or `in_progress` to `completed` in its original Session. The agreement then becomes `fulfilled`.
+
+The host binds this optional metadata when the proposal names the unique unfinished target:
+
+```json
+{"kind":"todo","session_id":"original-session","content":"Organize reading notes","origin_seq":12}
+```
+
+The fields come from the real Session snapshot; the model does not submit a fulfillment flag. A failed tool result, another item, another Session, removal and re-addition of the item, or a text claim cannot satisfy this binding. Saying only “finish todo X” does not prove the underlying work and does not acquire this state-only binding. Late verified state delivery may close an expired agreement as fulfilled while preserving the expired revision in history.
+
+Agreement state changes, target bindings and provenance stay in metadata; memory prose contains the terms, not operation receipts or diagnostics. Broad natural-language coverage and other artifact-specific delivery adapters remain separate extensions. Focused checks do not imply every model or Web lifecycle has been covered.

@@ -108,7 +108,7 @@ export function readSelfFiles(root, spaceId, agentId) {
 }
 function validateEntity(value, kind, path, anchor) {
   const common = ['schema_version','trait_id','persona_id','agent_identity_id','core_version','dimension','scope','value','state','revision','evidence_refs','counterevidence_refs','assessment','updated_at']
-  const proposal = kind === 'proposals'
+  const proposal = kind === 'proposals' || kind === 'history' && object(value) && Object.hasOwn(value, 'expected_trait_revision')
   assertOnly(value, proposal ? [...common,'proposal_id','expected_trait_revision','created_at','maintenance_refs'] : [...common,'formed_at','supersedes_revision','proposal_id','review_maintenance_refs','unresolved_counterevidence'])
   if (!object(value) || value.schema_version !== 1 || value.persona_id !== anchor.persona_id || value.agent_identity_id !== anchor.agent_identity_id || !['candidate','stable','disputed','retired'].includes(value.state)) fail('INVALID_SELF_STRUCTURE')
   for (const key of ['trait_id','dimension','proposal_id']) assertId(value[key])
@@ -119,7 +119,10 @@ function validateEntity(value, kind, path, anchor) {
   assertOnly(value.assessment,['persistable','compatible','supported','confidence','counterevidence_resolved'])
   if (['persistable','compatible','supported','counterevidence_resolved'].some((key) => typeof value.assessment?.[key] !== 'boolean') || !Number.isFinite(value.assessment.confidence) || value.assessment.confidence < 0 || value.assessment.confidence > 1) fail('INVALID_SELF_STRUCTURE')
   timestamp(value.updated_at,'self updated_at',false)
-  if (proposal) { integer(value.expected_trait_revision); timestamp(value.created_at,'self created_at',false); ids(value.maintenance_refs); if (path !== `proposals/${value.proposal_id}.json`) fail('SELF_ENTITY_ID_CONFLICT') }
+  if (proposal) {
+    integer(value.expected_trait_revision); timestamp(value.created_at,'self created_at',false); ids(value.maintenance_refs)
+    if (kind === 'proposals' && path !== `proposals/${value.proposal_id}.json` || kind === 'history' && path !== `history/${value.proposal_id}/${value.revision}.json`) fail('SELF_ENTITY_ID_CONFLICT')
+  }
   else {
     timestamp(value.formed_at,'self formed_at',false); if (value.supersedes_revision !== null) integer(value.supersedes_revision,1)
     if (value.review_maintenance_refs !== undefined) ids(value.review_maintenance_refs)

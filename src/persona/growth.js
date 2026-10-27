@@ -401,6 +401,116 @@ export class PersonaGrowth {
     } catch (error) { return failure(error) }
   }
 
+  /** Old-core entries stay unloaded until this explicit host review succeeds. */
+  async listCoreUpgrade(context, { limit = 20, pendingOnly = false } = {}) {
+    try {
+      this.#authorize(context, 'self.evaluate')
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new MemoryError('INVALID_GROWTH_LIMIT')
+      if (typeof pendingOnly !== 'boolean') throw new MemoryError('INVALID_GROWTH_QUERY')
+      return await this.#store.managedRead(this.#hostContext(context), () => {
+        this.#authorize(context, 'self.evaluate')
+        const manifest = this.#manifest(), items = []
+        for (const [directory, kind, activeState] of [['traits', 'trait', 'stable'], ['proposals', 'proposal', 'candidate']]) {
+          for (const id of Object.keys(manifest[directory]).sort()) {
+            const entry = this.#checkedFile(directory, id, manifest)
+            if (entry.state !== activeState || entry.core_version === this.#core.version) continue
+            const args = { kind, id, expected_revision: entry.revision, from_core_version: entry.core_version }
+            const operationId = this.#coreRebaseOperation(args), receipt = this.#read(`operations/${digest(operationId)}.json`, null)
+            const request = { action: 'rebaseCore', args, ...this.#identity, target_core_version: this.#core.version }
+            const reviewed = receipt && receipt.operation_id === operationId && receipt.request_hash === digest({ action: 'managed', request,
+              actor: context.agent_identity_id, subject: context.subject_id, persona: context.persona_id, space: context.memory_space_id }) &&
+              ['rebased', 'not_rebased', 'current'].includes(receipt.result?.status)
+            if (pendingOnly && reviewed) continue
+            items.push({ kind, id, from_core_version: entry.core_version, entry,
+              ...(reviewed ? { last_review: Object.fromEntries(['status', 'reason_code', 'from_core_version', 'to_core_version', 'revision'].map(key => [key, receipt.result[key]])) } : {}) })
+          }
+        }
+        return { status: 'ok', ...this.#identity, core_version: this.#core.version,
+          items: clone(items.slice(0, limit)), truncated: items.length > limit }
+      })
+    } catch (error) { return failure(error) }
+  }
+
+  #coreRebaseOperation(args) {
+    return `core-rebase-${digest({ ...this.#identity, ...args, target_core_version: this.#core.version }).slice(0, 48)}`
+  }
+
+  #continuingTraitRevision(proposal, manifest, fromCoreVersion) {
+    const trait = manifest.traits[proposal.trait_id] ? this.#checkedFile('traits', proposal.trait_id, manifest) : null
+    if ((trait?.revision ?? 0) === proposal.expected_trait_revision) return proposal.expected_trait_revision
+    if (!trait || !proposal.expected_trait_revision || trait.core_version !== this.#core.version) throw new MemoryError('GROWTH_REVISION_CONFLICT')
+    const previous = this.#read(`${this.#base()}/history/${trait.trait_id}/${proposal.expected_trait_revision}.json`, null)
+    const meaning = (entry) => Object.fromEntries(Object.entries(entry).filter(([key]) =>
+      !['core_version', 'revision', 'updated_at', 'supersedes_revision', 'assessment'].includes(key)))
+    if (!previous || previous.core_version !== fromCoreVersion || digest(meaning(previous)) !== digest(meaning(trait))) throw new MemoryError('GROWTH_REVISION_CONFLICT')
+    return trait.revision
+  }
+
+  async rebaseCore(args, context) {
+    let operationId = args?.operation_id
+    try {
+      this.#authorize(context, 'self.evaluate')
+      assertOnly(args, ['operation_id', 'kind', 'id', 'expected_revision', 'from_core_version'])
+      if (!['trait', 'proposal'].includes(args.kind)) throw new MemoryError('INVALID_GROWTH_TARGET')
+      assertId(args.id)
+      if (!Number.isSafeInteger(args.expected_revision) || args.expected_revision < 1) throw new MemoryError('EXPECTED_REVISION_REQUIRED')
+      text(args.from_core_version, 'source core version', { max: 128 })
+      operationId ??= this.#coreRebaseOperation(args)
+      const request = { action: 'rebaseCore', args, ...this.#identity, target_core_version: this.#core.version }
+      const completed = await this.#completed(operationId, request, context, 'self.evaluate')
+      if (completed) return completed
+      const directory = args.kind === 'trait' ? 'traits' : 'proposals'
+      const before = await this.#store.managedRead(this.#hostContext(context), () => {
+        this.#authorize(context, 'self.evaluate')
+        return this.#checkedFile(directory, args.id, this.#manifest())
+      })
+      if (before.revision !== args.expected_revision || before.core_version !== args.from_core_version) throw new MemoryError('GROWTH_REVISION_CONFLICT')
+      const summary = { kind: args.kind, id: args.id, state: before.state, revision: before.revision,
+        from_core_version: before.core_version, to_core_version: this.#core.version }
+      const retainedState = args.kind === 'trait' ? 'stable' : 'candidate'
+      const recordUnchanged = (status, reason) => this.#store.managedTransaction(operationId, request, () => {
+        this.#authorize(context, 'self.evaluate')
+        const current = this.#checkedFile(directory, args.id, this.#manifest())
+        if (digest(current) !== digest(before)) throw new MemoryError('GROWTH_REVISION_CONFLICT')
+        return { changes: [], result: result(status, reason, summary) }
+      }, this.#hostContext(context), { authorize: () => this.#authorize(context, 'self.evaluate') })
+      if (before.core_version === this.#core.version) return await recordUnchanged('current', 'CORE_VERSION_CURRENT')
+      if (before.state !== retainedState) return await recordUnchanged('not_rebased', 'GROWTH_STATE_NOT_CONTINUABLE')
+      if (!Object.hasOwn(this.#core.allowed_dimensions, before.dimension)) return await recordUnchanged('not_rebased', 'GROWTH_DIMENSION_DENIED')
+      let evidence, counterevidence
+      try {
+        evidence = await this.#evidence(before.evidence_refs)
+        counterevidence = before.counterevidence_refs.length ? await this.#evidence(before.counterevidence_refs) : []
+      } catch (error) {
+        if (['GROWTH_EVIDENCE_DENIED', 'GROWTH_EVIDENCE_SCOPE', 'GROWTH_EVIDENCE_KIND', 'GROWTH_EVIDENCE_REQUIRED'].includes(error.code)) return await recordUnchanged('not_rebased', error.code)
+        throw error
+      }
+      this.#authorize(context, 'self.evaluate')
+      const assessment = await this.#assessment(before, evidence, counterevidence)
+      if (!assessment.persistable || !assessment.compatible || !assessment.supported || !assessment.counterevidence_resolved || assessment.confidence < this.#minimumConfidence) {
+        return await recordUnchanged('not_rebased', !assessment.persistable ? 'STORAGE_BOUNDARY' : !assessment.compatible ? 'CORE_INCOMPATIBLE' : 'GROWTH_REVIEW_REQUIRED')
+      }
+      return await this.#store.managedTransaction(operationId, request, async ({ manifest: spaceManifest }) => {
+        this.#authorize(context, 'self.evaluate')
+        const manifest = this.#manifest(), current = this.#checkedFile(directory, args.id, manifest)
+        if (digest(current) !== digest(before)) throw new MemoryError('GROWTH_REVISION_CONFLICT')
+        if (digest(await this.#evidence(current.evidence_refs)) !== digest(evidence) ||
+          digest(current.counterevidence_refs.length ? await this.#evidence(current.counterevidence_refs) : []) !== digest(counterevidence)) throw new MemoryError('GROWTH_EVIDENCE_CHANGED')
+        const next = { ...current, core_version: this.#core.version, revision: current.revision + 1,
+          assessment, updated_at: new Date(this.#clock()).toISOString() }
+        if (args.kind === 'trait') next.supersedes_revision = current.revision
+        else next.expected_trait_revision = this.#continuingTraitRevision(current, manifest, args.from_core_version)
+        const history = `${this.#base()}/history/${args.id}/${current.revision}.json`
+        if (existsSync(this.#store.engine.resolvePath(history)) && digest(this.#read(history)) !== digest(current)) throw new MemoryError('GROWTH_HISTORY_CONFLICT')
+        manifest[directory][args.id] = digest(next)
+        this.#authorize(context, 'self.evaluate')
+        return { changes: this.#changes(manifest, spaceManifest, [
+          { path: history, data: json(current) }, { path: `${this.#base()}/${directory}/${args.id}.json`, data: json(next) },
+        ]), result: result('rebased', 'CORE_COMPATIBILITY_REVIEWED', { ...summary, revision: next.revision }) }
+      }, this.#hostContext(context), { authorize: () => this.#authorize(context, 'self.evaluate') })
+    } catch (error) { return failure(error, operationId) }
+  }
+
   async loadGrowth(context, { maxTraits = 12, maxChars = 1200 } = {}) {
     try {
       this.#authorize(context, 'memory.read')

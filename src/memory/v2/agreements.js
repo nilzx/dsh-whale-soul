@@ -1,12 +1,12 @@
 import { randomUUID } from 'node:crypto'
 import { MemoryError, assertId, assertOnly, digest, failure, timestamp } from './contracts.js'
-import { participantKey, validateAgreementMetadata, validateAgreementParticipant } from './agreement-policy.js'
+import { participantKey, validateAgreementMetadata, validateAgreementParticipant, validateAgreementDelivery } from './agreement-policy.js'
 import { isLifecycleProtected, lifecycleTime } from './lifecycle-policy.js'
 import { recordRetentionAllowed } from './read-policy.js'
 
 const clone = (value) => structuredClone(value)
 const grantStamps = new WeakMap()
-const stamp = (value) => digest(Object.fromEntries(['event_id', 'action', 'agreement_id', 'memory_space_id', 'subject_id', 'persona_id', 'agent_identity_id', 'session_id', 'participant', 'source', 'occurred_at', 'evidence_id', 'assertion', 'allow_persist', 'participants', 'due_at', 'related_agreement_id'].map((key) => [key, value[key]])))
+const stamp = (value) => digest(Object.fromEntries(['event_id', 'action', 'agreement_id', 'memory_space_id', 'subject_id', 'persona_id', 'agent_identity_id', 'session_id', 'participant', 'source', 'occurred_at', 'evidence_id', 'assertion', 'allow_persist', 'participants', 'due_at', 'related_agreement_id', 'delivery'].map((key) => [key, value[key]])))
 const scopeKeys = ['memory_space_id', 'subject_id', 'persona_id', 'agent_identity_id']
 const participantSource = (grant) => grant.source === 'user' ? 'user_report' : grant.source === 'host_tool' ? 'tool_observation' : 'host_agent_commitment'
 
@@ -58,6 +58,8 @@ export class MemoryAgreements {
       if (participants.some((party) => party.kind === 'subject' ? party.id !== context.subject_id : party.id !== context.agent_identity_id) || !participants.some((party) => participantKey(party) === participantKey(grant.participant))) throw new MemoryError('AGREEMENT_SCOPE_MISMATCH')
       const dueAt = timestamp(grant.due_at, 'agreement due_at')
       if (dueAt && Date.parse(dueAt) < Date.parse(observedAt)) throw new MemoryError('INVALID_AGREEMENT_TIME')
+      const delivery = grant.delivery === undefined ? null : clone(validateAgreementDelivery(grant.delivery))
+      if (delivery && delivery.session_id !== context.session_id) throw new MemoryError('AGREEMENT_SCOPE_MISMATCH')
       return await this.store.managedTransaction(operationId, { action: 'proposeAgreement', event_id: args.event_id }, async () => {
         this.#authorize(context, signal, grant)
         const record = await this.store._proposal({ content: evidence.content, gist: evidence.content.slice(0, 2000), type: 'promise', provenance_refs: [evidence.evidence_id] }, context)
@@ -68,7 +70,7 @@ export class MemoryAgreements {
           required_acceptances: participants.map(participantKey), accepted_by: [], proposed_at: observedAt, accepted_at: null, due_at: dueAt, closed_at: null,
           proposal_evidence_refs: [evidence.evidence_id], acceptance_evidence_refs: [], transition_evidence_refs: [],
           last_transition: { kind: 'proposal', observed_at: observedAt, recorded_at: recordedAt, event_id: grant.event_id, evidence_id: evidence.evidence_id, source: participantSource(grant) },
-          related_agreement_id: grant.related_agreement_id ?? null }
+          related_agreement_id: grant.related_agreement_id ?? null, ...(delivery ? { delivery } : {}) }
         validateAgreementMetadata(record.meta)
         if (!recordRetentionAllowed(record)) throw new MemoryError('AGREEMENT_RETENTION_DENIED')
         return { changes: this.store._commitChanges(record), result: { status: 'committed', reason_code: 'AGREEMENT_PROPOSED', record_id: record.meta.record_id, revision: record.meta.revision,
@@ -135,6 +137,7 @@ export class MemoryAgreements {
         } else if (args.action === 'fulfill') {
           if (!['open', 'expired'].includes(agreement.state)) throw new MemoryError('AGREEMENT_STATE_CONFLICT')
           if (Date.parse(observedAt) < Date.parse(agreement.accepted_at)) throw new MemoryError('INVALID_AGREEMENT_TIME')
+          if (agreement.delivery && (event.grant.source !== 'host_tool' || !event.grant.delivery || digest(event.grant.delivery) !== digest(agreement.delivery))) throw new MemoryError('AGREEMENT_DELIVERY_MISMATCH')
           next.state = 'fulfilled'; next.closed_at = observedAt; transitionKind = 'fulfillment'
         } else if (args.action === 'cancel') {
           if (!['proposed', 'open'].includes(agreement.state)) throw new MemoryError('AGREEMENT_STATE_CONFLICT')
