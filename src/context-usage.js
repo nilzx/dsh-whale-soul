@@ -65,7 +65,7 @@ export function measureWhaleContext(session, tokenMeter, { estimateToolsTokens, 
   categories.tools += toolsTokens - estimateToolsTokens(otherHeader)
   const totalTokens = measurement.surfaceTokens + toolsTokens
   const whaleTokens = Object.values(categories).reduce((sum, value) => sum + value, 0)
-  return { estimated: true, scope: 'current-retained-context', route: header ? { provider: header.provider, model: header.model } : null,
+  return { estimated: true, scope: 'current-retained-context', route: header ? { provider: header.config.provider, model: header.config.model } : null,
     revision: measurement.logRevision, totalTokens, whaleTokens,
     whalePercent: percent(whaleTokens, totalTokens), categories, otherTokens: totalTokens - whaleTokens,
     providerPressureTokens: measurement.totalTokens, unmatchedSections }
