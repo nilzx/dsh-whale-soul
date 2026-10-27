@@ -1,3 +1,4 @@
+import { verifySelfIntegrity } from '../memory/v2/self-integrity.js'
 import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { MemoryError, assertId, assertOnly, digest, failure, text, timestamp } from '../memory/v2/contracts.js'
@@ -54,6 +55,7 @@ export class PersonaGrowth {
   }
 
   #manifest() {
+    verifySelfIntegrity(this.#store.root, this.#store.memorySpaceId, this.#identity.agent_identity_id)
     const manifest = this.#read(`${this.#base()}/manifest.json`, { schema_version: 1, ...this.#identity,
       revision: 0, traits: {}, proposals: {}, maintenance: {} })
     if (manifest.schema_version !== 1 || manifest.persona_id !== this.#identity.persona_id || manifest.agent_identity_id !== this.#identity.agent_identity_id) throw new MemoryError('SELF_IDENTITY_CONFLICT')

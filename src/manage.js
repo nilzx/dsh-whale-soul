@@ -4,7 +4,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { API_VERSION, FORMAT_VERSION, MemoryStoreV2, MemoryAdministration, MemoryTransfer, validateTransferArchive } from './memory/v2/index.js'
+import { API_VERSION, FORMAT_VERSION, MemoryStoreV2, MemoryAdministration, MemoryTransfer, PersonaSelfAdministration, validateTransferArchive } from './memory/v2/index.js'
 
 const HELP = `Whale Soul local owner management
 
@@ -14,16 +14,18 @@ Import, migration and purge are previews unless --apply is present. No default d
   status
   export --out ABSOLUTE_FILE [--opaque-policy omit|include-reviewed]
   import --archive ABSOLUTE_FILE --identity-mode preserve
-         [--accept-purge-state] [--accept-persona-state] [--accept-integrity-state]
+         [--accept-purge-state] [--accept-persona-state] [--accept-integrity-state] [--accept-self-integrity]
          [--accept-legacy-baseline] [--allow-maturity-reset] [--apply]
   migrate-v1 --source ABSOLUTE_PATH --source-quiescent
          --subject SUBJECT_ID --persona PERSONA_ID --agent-identity AGENT_ID
          [--snapshot SHA256] [--opaque-policy omit|preserve-local] [--apply]
+  upgrade-self --source ABSOLUTE_PATH --source-quiescent
+         --legacy-self-policy preserve-opaque [--snapshot SHA256] [--apply]
   purge --record RECORD_ID@EXPECTED_REVISION [--record ...]
          [--include-legacy-narratives] [--apply]
   purge --pending-item EVIDENCE_ID [--apply]
 
-Import, migrate-v1 and purge accept --operation-id ID for explicit idempotent retries.
+Import, migrate-v1, upgrade-self and purge accept --operation-id ID for explicit idempotent retries.
 Run this command as the local owner outside the persona's restricted tool process.
 There is no command to edit the core, fabricate a source, or rewrite arbitrary history.
 `
@@ -31,11 +33,12 @@ const id = (value) => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0
 const fail = (code) => { throw Object.assign(new Error(code), { code }) }
 const json = (value) => `${JSON.stringify(value, null, 2)}\n`
 const hash = (value) => createHash('sha256').update(value).digest('hex')
-const booleanOptions = new Set(['apply', 'source-quiescent', 'accept-purge-state', 'accept-persona-state', 'accept-integrity-state', 'accept-legacy-baseline', 'allow-maturity-reset', 'include-legacy-narratives'])
+const booleanOptions = new Set(['apply', 'source-quiescent', 'accept-purge-state', 'accept-persona-state', 'accept-integrity-state', 'accept-self-integrity', 'accept-legacy-baseline', 'allow-maturity-reset', 'include-legacy-narratives'])
 const allowed = {
   status: [], export: ['out', 'opaque-policy', 'apply'],
-  import: ['archive', 'identity-mode', 'accept-purge-state', 'accept-persona-state', 'accept-integrity-state', 'accept-legacy-baseline', 'allow-maturity-reset', 'apply', 'operation-id'],
+  import: ['archive', 'identity-mode', 'accept-purge-state', 'accept-persona-state', 'accept-integrity-state', 'accept-self-integrity', 'accept-legacy-baseline', 'allow-maturity-reset', 'apply', 'operation-id'],
   'migrate-v1': ['source', 'source-quiescent', 'subject', 'persona', 'agent-identity', 'snapshot', 'opaque-policy', 'apply', 'operation-id'],
+  'upgrade-self': ['source', 'source-quiescent', 'snapshot', 'legacy-self-policy', 'apply', 'operation-id'],
   purge: ['record', 'pending-item', 'include-legacy-narratives', 'apply', 'operation-id'],
 }
 function absolute(value, name) {
@@ -92,6 +95,13 @@ function parse(argv) {
     if (options.snapshot !== undefined && !/^[a-f0-9]{64}$/.test(options.snapshot)) fail('INVALID_SOURCE_SNAPSHOT')
     if (options.apply && !options.snapshot) fail('SOURCE_SNAPSHOT_REQUIRED')
   }
+  if (command === 'upgrade-self') {
+    options.source = absolute(options.source, 'SOURCE')
+    if (!options['source-quiescent']) fail('SOURCE_QUIESCENCE_REQUIRED')
+    if (options['legacy-self-policy'] !== 'preserve-opaque') fail('EXPLICIT_LEGACY_SELF_POLICY_REQUIRED')
+    if (options.snapshot !== undefined && !/^[a-f0-9]{64}$/.test(options.snapshot)) fail('INVALID_SOURCE_SNAPSHOT')
+    if (options.apply && !options.snapshot) fail('SOURCE_SNAPSHOT_REQUIRED')
+  }
   if (command === 'purge') {
     if (options['pending-item'] !== undefined) {
       if (options.record.length) fail('MUTUALLY_EXCLUSIVE_PURGE_TARGETS')
@@ -132,7 +142,7 @@ function validateRoot(root, space, allowNew) {
   const administration = join(root, '.administration')
   if (existsSync(administration)) {
     if (!leaf(administration).isDirectory()) fail('INVALID_ADMINISTRATION_ROOT')
-    if (readdirSync(administration).some((entry) => !['purge-ledger.json', 'persona-ledger.json', 'session-bindings.json', 'record-heads', 'repair.lock'].includes(entry))) fail('UNSUPPORTED_MANAGED_REFERENCE')
+    if (readdirSync(administration).some((entry) => !['purge-ledger.json', 'persona-ledger.json', 'session-bindings.json', 'record-heads', 'self-heads', 'source-protection.json', 'repair.lock'].includes(entry))) fail('UNSUPPORTED_MANAGED_REFERENCE')
   }
   const journal = join(root, 'spaces', space, 'journal')
   if (existsSync(journal) && readdirSync(journal).length) fail('MANAGEMENT_RECOVERY_REQUIRED')
@@ -161,14 +171,14 @@ function snapshot(root, space) {
     if (limits.bytes > 256 * 1024 * 1024 || limits.files > 20000) fail('MANAGEMENT_PREVIEW_BUDGET_EXCEEDED')
     entries.push({ path: relativePath, data, sha256: hash(data) })
   }
-  for (const path of ['manifest.json', '.administration/purge-ledger.json', '.administration/persona-ledger.json', '.administration/session-bindings.json', '.administration/record-heads', `spaces/${space}`, 'exports', 'backups']) walk(path)
+  for (const path of ['manifest.json', '.administration/purge-ledger.json', '.administration/persona-ledger.json', '.administration/session-bindings.json', '.administration/record-heads', '.administration/self-heads', '.administration/source-protection.json', `spaces/${space}`, 'exports', 'backups']) walk(path)
   return { entries, checksum: hash(JSON.stringify(entries.map(({ path, sha256 }) => ({ path, sha256 })))) }
 }
 async function services(root, space) {
   const store = await new MemoryStoreV2({ root, memory_space_id: space }).initialize()
   const context = ownerContext(store), administration = new MemoryAdministration({ store })
   const transfer = new MemoryTransfer({ store, importGuard: administration.assertImportAllowed.bind(administration) })
-  return { store, context, administration, transfer }
+  return { store, context, administration, transfer, selfAdministration: new PersonaSelfAdministration({ store }) }
 }
 function checked(result) {
   if (result?.status === 'rejected' || result?.status === 'unavailable' || result?.pending || result?.status === 'conflict') fail(result.reason_code ?? 'MANAGEMENT_OPERATION_FAILED')
@@ -181,7 +191,7 @@ function archiveSummary(result) {
     checksum: archive.checksum, revision_watermark: archive.revision_watermark, purge_generation: archive.purge_generation,
     identities: Object.keys(archive.manifest.identities), identity_bindings: Object.entries(archive.manifest.identities).map(([key, value]) => ({ agent_identity_id: key,
       ...(id(value?.persona_id) ? { persona_id: value.persona_id } : {}), ...(id(value?.subject_id) ? { subject_id: value.subject_id } : {}) })),
-    persona_anchor_count: archive.persona_state?.anchors.length ?? 0,
+    persona_anchor_count: archive.persona_state?.anchors.length ?? 0, self_anchor_count: archive.self_integrity_state?.heads.length ?? 0,
     item_bindings: (archive.persona_state?.anchors ?? []).flatMap((anchor) => (anchor.items ?? []).map((item) => ({ evidence_id: item.evidence_id,
       agent_identity_id: anchor.agent_identity_id, persona_id: anchor.persona_id, subject_id: anchor.subject_id,
       status: archive.purge_state?.evidence_ids.includes(item.evidence_id) || archive.purge_state?.related_evidence_ids.includes(item.evidence_id) ? 'purged'
@@ -199,7 +209,7 @@ async function action(command, options, service, applying) {
   }
   if (command === 'import') return checked(await transfer.importSpace({ operation_id: options['operation-id'] ?? randomUUID(), archive: options.loadedArchive,
     identity_mode: 'preserve', accept_purge_state: options['accept-purge-state'] === true, accept_persona_state: options['accept-persona-state'] === true,
-    allow_maturity_reset: options['allow-maturity-reset'] === true, accept_integrity_state: options['accept-integrity-state'] === true, accept_legacy_baseline: options['accept-legacy-baseline'] === true }, context))
+    allow_maturity_reset: options['allow-maturity-reset'] === true, accept_self_integrity: options['accept-self-integrity'] === true, accept_integrity_state: options['accept-integrity-state'] === true, accept_legacy_baseline: options['accept-legacy-baseline'] === true }, context))
   if (command === 'migrate-v1') {
     const input = { operation_id: options['operation-id'] ?? randomUUID(), source_root: options.source,
       source_quiescent: true, identity: { subject_id: options.subject, persona_id: options.persona, agent_identity_id: options['agent-identity'] },
@@ -208,6 +218,13 @@ async function action(command, options, service, applying) {
     const preview = checked(await transfer.migrateV1({ ...input, dry_run: true }, context))
     if (preview.opaque_files.length && !options['opaque-policy']) return { ...preview, status: 'review_required', reason_code: 'OPAQUE_REVIEW_REQUIRED', apply_check: 'not_performed' }
     const simulated = checked(await transfer.migrateV1({ ...input, expected_snapshot: options.snapshot ?? preview.source_snapshot }, context))
+    return { ...preview, apply_check: 'passed_in_shadow', simulated_status: simulated.status }
+  }
+  if (command === 'upgrade-self') {
+    const input = { operation_id: options['operation-id'] ?? randomUUID(), source_root: options.source, source_quiescent: true, legacy_self_policy: 'preserve_opaque' }
+    if (applying) return checked(await service.selfAdministration.upgradeLegacySelf({ ...input, dry_run: false, expected_snapshot: options.snapshot }, context))
+    const preview = checked(await service.selfAdministration.upgradeLegacySelf({ ...input, dry_run: true }, context))
+    const simulated = checked(await service.selfAdministration.upgradeLegacySelf({ ...input, dry_run: false, expected_snapshot: options.snapshot ?? preview.source_snapshot }, context))
     return { ...preview, apply_check: 'passed_in_shadow', simulated_status: simulated.status }
   }
   if (options['pending-item']) return { ...checked(await administration.purgePendingItem({ operation_id: options['operation-id'] ?? randomUUID(), evidence_id: options['pending-item'] }, context)),
@@ -222,7 +239,7 @@ async function action(command, options, service, applying) {
 export async function runManagement(argv) {
   const parsed = parse(argv)
   if (parsed.help) return { exitCode: 0, text: HELP }
-  const { command, options } = parsed, allowNew = ['import', 'migrate-v1'].includes(command)
+  const { command, options } = parsed, allowNew = ['import', 'migrate-v1', 'upgrade-self'].includes(command)
   if (command === 'import') {
     options.loadedArchive = readJson(options.archive); validateTransferArchive(options.loadedArchive)
     if (options.loadedArchive.memory_space_id !== options.space) fail('TRANSFER_SPACE_MISMATCH')
@@ -230,6 +247,7 @@ export async function runManagement(argv) {
     if (options.loadedArchive.persona_state !== undefined && !options['accept-persona-state']) fail('PERSONA_STATE_ACCEPTANCE_REQUIRED')
     if (options.loadedArchive.integrity_state !== undefined && !options['accept-integrity-state']) fail('INTEGRITY_STATE_ACCEPTANCE_REQUIRED')
     if (options.loadedArchive.transfer_version === 1 && !options['accept-legacy-baseline']) fail('LEGACY_BASELINE_ACCEPTANCE_REQUIRED')
+    if (options.loadedArchive.self_integrity_state !== undefined && !options['accept-self-integrity']) fail('SELF_INTEGRITY_ACCEPTANCE_REQUIRED')
   }
   validateRoot(options.root, options.space, allowNew); assertIdle(options.root, options.space)
   if (options.apply && command !== 'export') {

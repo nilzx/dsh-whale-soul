@@ -16,6 +16,7 @@ import { getPurgeState } from '../memory/v2/purge-ledger.js'
 import { personaBinding } from '../memory/v2/persona-ledger.js'
 import { SessionIdentityFence, createSessionBoundary, observeSessionIdentityBoundary } from './session-fence.js'
 import { canonicalProtectionPath } from './protection.js'
+import { verifySelfIntegrity } from '../memory/v2/self-integrity.js'
 
 const capabilities = ['memory.read', 'memory.write', 'memory.list', 'memory.raw', 'self.write', 'self.evaluate']
 const code = (error) => typeof error?.code === 'string' && /^[A-Z][A-Z0-9_]{0,99}$/.test(error.code) ? error.code : 'PERSONA_RUNTIME_FAILURE'
@@ -414,6 +415,7 @@ export class PersonaRuntime {
       maxChars: bounded(this.#options.maxContextChars, 2400, 2400) }, ctx,
     { evidenceAllowed: (id, context, meta) => this.#evidenceAllowed(id, context, meta), recordAllowed: recordRetentionAllowed })
     const growth = await state.growth.loadGrowth(ctx)
+    if (growth.status !== 'ok') throw new MemoryError(growth.reason_code ?? 'PERSONA_GROWTH_UNAVAILABLE')
     check(signal); check(state.controller.signal)
     const files = new Map()
     const observe = (file) => { files.set(file, digest(readFileSync(file))) }
@@ -422,17 +424,22 @@ export class PersonaRuntime {
       for (const ref of union(trait.evidence_refs, trait.counterevidence_refs)) observe(this.store.engine.resolvePath(`self/${this.state.identity.agent_identity_id}/evidence/${ref}.json`))
     }
     observe(join(this.store.root, '.administration/persona-ledger.json'))
+    const selfHead = join(this.store.root, '.administration/self-heads', this.store.memorySpaceId, `${this.state.identity.agent_identity_id}.json`)
+    observe(selfHead)
     observe(join(this.store.spaceRoot, 'manifest.json'))
     const fingerprint = () => {
       try { return !this.#disposed && !state.controller.signal.aborted && memory.isCurrent?.() &&
         [...files].every(([file, hash]) => digest(readFileSync(file)) === hash) } catch { return false }
     }
     state.fence.checkSync()
-    state.cache = { memory: memory.context ?? '', growth: growth.traits?.length ? growth.context ?? '' : '', isCurrent: fingerprint }
+    const selfHeadHash = files.get(selfHead)
+    state.cache = { memory: memory.context ?? '', growth: growth.traits?.length ? growth.context ?? '' : '', isCurrent: fingerprint,
+      authorityCurrent: () => { try { return digest(readFileSync(selfHead)) === selfHeadHash } catch { return false } } }
     return this.contextFor(agent)
   }
   contextFor(agent) {
     const state = this.#agents.get(agent), cache = state?.cache
+    if (cache && !cache.authorityCurrent()) verifySelfIntegrity(this.store.root, this.store.memorySpaceId, this.state.identity.agent_identity_id)
     if (!cache?.isCurrent()) return { memory: '', growth: '' }
     state.fence.checkSync()
     return { memory: cache.memory, growth: cache.growth }

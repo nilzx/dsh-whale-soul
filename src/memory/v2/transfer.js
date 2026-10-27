@@ -6,10 +6,11 @@ import { readJson } from './transactions.js'
 import { ASSET_METADATA_FIELDS, validateAssetMetadata } from './assets.js'
 import { assertPersonaFilesAllowed, exportPersonaState, preparePersonaImport, validatePortablePersonaShape, validatePortablePersonaState, personaIdentityProjection, projectedIdentityBinding } from './persona-ledger.js'
 import { exportPurgeState, getPurgeState, preparePurgeImport } from './purge-ledger.js'
+import { exportSelfState, validatePortableSelfState, prepareSelfImport, isGrowthSelfPath } from './self-transfer.js'
 import { buildRecordStateDescriptor, listRecordHeads, loadRecordHead, validateRecordHead, verifyRecordBundle } from './record-integrity.js'
 
 const TRANSFER_FORMAT = 'dsh-memory-space'
-const TRANSFER_VERSION = 2
+const TRANSFER_VERSION = 3
 const DATA_FILES = ['meta.json', 'gist.md', 'detail.md', 'evidence.jsonl', 'integrity.json']
 const ROOTS = ['records', 'evidence', 'candidates', 'self', 'assets', 'cold', 'quarantine', 'external-changes']
 const LEGACY_ROOTS = ['entries', 'cold', 'quarantine', 'assets', 'dreams', 'backups', 'external-changes']
@@ -134,14 +135,15 @@ export function validateTransferPurgeState(state, generation) {
   return state
 }
 
-function packageArchive(store, manifest, files, policy = exportPolicy('none'), purgeState, personaState, integrityState) {
+function packageArchive(store, manifest, files, policy = exportPolicy('none'), purgeState, personaState, integrityState, selfState) {
   const archive = {
-    transfer_format: TRANSFER_FORMAT, transfer_version: integrityState ? TRANSFER_VERSION : 1, storage_format_version: FORMAT_VERSION,
+    transfer_format: TRANSFER_FORMAT, transfer_version: selfState ? TRANSFER_VERSION : integrityState ? 2 : 1, storage_format_version: FORMAT_VERSION,
     memory_space_id: store.memorySpaceId, revision_watermark: manifest.revision_watermark,
     purge_generation: manifest.purge_generation ?? 0,
     ...(purgeState ? { purge_state: copy(purgeState) } : {}),
     ...(personaState?.anchors.length ? { persona_state: copy(personaState) } : {}),
     ...(integrityState ? { integrity_state: copy(integrityState) } : {}),
+    ...(selfState ? { self_integrity_state: copy(selfState) } : {}),
     manifest: { created_at: manifest.created_at, identities: copy(manifest.identities ?? {}), migrations: copy(manifest.migrations ?? []), export_policy: policy },
     files: packageFiles(files),
   }
@@ -306,10 +308,12 @@ function validateScopedAssets(files, assets, currentRecords, recordViews, spaceI
 }
 
 export function validateTransferArchive(archive, { maxFiles = 10_000, maxBytes = 64 * 1024 * 1024, maxFileBytes = 8 * 1024 * 1024 } = {}) {
-  assertOnly(archive, ['transfer_format', 'transfer_version', 'storage_format_version', 'memory_space_id', 'revision_watermark', 'purge_generation', 'purge_state', 'persona_state', 'integrity_state', 'manifest', 'files', 'checksum'])
-  if (archive.transfer_format !== TRANSFER_FORMAT || ![1, TRANSFER_VERSION].includes(archive.transfer_version) || archive.storage_format_version !== FORMAT_VERSION) throw new MemoryError('UNSUPPORTED_TRANSFER_FORMAT')
-  if (archive.transfer_version === TRANSFER_VERSION && archive.integrity_state === undefined) throw new MemoryError('TRANSFER_INTEGRITY_STATE_REQUIRED')
+  assertOnly(archive, ['transfer_format', 'transfer_version', 'storage_format_version', 'memory_space_id', 'revision_watermark', 'purge_generation', 'purge_state', 'persona_state', 'integrity_state', 'self_integrity_state', 'manifest', 'files', 'checksum'])
+  if (archive.transfer_format !== TRANSFER_FORMAT || ![1, 2, TRANSFER_VERSION].includes(archive.transfer_version) || archive.storage_format_version !== FORMAT_VERSION) throw new MemoryError('UNSUPPORTED_TRANSFER_FORMAT')
+  if (archive.transfer_version >= 2 && archive.integrity_state === undefined) throw new MemoryError('TRANSFER_INTEGRITY_STATE_REQUIRED')
   if (archive.transfer_version === 1 && archive.integrity_state !== undefined) throw new MemoryError('TRANSFER_INTEGRITY_VERSION_MISMATCH')
+  if (archive.transfer_version === TRANSFER_VERSION && archive.self_integrity_state === undefined) throw new MemoryError('SELF_INTEGRITY_STATE_REQUIRED')
+  if (archive.transfer_version < TRANSFER_VERSION && archive.self_integrity_state !== undefined) throw new MemoryError('TRANSFER_SELF_VERSION_MISMATCH')
   assertId(archive.memory_space_id, 'memory_space_id')
   if (!Number.isSafeInteger(archive.revision_watermark) || archive.revision_watermark < 0 || !Number.isSafeInteger(archive.purge_generation) || archive.purge_generation < 0) throw new MemoryError('INVALID_TRANSFER_WATERMARK')
   if (archive.purge_state !== undefined) {
@@ -353,6 +357,9 @@ export function validateTransferArchive(archive, { maxFiles = 10_000, maxBytes =
     for (const [id, identity] of Object.entries(archive.manifest.identities)) if (identity?.persona_id === anchor.persona_id && identity?.subject_id === anchor.subject_id && id !== anchor.agent_identity_id && projectedIdentityBinding(identity) === anchor.binding_id) throw new MemoryError('TRANSFER_PERSONA_IDENTITY_MISMATCH')
   }
   assertPersonaFilesAllowed(files, archive.persona_state?.anchors ?? [], { validateSnapshot: true })
+  if (archive.self_integrity_state !== undefined && Buffer.byteLength(stableStringify(archive.self_integrity_state)) > maxBytes) throw new MemoryError('TRANSFER_LIMIT_EXCEEDED')
+  if (archive.self_integrity_state !== undefined) validatePortableSelfState(archive.self_integrity_state, files, archive.persona_state?.anchors ?? [], archive.memory_space_id)
+  else if (files.some(file => isGrowthSelfPath(file.path))) throw new MemoryError('SELF_INTEGRITY_STATE_REQUIRED')
   if (files.some(opaqueFile) && !['reviewed', 'preserved_local'].includes(policy?.opaque_handling)) throw new MemoryError('OPAQUE_REVIEW_REQUIRED')
   return { files, records, bytes: total }
 }
@@ -375,13 +382,19 @@ export class MemoryTransfer {
   #limits
   #importGuard
   #beforeSourceRecheck
+  #sourceProtectionBuilder
+  #finalImportAuthorize
 
-  constructor({ store, importGuard, beforeSourceRecheck, maxFiles = 10_000, maxBytes = 64 * 1024 * 1024, maxFileBytes = 8 * 1024 * 1024 }) {
+  constructor({ store, importGuard, beforeSourceRecheck, finalImportAuthorize, sourceProtectionBuilder, maxFiles = 10_000, maxBytes = 64 * 1024 * 1024, maxFileBytes = 8 * 1024 * 1024 }) {
     if (typeof store?.managedRead !== 'function' || typeof store?.managedTransaction !== 'function') throw new MemoryError('MANAGED_MEMORY_REQUIRED')
     this.#store = store
     this.#limits = { maxFiles, maxBytes, maxFileBytes }
     this.#importGuard = importGuard
     this.#beforeSourceRecheck = beforeSourceRecheck
+    if (finalImportAuthorize !== undefined && typeof finalImportAuthorize !== 'function') throw new MemoryError('TRUSTED_AUTHORIZER_REQUIRED')
+    this.#finalImportAuthorize = finalImportAuthorize
+    if (sourceProtectionBuilder !== undefined && typeof sourceProtectionBuilder !== 'function') throw new MemoryError('TRUSTED_AUTHORIZER_REQUIRED')
+    this.#sourceProtectionBuilder = sourceProtectionBuilder
   }
 
   async exportSpace(args, context) {
@@ -393,16 +406,19 @@ export class MemoryTransfer {
         for (const name of ROOTS) walk(this.#store.spaceRoot, name, this.#limits, files)
         const heads = listRecordHeads(this.#store.root, this.#store.memorySpaceId)
         const pending = heads.filter((head) => head.state === 'quarantined').map((head) => head.record_id)
+        const personaState = exportPersonaState(this.#store.root, this.#store.memorySpaceId)
+        await validatePortablePersonaState(personaState, this.#store.memorySpaceId)
         const sanitized = sanitizedMetadata(files)
-        const opaque = sanitized.files.filter((file) => opaqueFile(file) || pending.some((id) => pendingPayload(file.path, id))).map((file) => file.path)
+        const unboundSelf = sanitized.files.filter(file => file.path.startsWith('self/') && !personaState.anchors.some(anchor => file.path.startsWith(`self/${anchor.agent_identity_id}/`))).map(file => file.path)
+        const opaque = sanitized.files.filter((file) => unboundSelf.includes(file.path) || opaqueFile(file) || pending.some((id) => pendingPayload(file.path, id))).map((file) => file.path)
         if ((opaque.length || pending.length) && args?.opaque_policy === undefined) return { api_version: API_VERSION, status: 'review_required', reason_code: 'OPAQUE_REVIEW_REQUIRED', opaque_files: opaque, pending_record_ids: pending }
+        if (unboundSelf.length && args?.opaque_policy !== 'omit') return { api_version: API_VERSION, status: 'review_required', reason_code: 'UNBOUND_SELF_EXPORT_REQUIRES_RECOVERY', opaque_files: unboundSelf }
         const selected = args?.opaque_policy === 'omit' ? sanitized.files.filter((file) => !opaque.includes(file.path)) : sanitized.files
         const policy = exportPolicy(!opaque.length && !pending.length ? 'none' : args.opaque_policy === 'omit' ? 'omitted' : 'reviewed', args?.opaque_policy === 'omit' ? opaque : [], sanitized.redactions)
         const state = exportPurgeState(this.#store.root, this.#store.memorySpaceId)
-        const personaState = exportPersonaState(this.#store.root, this.#store.memorySpaceId)
-        await validatePortablePersonaState(personaState, this.#store.memorySpaceId)
         const integrityState = { schema_version: 1, heads, omitted_pending_ids: args?.opaque_policy === 'omit' ? pending : [] }
-        const archive = packageArchive(this.#store, manifest, selected, policy, state, personaState, integrityState)
+        const selfState = exportSelfState(this.#store.root, this.#store.memorySpaceId, selected, personaState.anchors)
+        const archive = packageArchive(this.#store, manifest, selected, policy, state, personaState, integrityState, selfState)
         const decoded = validateTransferArchive(archive, this.#limits)
         return { api_version: API_VERSION, status: 'ok', archive, record_ids: decoded.records.map((meta) => meta.record_id), pending_record_ids: pending, omitted_pending_ids: integrityState.omitted_pending_ids }
       })
@@ -423,13 +439,14 @@ export class MemoryTransfer {
   async #import(archive, operationId, context, { recheckSource, allowMaturityReset = false } = {}) {
     const decoded = validateTransferArchive(archive, this.#limits)
     if (archive.memory_space_id !== this.#store.memorySpaceId) throw new MemoryError('TRANSFER_SPACE_MISMATCH')
-    return this.#store.managedTransaction(operationId, { action: 'importSpace', checksum: archive.checksum, identity_mode: 'preserve', ...(archive.persona_state ? { accept_persona_state: true, allow_maturity_reset: allowMaturityReset } : {}), ...(archive.integrity_state ? { accept_integrity_state: true } : { accept_legacy_baseline: true }) }, async ({ manifest, records }) => {
+    return this.#store.managedTransaction(operationId, { action: 'importSpace', checksum: archive.checksum, identity_mode: 'preserve', ...(archive.persona_state ? { accept_persona_state: true, allow_maturity_reset: allowMaturityReset } : {}), ...(archive.self_integrity_state ? { accept_self_integrity: true } : {}), ...(archive.integrity_state ? { accept_integrity_state: true } : { accept_legacy_baseline: true }) }, async ({ manifest, records }) => {
       const { state, descriptor } = archive.purge_state === undefined
         ? { state: getPurgeState(this.#store.root, this.#store.memorySpaceId), descriptor: null }
         : preparePurgeImport(this.#store.root, this.#store.memorySpaceId, operationId, archive.purge_state)
       await this.#guard(manifest, archive, decoded, state)
       const persona = archive.persona_state ? await preparePersonaImport(this.#store.root, this.#store.memorySpaceId, operationId, archive.persona_state, { allowMaturityReset }) : { anchors: [], descriptors: [] }
       assertPersonaFilesAllowed(decoded.files, persona.anchors)
+      const self = archive.self_integrity_state ? prepareSelfImport(this.#store.root, this.#store.memorySpaceId, archive.self_integrity_state, decoded.files, persona.anchors, operationId, [...state.evidence_ids, ...state.related_evidence_ids]) : { imports: [], changes: [], coveredIds: [] }
       const recordImports = [], purgeHeadTransitions = []
       for (const head of archive.integrity_state?.heads ?? []) {
         const old = loadRecordHead(this.#store.root, this.#store.memorySpaceId, head.record_id)
@@ -445,8 +462,9 @@ export class MemoryTransfer {
         }
         if (!old) recordImports.push({ expected_generation: 0, next: copy(head) })
       }
-      const changes = []
+      const changes = [...self.changes]
       for (const file of decoded.files) {
+        if (isGrowthSelfPath(file.path) && self.coveredIds.includes(file.path.split('/')[1])) continue
         if (/^self\/[^/]+\/stability\.json$/.test(file.path) && persona.anchors.some((anchor) => file.path === `self/${anchor.agent_identity_id}/stability.json`)) continue
         const target = this.#store.engine.resolvePath(file.path)
         if (existsSync(target)) {
@@ -471,15 +489,16 @@ export class MemoryTransfer {
         changes.push({ path: 'index/records.json', data: json(this.#store._index(merged, watermark)) })
       }
       if (recheckSource) await recheckSource()
-      return { changes, ...(descriptor ? { purge_descriptor: descriptor } : {}), ...(persona.descriptors.length ? { persona_descriptors: persona.descriptors } : {}), ...(recordDescriptors.length ? { record_descriptors: recordDescriptors } : {}), ...(recordImports.length ? { record_imports: recordImports } : {}), result: { api_version: API_VERSION, operation_id: operationId, status: changes.length ? 'committed' : 'unchanged', reason_code: 'OK', imported_files: decoded.files.length, record_ids: decoded.records.map((meta) => meta.record_id), pending_record_ids: (archive.integrity_state?.heads ?? []).filter((head) => head.state === 'quarantined').map((head) => head.record_id), omitted_pending_ids: archive.integrity_state?.omitted_pending_ids ?? [], checksum: archive.checksum, revision_watermark: watermark, purge_generation: state.generation, pending: false } }
-    }, context)
+      return { changes, ...(this.#sourceProtectionBuilder ? { source_protection_descriptor: this.#sourceProtectionBuilder() } : {}), ...(self.imports.length ? { self_imports: self.imports } : {}), ...(descriptor ? { purge_descriptor: descriptor } : {}), ...(persona.descriptors.length ? { persona_descriptors: persona.descriptors } : {}), ...(recordDescriptors.length ? { record_descriptors: recordDescriptors } : {}), ...(recordImports.length ? { record_imports: recordImports } : {}), result: { api_version: API_VERSION, operation_id: operationId, status: changes.length ? 'committed' : 'unchanged', reason_code: 'OK', imported_files: decoded.files.length, record_ids: decoded.records.map((meta) => meta.record_id), pending_record_ids: (archive.integrity_state?.heads ?? []).filter((head) => head.state === 'quarantined').map((head) => head.record_id), omitted_pending_ids: archive.integrity_state?.omitted_pending_ids ?? [], checksum: archive.checksum, revision_watermark: watermark, purge_generation: state.generation, pending: false } }
+    }, context, { authorize: () => this.#finalImportAuthorize?.() })
   }
 
   async importSpace(args, context) {
     const operationId = args?.operation_id ?? randomUUID()
     try {
       this.#store._authorize(context, 'memory.manage')
-      assertOnly(args, ['operation_id', 'archive', 'identity_mode', 'accept_purge_state', 'accept_persona_state', 'accept_integrity_state', 'accept_legacy_baseline', 'allow_maturity_reset'])
+      assertOnly(args, ['operation_id', 'archive', 'identity_mode', 'accept_purge_state', 'accept_persona_state', 'accept_integrity_state', 'accept_self_integrity', 'accept_legacy_baseline', 'allow_maturity_reset'])
+      if (args.accept_self_integrity !== undefined && typeof args.accept_self_integrity !== 'boolean') throw new MemoryError('INVALID_SELF_INTEGRITY_ACCEPTANCE')
       if (args.identity_mode !== 'preserve') throw new MemoryError('EXPLICIT_IDENTITY_MODE_REQUIRED')
       if (args.accept_purge_state !== undefined && typeof args.accept_purge_state !== 'boolean') throw new MemoryError('INVALID_PURGE_STATE_ACCEPTANCE')
       if (args.archive?.purge_state !== undefined && args.accept_purge_state !== true) throw new MemoryError('PURGE_STATE_ACCEPTANCE_REQUIRED')
@@ -490,6 +509,7 @@ export class MemoryTransfer {
       if (args.archive?.integrity_state !== undefined && args.accept_integrity_state !== true) throw new MemoryError('INTEGRITY_STATE_ACCEPTANCE_REQUIRED')
       if (args.accept_legacy_baseline !== undefined && typeof args.accept_legacy_baseline !== 'boolean') throw new MemoryError('INVALID_LEGACY_BASELINE_ACCEPTANCE')
       if (args.archive?.transfer_version === 1 && args.accept_legacy_baseline !== true) throw new MemoryError('LEGACY_BASELINE_ACCEPTANCE_REQUIRED')
+      if (args.archive?.self_integrity_state !== undefined && args.accept_self_integrity !== true) throw new MemoryError('SELF_INTEGRITY_ACCEPTANCE_REQUIRED')
       return await this.#import(args.archive, operationId, context, { allowMaturityReset: args.allow_maturity_reset === true })
     } catch (error) { return failure(error, operationId) }
   }
@@ -589,4 +609,10 @@ export class MemoryTransfer {
       return { ...result, source_snapshot: snapshot.checksum, warnings }
     } catch (error) { return failure(error, operationId) }
   }
+}
+
+/** Internal owner-migration packager; this is data, never an authority context. */
+export function packageOwnerArchive(store,manifest,files,{purgeState,personaState,heads,selfState}={}){
+  const sanitized=sanitizedMetadata(files)
+  return packageArchive(store,manifest,sanitized.files,exportPolicy('preserved_local',[],sanitized.redactions),purgeState,personaState,{schema_version:1,heads,omitted_pending_ids:[]},selfState)
 }
