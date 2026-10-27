@@ -47,7 +47,7 @@ function collectAnimations(config) {
 export class DshPetBody {
   constructor({
     baseUrl,
-    petId = 'main',
+    petId,
     surface = 'any',
     routePrefix = '/dsh-pet-7340',
     fetchImpl = globalThis.fetch,
@@ -56,8 +56,9 @@ export class DshPetBody {
     memoryRoot,
   } = {}) {
     this.baseUrl = typeof baseUrl === 'string' ? baseUrl.replace(/\/+$/, '') : ''
-    this.configuredPetId = petId
-    this.petId = petId
+    this.explicitPetId = petId !== undefined
+    this.configuredPetId = petId === undefined ? 'main' : petId
+    this.petId = this.configuredPetId
     this.surface = surface
     this.routePrefix = routePrefix
     this.fetchImpl = fetchImpl
@@ -107,7 +108,9 @@ export class DshPetBody {
   }
 
   async detect() {
+    this.available = false
     if (!DshPetBody.isLoopback(this.baseUrl)) return false
+    if (this.explicitPetId && (typeof this.configuredPetId !== 'string' || !this.configuredPetId.trim())) return false
     const state = await this.request('/state')
     if (!state || typeof state !== 'object') return false
     const config = await this.request('/config')
@@ -118,16 +121,17 @@ export class DshPetBody {
     const entries = Object.values(config).filter(
       (value) => value && typeof value === 'object' && Array.isArray(value.pets),
     )
-    const entry =
+    const matching =
       entries.find((value) => value.pets.some((pet) => String(pet?.id ?? '') === this.configuredPetId)) ??
-      entries[0] ??
-      config
+      (Array.isArray(config.pets) && config.pets.some((pet) => String(pet?.id ?? '') === this.configuredPetId) ? config : null)
+    if (this.explicitPetId && !matching) return false
+    const entry = matching ?? entries[0] ?? config
     this.pets = Array.isArray(entry.pets) ? entry.pets : []
     this.animations = collectAnimations(entry)
     const ids = this.pets.map((pet) => String(pet?.id ?? '')).filter(Boolean)
-    if (ids.length > 0) {
-      this.petId = ids.includes(this.configuredPetId) ? this.configuredPetId : ids[0]
-    }
+    if (!ids.length || this.explicitPetId && !ids.includes(this.configuredPetId)) return false
+    // Automatic selection is retained only when the host omitted petId.
+    this.petId = ids.includes(this.configuredPetId) ? this.configuredPetId : ids[0]
     this.available = true
     return true
   }
@@ -151,7 +155,7 @@ export class DshPetBody {
         anim,
         ...(url ? { url } : {}),
       },
-      query: { pet: this.petId, surface: this.surface },
+      query: { pet: this.petId, surface: this.surface, lock: this.lockId },
     })
     return result?.ok === true
   }
@@ -161,7 +165,7 @@ export class DshPetBody {
     const result = await this.request('/anim', {
       method: 'POST',
       body: { name, ...(facing ? { facing } : {}) },
-      query: { pet: this.petId, surface: this.surface },
+      query: { pet: this.petId, surface: this.surface, lock: this.lockId },
     })
     return result?.ok === true
   }
@@ -170,7 +174,7 @@ export class DshPetBody {
     const result = await this.request('/bubble/clear', {
       method: 'POST',
       body: {},
-      query: { pet: this.petId, surface: this.surface },
+      query: { pet: this.petId, surface: this.surface, lock: this.lockId },
     })
     return result?.ok === true
   }

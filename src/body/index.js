@@ -169,7 +169,7 @@ export async function apply(ctx, config = {}) {
   const baseUrl = discoverBaseUrl(ctx, options.baseUrl)
   const body = new DshPetBody({
     baseUrl,
-    petId: options.petId ?? 'main',
+    petId: options.petId,
     surface: options.surface ?? 'any',
     routePrefix: options.routePrefix ?? '/dsh-pet-7340',
     timeoutMs: Number.isFinite(Number(options.timeoutMs)) ? Number(options.timeoutMs) : 1200,

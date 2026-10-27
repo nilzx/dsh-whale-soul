@@ -24,7 +24,7 @@ The body row accepts:
 | Option | Default | Meaning |
 |---|---:|---|
 | `baseUrl` | auto | Override the dsh-pet origin. |
-| `petId` | `main` | Which dsh-pet instance to drive. |
+| `petId` | automatic | Exact dsh-pet instance to drive. An explicit missing/invalid ID disables the bridge. When omitted, prefer `main`, then the first configured instance. The bundled presets explicitly select `main`. |
 | `surface` | `any` | `web`, `desktop`, `both`, or `any`. |
 | `maxBubbleChars` | `100` | Maximum bubble text. |
 | `rateLimitMs` | `4000` | Minimum gap between explicit reactions. |
@@ -37,3 +37,5 @@ If the probe fails, the adapter registers no body tools and logs nothing user-fa
 ## Scope
 
 This is a one-way display integration. The soul can ask the body to react, but the body cannot write memories, change the persona, or send messages back into the conversation.
+
+After acquiring a lease, the adapter includes its current `lock` query parameter on animation, bubble and bubble-clear requests. It never uses forceful takeover. A lease coordinates one instance; it does not make testing against a user's main pet harmless. Use a dedicated instance in an isolated service and explicitly configure its `petId` and `surface`.
