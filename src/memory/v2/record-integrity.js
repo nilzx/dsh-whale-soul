@@ -2,6 +2,7 @@ import { lstatSync, readFileSync, readdirSync } from 'node:fs'
 import { isAbsolute, join, parse, relative, resolve, sep } from 'node:path'
 import { MEMORY_TYPES, MemoryError, assertId, digest, validateRecord } from './contracts.js'
 import { normalizeMemorySlotKey } from './slot-policy.js'
+import { validateLifecycleMetadata } from './lifecycle-policy.js'
 
 const FILES = ['meta.json', 'gist.md', 'detail.md', 'evidence.jsonl', 'integrity.json']
 const DATA_FILES = FILES.slice(0, 4)
@@ -79,8 +80,10 @@ function slotHash(meta) {
 }
 
 function validateHead(head) {
-  object(head, HEAD_KEYS, 'RECORD_HEAD_INVALID')
-  if (head.schema_version !== 1 || !STATES.includes(head.state) || !MEMORY_TYPES.includes(head.record_type) ||
+  if (![1, 2].includes(head?.schema_version)) fail('RECORD_HEAD_INVALID')
+  object(head, head.schema_version === 2 ? [...HEAD_KEYS, 'bundle_location'] : HEAD_KEYS, 'RECORD_HEAD_INVALID')
+  if (head.schema_version === 2 && !['records', 'cold'].includes(head.bundle_location)) fail('RECORD_LOCATION_INVALID')
+  if (!STATES.includes(head.state) || !MEMORY_TYPES.includes(head.record_type) ||
     head.canonical_key_hash !== null && !HASH.test(head.canonical_key_hash) ||
     !Number.isSafeInteger(head.generation) || head.generation < 1 || !Array.isArray(head.revisions) || !head.revisions.length) fail('RECORD_HEAD_INVALID')
   try { for (const key of [...SCOPE, 'head_revision_id']) assertId(head[key]) } catch { fail('RECORD_HEAD_INVALID') }
@@ -112,6 +115,7 @@ function readBundle(files) {
   hashes(files)
   const meta = parseJson(files['meta.json'])
   try { validateRecord(meta) } catch { fail('RECORD_BUNDLE_INVALID') }
+  validateLifecycleMetadata(meta)
   const integrity = parseJson(files['integrity.json'])
   object(integrity, ['revision_id', 'files'], 'RECORD_BUNDLE_INVALID')
   object(integrity.files, DATA_FILES, 'RECORD_BUNDLE_INVALID')
@@ -161,6 +165,31 @@ export function listRecordHeads(root, spaceId) {
 
 export function recordBundleHash(files) { return digest(hashes(files)) }
 
+export function recordBundlePath(head, revisionId = null) {
+  validateHead(head)
+  const location = head.schema_version === 2 ? head.bundle_location : 'records'
+  const base = `${location === 'cold' ? 'cold/records' : 'records'}/${head.record_id}`
+  if (revisionId === null) return base
+  assertId(revisionId, 'revision_id')
+  if (!head.revisions.some((entry) => entry.revision_id === revisionId)) fail('RECORD_CHAIN_CONFLICT')
+  return `${base}/revisions/${revisionId}`
+}
+
+/** Resolve only a validated root-head location, never a model-supplied root. */
+export function locateRecordBundle(store, head, revisionId = null) {
+  validateHead(head)
+  if (!store || store.memorySpaceId !== head.memory_space_id || typeof store.root !== 'string' ||
+    typeof store.spaceRoot !== 'string' || typeof store.engine?.root !== 'string' || typeof store.engine?.resolvePath !== 'function' ||
+    resolve(store.spaceRoot) !== resolve(store.root, 'spaces', head.memory_space_id) || resolve(store.engine.root) !== resolve(store.spaceRoot)) fail('RECORD_SCOPE_MISMATCH')
+  const base = recordBundlePath(head, revisionId)
+  return Object.freeze({ base, directory: store.engine.resolvePath(base) })
+}
+
+function checkLifecycleLocation(meta, location) {
+  const lifecycle = validateLifecycleMetadata(meta)
+  if (location === 'cold' && !['cold', 'archived'].includes(lifecycle?.tier) || location === 'records' && lifecycle?.tier === 'cold') fail('LIFECYCLE_LOCATION_CONFLICT')
+}
+
 export function verifyRecordBundle(head, files, revisionId = head?.head_revision_id) {
   validateHead(head)
   assertId(revisionId, 'revision_id')
@@ -173,6 +202,7 @@ export function verifyRecordBundle(head, files, revisionId = head?.head_revision
   if (meta.revision_id !== expected.revision_id || meta.revision !== expected.revision || (meta.supersedes ?? null) !== expected.parent_revision_id ||
     !same([...meta.provenance_refs].sort(), [...expected.evidence_ids].sort()) || !same([...(meta.assets ?? [])].sort(), [...expected.asset_files].sort())) fail('RECORD_CHAIN_CONFLICT')
   if (revisionId === head.head_revision_id && (meta.type !== head.record_type || slotHash(meta) !== head.canonical_key_hash)) fail('RECORD_CHAIN_CONFLICT')
+  if (revisionId === head.head_revision_id) checkLifecycleLocation(meta, head.schema_version === 2 ? head.bundle_location : 'records')
   return record
 }
 
@@ -192,32 +222,40 @@ function nextGeneration(head) {
   return generation
 }
 
-export function buildRecordDescriptor({ root, spaceId, meta, files, operationId, mode = 'append', state = 'clean', changeId = null, previousHead } = {}) {
+export function buildRecordDescriptor({ root, spaceId, meta, files, operationId, mode = 'append', state = 'clean', changeId = null, previousHead, bundleLocation } = {}) {
   assertId(operationId, 'operation_id'); assertId(spaceId, 'memory_space_id')
   if (!['append', 'baseline', 'repair', 'adopt'].includes(mode) || !STATES.includes(state)) fail('RECORD_STATE_CONFLICT')
   const record = readBundle(files)
   if (!meta || typeof meta !== 'object' || Array.isArray(meta) || !same(meta, record.meta)) fail('RECORD_BUNDLE_INVALID')
   const old = previous(root, spaceId, meta.record_id, previousHead)
+  if (bundleLocation !== undefined && !['records', 'cold'].includes(bundleLocation)) fail('RECORD_LOCATION_INVALID')
+  const oldLocation = old?.schema_version === 2 ? old.bundle_location : 'records'
+  const location = bundleLocation ?? oldLocation
   if (meta.memory_space_id !== spaceId) fail('RECORD_SCOPE_MISMATCH')
   if (old) scope(old, meta)
   if (old?.state === 'purged') fail('RECORD_STATE_CONFLICT')
   if (mode === 'repair') {
     if (!old || state !== 'clean' || changeId !== null) fail('RECORD_STATE_CONFLICT')
+    if (location !== oldLocation) fail('RECORD_LOCATION_CONFLICT')
+    checkLifecycleLocation(meta, location)
     verifyRecordBundle(old, files)
     return { expected_generation: old.generation, next: { ...clone(old), generation: nextGeneration(old), state: 'clean', change_id: null } }
   }
   if (state !== 'clean' || changeId !== null || mode === 'adopt' && old?.state !== 'quarantined' || mode !== 'adopt' && old && old.state !== 'clean') fail('RECORD_STATE_CONFLICT')
   if (mode === 'baseline' && old?.revisions.some((entry) => entry.revision_id === meta.revision_id)) {
+    if (location !== oldLocation) fail('RECORD_LOCATION_CONFLICT')
     if (old.revisions.find((entry) => entry.revision_id === meta.revision_id).revision !== meta.revision) fail('RECORD_CHAIN_CONFLICT')
     verifyRecordBundle(old, files, meta.revision_id)
     return { expected_generation: old.generation, next: clone(old) }
   }
+  checkLifecycleLocation(meta, location)
   if (meta.revision !== (old?.head_revision ?? 0) + 1 || (meta.supersedes ?? null) !== (old?.head_revision_id ?? null) || old?.revisions.some((entry) => entry.revision_id === meta.revision_id)) fail('RECORD_CHAIN_CONFLICT')
   const fileHashes = hashes(files)
   const revision = { revision_id: meta.revision_id, revision: meta.revision, parent_revision_id: meta.supersedes ?? null,
     files: fileHashes, bundle_hash: digest(fileHashes), operation_id: operationId,
     evidence_ids: [...meta.provenance_refs].sort(), asset_files: [...(meta.assets ?? [])].sort() }
-  const next = { schema_version: 1, ...Object.fromEntries(SCOPE.map((key) => [key, meta[key]])), record_type: meta.type, canonical_key_hash: slotHash(meta),
+  const schema = old?.schema_version === 2 || bundleLocation !== undefined || meta.lifecycle !== undefined ? 2 : 1
+  const next = { schema_version: schema, ...(schema === 2 ? { bundle_location: location } : {}), ...Object.fromEntries(SCOPE.map((key) => [key, meta[key]])), record_type: meta.type, canonical_key_hash: slotHash(meta),
     head_revision_id: meta.revision_id, head_revision: meta.revision, generation: nextGeneration(old), state, change_id: changeId,
     revisions: [...clone(old?.revisions ?? []), revision] }
   validateHead(next)
@@ -254,6 +292,7 @@ export function commitRecordDescriptor(root, spaceRoot, descriptor, write) {
     const appended = next.revisions.length - old.revisions.length
     if (![0, 1].includes(appended) || appended === 1 && next.state !== 'clean') fail('RECORD_CHAIN_CONFLICT')
     if (!appended && (next.head_revision_id !== old.head_revision_id || next.head_revision !== old.head_revision || next.record_type !== old.record_type || next.canonical_key_hash !== old.canonical_key_hash)) fail('RECORD_CHAIN_CONFLICT')
+    if (!appended && (next.schema_version === 2 ? next.bundle_location : 'records') !== (old.schema_version === 2 ? old.bundle_location : 'records')) fail('RECORD_LOCATION_CONFLICT')
   }
   const path = headPath(root, next.memory_space_id, next.record_id)
   const result = write(path, `${JSON.stringify(next, null, 2)}\n`)
