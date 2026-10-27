@@ -30,10 +30,10 @@ const id = (value) => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0
 const fail = (code) => { throw Object.assign(new Error(code), { code }) }
 const json = (value) => `${JSON.stringify(value, null, 2)}\n`
 const hash = (value) => createHash('sha256').update(value).digest('hex')
-const booleanOptions = new Set(['apply', 'source-quiescent', 'accept-purge-state', 'accept-persona-state', 'allow-maturity-reset', 'include-legacy-narratives'])
+const booleanOptions = new Set(['apply', 'source-quiescent', 'accept-purge-state', 'accept-persona-state', 'accept-integrity-state', 'allow-maturity-reset', 'include-legacy-narratives'])
 const allowed = {
   status: [], export: ['out', 'opaque-policy', 'apply'],
-  import: ['archive', 'identity-mode', 'accept-purge-state', 'accept-persona-state', 'allow-maturity-reset', 'apply', 'operation-id'],
+  import: ['archive', 'identity-mode', 'accept-purge-state', 'accept-persona-state', 'accept-integrity-state', 'allow-maturity-reset', 'apply', 'operation-id'],
   'migrate-v1': ['source', 'source-quiescent', 'subject', 'persona', 'agent-identity', 'snapshot', 'opaque-policy', 'apply', 'operation-id'],
   purge: ['record', 'pending-item', 'include-legacy-narratives', 'apply', 'operation-id'],
 }
@@ -131,7 +131,7 @@ function validateRoot(root, space, allowNew) {
   const administration = join(root, '.administration')
   if (existsSync(administration)) {
     if (!leaf(administration).isDirectory()) fail('INVALID_ADMINISTRATION_ROOT')
-    if (readdirSync(administration).some((entry) => !['purge-ledger.json', 'persona-ledger.json', 'repair.lock'].includes(entry))) fail('UNSUPPORTED_MANAGED_REFERENCE')
+    if (readdirSync(administration).some((entry) => !['purge-ledger.json', 'persona-ledger.json', 'record-heads', 'repair.lock'].includes(entry))) fail('UNSUPPORTED_MANAGED_REFERENCE')
   }
   const journal = join(root, 'spaces', space, 'journal')
   if (existsSync(journal) && readdirSync(journal).length) fail('MANAGEMENT_RECOVERY_REQUIRED')
@@ -160,7 +160,7 @@ function snapshot(root, space) {
     if (limits.bytes > 256 * 1024 * 1024 || limits.files > 20000) fail('MANAGEMENT_PREVIEW_BUDGET_EXCEEDED')
     entries.push({ path: relativePath, data, sha256: hash(data) })
   }
-  for (const path of ['manifest.json', '.administration/purge-ledger.json', '.administration/persona-ledger.json', `spaces/${space}`, 'exports', 'backups']) walk(path)
+  for (const path of ['manifest.json', '.administration/purge-ledger.json', '.administration/persona-ledger.json', '.administration/record-heads', `spaces/${space}`, 'exports', 'backups']) walk(path)
   return { entries, checksum: hash(JSON.stringify(entries.map(({ path, sha256 }) => ({ path, sha256 })))) }
 }
 async function services(root, space) {
@@ -198,7 +198,7 @@ async function action(command, options, service, applying) {
   }
   if (command === 'import') return checked(await transfer.importSpace({ operation_id: options['operation-id'] ?? randomUUID(), archive: options.loadedArchive,
     identity_mode: 'preserve', accept_purge_state: options['accept-purge-state'] === true, accept_persona_state: options['accept-persona-state'] === true,
-    allow_maturity_reset: options['allow-maturity-reset'] === true }, context))
+    allow_maturity_reset: options['allow-maturity-reset'] === true, accept_integrity_state: options['accept-integrity-state'] === true }, context))
   if (command === 'migrate-v1') {
     const input = { operation_id: options['operation-id'] ?? randomUUID(), source_root: options.source,
       source_quiescent: true, identity: { subject_id: options.subject, persona_id: options.persona, agent_identity_id: options['agent-identity'] },
@@ -227,6 +227,7 @@ export async function runManagement(argv) {
     if (options.loadedArchive.memory_space_id !== options.space) fail('TRANSFER_SPACE_MISMATCH')
     if (options.loadedArchive.purge_state !== undefined && !options['accept-purge-state']) fail('PURGE_STATE_ACCEPTANCE_REQUIRED')
     if (options.loadedArchive.persona_state !== undefined && !options['accept-persona-state']) fail('PERSONA_STATE_ACCEPTANCE_REQUIRED')
+    if (options.loadedArchive.integrity_state !== undefined && !options['accept-integrity-state']) fail('INTEGRITY_STATE_ACCEPTANCE_REQUIRED')
   }
   validateRoot(options.root, options.space, allowNew); assertIdle(options.root, options.space)
   if (options.apply && command !== 'export') {

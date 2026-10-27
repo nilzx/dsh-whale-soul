@@ -5,6 +5,9 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { MemoryError, assertId, digest } from './contracts.js'
 import { commitPersonaDescriptor, reconcilePersonaState } from './persona-ledger.js'
 import { commitPurgeDescriptor, filterRecoveryChanges, getPurgeState, pathIsPurged, reconcilePurgeState, referencesPurged, validateManagedPurgeArtifacts } from './purge-ledger.js'
+import { commitRecordDescriptor, commitImportedRecordHead } from './record-integrity.js'
+import { descriptorsForChanges } from './integrity-transaction.js'
+import { applyExternalCapture, applyExternalPublish, applyRootUpgrade } from './external-journal.js'
 
 function syncDir(path) {
   let fd
@@ -179,6 +182,24 @@ export class TransactionEngine {
   _apply(transaction) {
     commitPurgeDescriptor(this.lockRoot, this.root, transaction.purge_descriptor, atomicWrite)
     if (transaction.purge_descriptor) this._checkpoint('after_purge_ledger', { operation_id: transaction.operation_id })
+    if (transaction.root_upgrade) applyRootUpgrade(this.lockRoot, transaction.root_upgrade, atomicWrite)
+    const purgeState = getPurgeState(this.lockRoot, this.memorySpaceId)
+    const external = transaction.external_descriptor
+    const externalPurged = external && purgeState.record_ids.includes(external.record_id)
+    for (const imported of transaction.record_imports ?? []) {
+      if (purgeState.record_ids.includes(imported.next.record_id) && imported.next.state !== 'purged') continue
+      commitImportedRecordHead(this.lockRoot, this.root, imported, atomicWrite)
+      this._checkpoint('after_record_import', { record_id: imported.next.record_id })
+    }
+    if (external?.action === 'capture' && !externalPurged) applyExternalCapture(this, external, atomicWrite, (point, info) => this._checkpoint(point, info))
+    const applyRecordDescriptors = () => {
+      for (const descriptor of transaction.record_descriptors ?? []) {
+        if (purgeState.record_ids.includes(descriptor.next.record_id) && descriptor.next.state !== 'purged') continue
+        commitRecordDescriptor(this.lockRoot, this.root, descriptor, atomicWrite)
+        this._checkpoint('after_record_descriptor', { record_id: descriptor.next.record_id })
+      }
+    }
+    if (external?.action !== 'publish') applyRecordDescriptors()
     const personaDescriptors = transaction.persona_descriptors ?? (transaction.persona_descriptor ? [transaction.persona_descriptor] : [])
     for (let index = 0; index < personaDescriptors.length; index++) {
       commitPersonaDescriptor(this.lockRoot, this.root, personaDescriptors[index], atomicWrite)
@@ -196,6 +217,18 @@ export class TransactionEngine {
     }
     reconcilePurgeState(this.lockRoot, this.root, atomicWrite)
     reconcilePersonaState(this.lockRoot, this.root, atomicWrite)
+    if (external?.action === 'publish') {
+      if (externalPurged) return { ...transaction.receipt.result, status: 'purged', reason_code: 'PURGED_BY_MANAGEMENT', affected_ids: [] }
+      const status = applyExternalPublish(this, external, atomicWrite, (point, info) => this._checkpoint(point, info))
+      if (status !== 'published') {
+        atomicWrite(this.resolvePath(`external-changes/${external.record_id}/${external.change_id}/resolution.json`), JSON.stringify({ ...external.resolution, status: 'conflict' }))
+        return { ...transaction.receipt.result, status: 'conflict', reason_code: 'EXTERNAL_PUBLICATION_CONFLICT', affected_ids: [], pending: false }
+      }
+      applyRecordDescriptors()
+      atomicWrite(this.resolvePath(`external-changes/${external.record_id}/${external.change_id}/resolution.json`), JSON.stringify(external.resolution))
+      this._checkpoint('after_external_resolution', { record_id: external.record_id })
+    }
+    return transaction.receipt.result
   }
 
   _recover() {
@@ -208,13 +241,17 @@ export class TransactionEngine {
       const committed = existsSync(join(path, 'COMMIT'))
       if (committed && (!transaction || transaction.transaction_id !== dirent.name || readFileSync(join(path, 'COMMIT'), 'utf8') !== dirent.name || !Array.isArray(transaction.changes) || !/^[a-f0-9]{64}$/.test(transaction.receipt_key))) throw new MemoryError('JOURNAL_REPAIR_REQUIRED')
       if (!committed) { rmSync(path, { recursive: true, force: true }); continue }
+      const completed = readJson(this.resolvePath(`operations/${transaction.receipt_key}.json`), null)
+      if (completed && completed.operation_id === transaction.operation_id && completed.request_hash === transaction.receipt?.request_hash) {
+        rmSync(path, { recursive: true, force: true }); syncDir(journal); continue
+      }
       if (!this.recoveryGuard(transaction)) {
         rmSync(path, { recursive: true, force: true })
         continue
       }
       try {
-        this._apply(transaction)
-        atomicWrite(this.resolvePath(`operations/${transaction.receipt_key}.json`), JSON.stringify(transaction.receipt, null, 2))
+        const result = this._apply(transaction)
+        atomicWrite(this.resolvePath(`operations/${transaction.receipt_key}.json`), JSON.stringify({ ...transaction.receipt, result }, null, 2))
         rmSync(path, { recursive: true, force: true })
         syncDir(journal)
       } catch { throw new MemoryError('COMMIT_RECOVERY_REQUIRED') }
@@ -268,6 +305,10 @@ export class TransactionEngine {
         ...(built.purge_descriptor ? { purge_descriptor: built.purge_descriptor } : {}),
         ...(built.persona_descriptor ? { persona_descriptor: built.persona_descriptor } : {}),
         ...(built.persona_descriptors ? { persona_descriptors: built.persona_descriptors } : {}),
+        record_descriptors: descriptorsForChanges(this.lockRoot, this.memorySpaceId, built.changes.filter((change) => !(built.record_imports ?? []).some((item) => change.path.startsWith(`records/${item.next.record_id}/`))), operationId, built.record_descriptors ?? [], built.purge_descriptor),
+        ...(built.record_imports ? { record_imports: built.record_imports } : {}),
+        ...(built.external_descriptor ? { external_descriptor: built.external_descriptor } : {}),
+        ...(built.root_upgrade ? { root_upgrade: built.root_upgrade } : {}),
         receipt: { operation_id: operationId, request_hash: requestHash, result: built.result },
       }
       const path = this.resolvePath(`journal/${transaction.transaction_id}`)
@@ -286,12 +327,12 @@ export class TransactionEngine {
       atomicWrite(join(path, 'COMMIT'), transaction.transaction_id)
       try {
         this._checkpoint('after_commit', { operation_id: operationId })
-        this._apply(transaction)
-        atomicWrite(receiptPath, JSON.stringify(transaction.receipt, null, 2))
+        const result = this._apply(transaction)
+        atomicWrite(receiptPath, JSON.stringify({ ...transaction.receipt, result }, null, 2))
         this._checkpoint('after_receipt', { operation_id: operationId })
         rmSync(path, { recursive: true, force: true })
         syncDir(dirname(path))
-        return built.result
+        return result
       } catch { throw new MemoryError('COMMIT_RECOVERY_REQUIRED') }
     })
   }
