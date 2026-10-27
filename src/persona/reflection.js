@@ -37,11 +37,21 @@ export function projectReflectionInput(input) {
   })
   if (new Set(evidence.map((entry) => entry.evidence_id)).size !== evidence.length) fail('REFLECTION_DUPLICATE_EVIDENCE')
   if (JSON.stringify(evidence).length > 8000) fail('REFLECTION_EVIDENCE_BUDGET')
+  const approved = new Set(evidence.map((entry) => entry.evidence_id))
   const existing = input.existing ?? []
   if (!Array.isArray(existing) || existing.length > 32) fail('REFLECTION_INVALID_EXISTING')
   return { core, evidence, existing: existing.map((entry, index) => {
     if (!entry || !dimensions.includes(entry.dimension) || !string(entry.scope, 100) || !string(entry.value, 240)) fail('REFLECTION_INVALID_EXISTING')
-    return { target_ref: `existing-${index}`, state: entry.state === 'stable' ? 'stable' : 'candidate', dimension: entry.dimension, scope: entry.scope, value: entry.value }
+    const projectRefs = (value) => {
+      if (value === undefined) return []
+      if (!Array.isArray(value) || value.length > 64 || new Set(value).size !== value.length) fail('REFLECTION_INVALID_EXISTING')
+      value.forEach((id) => assertId(id))
+      return value.filter((id) => approved.has(id)).slice(0, 32)
+    }
+    const support = projectRefs(entry.evidence_refs), counter = projectRefs(entry.counterevidence_refs)
+    return { target_ref: `existing-${index}`, state: entry.state === 'stable' ? 'stable' : 'candidate', dimension: entry.dimension, scope: entry.scope, value: entry.value,
+      evidence_refs: support, counterevidence_refs: counter,
+      evidence_refs_complete: Array.isArray(entry.evidence_refs) && Array.isArray(entry.counterevidence_refs) && support.length === entry.evidence_refs.length && counter.length === entry.counterevidence_refs.length }
   }) }
 }
 
@@ -76,6 +86,7 @@ Use only the supplied approved evidence IDs. Propose modest habits within the al
 Do not claim a proposal is stable. A separate trusted service verifies provenance, core compatibility, independent support, subsequent maintenance and maturity gates. Prefer no new proposal over an unsupported one.
 First compare each observed behavior with ALL existing habits, across dimension labels, scope phrasing and wording. A different example of the same recurring choice or its caring effect is not a new habit. Reuse its target_ref and attach support or counterexamples; the host preserves its original dimension, scope and value. Prefer the stable habit when it already covers the behavior, otherwise reuse an existing candidate. Only a genuinely different recurring choice merits a new habit. Challenging evidence belongs in counterevidence_refs for the existing habit, not in an invented opposite habit.
 If existing candidate entries are paraphrases of that same habit, list their offered references in merge_candidate_refs for that target. Only candidates may be merged into a stable habit or another candidate; do not merge genuinely distinct behaviors or stable habits. Do not also emit a separate proposal for a candidate you merge. The host preserves their sources and old text. Existing IDs and repeated feedback are not new independent events.
+Before proposing or separately reviewing a candidate, compare its evidence_refs and counterevidence_refs with the stable habits. These are opaque IDs from the approved evidence in this request; evidence_refs_complete=false means some stored references are not shown, so do not assume the shown set is complete. A narrower description supported entirely by the broader stable habit's same observations is usually an example to merge, not an independent habit. For example, noticing fatigue and shrinking a task list can be an instance of noticing fatigue and easing the person's burden; a new dimension label or more concrete wording does not separate that choice. Prefer merging such a candidate into the covering stable habit in one proposal. Shared evidence alone does not make genuinely different recurring choices equivalent, and counterexamples must still be preserved.
 Trusted persona core follows:
 `
 
