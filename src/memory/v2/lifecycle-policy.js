@@ -90,12 +90,12 @@ export function createMaintenanceBaseline({ memorySpaceId, now, revisionWatermar
   if (!Number.isSafeInteger(revisionWatermark) || revisionWatermark < 0) error('INVALID_MAINTENANCE_WATERMARK')
   return { schema_version: 1, memory_space_id: memorySpaceId, policy_version: LIFECYCLE_POLICY_VERSION, generation: 1,
     initialized_at: new Date(lifecycleTime(now)).toISOString(), baseline_revision_watermark: revisionWatermark,
-    last_completed_at: null, processed_revision_watermark: null, last_checked_at: null, scan_cursor: null }
+    last_completed_at: null, processed_revision_watermark: null, last_checked_at: null, scan_cursor: null, scan_revision_watermark: null }
 }
 
 export function validateMaintenanceState(state, spaceId) {
   assertOnly(state, ['schema_version', 'memory_space_id', 'policy_version', 'generation', 'initialized_at', 'baseline_revision_watermark',
-    'last_completed_at', 'processed_revision_watermark', 'last_checked_at', 'scan_cursor'])
+    'last_completed_at', 'processed_revision_watermark', 'last_checked_at', 'scan_cursor', 'scan_revision_watermark'])
   if (state.schema_version !== 1 || state.policy_version !== LIFECYCLE_POLICY_VERSION) error('UNSUPPORTED_MAINTENANCE_SCHEMA')
   assertId(state.memory_space_id); if (spaceId !== undefined && state.memory_space_id !== spaceId) error('MAINTENANCE_SCOPE_MISMATCH')
   if (!Number.isSafeInteger(state.generation) || state.generation < 1 || !Number.isSafeInteger(state.baseline_revision_watermark) || state.baseline_revision_watermark < 0) error('INVALID_MAINTENANCE_STATE')
@@ -103,7 +103,10 @@ export function validateMaintenanceState(state, spaceId) {
   timestamp(state.last_completed_at, 'last_completed_at'); timestamp(state.last_checked_at, 'last_checked_at')
   if ((state.last_completed_at === null) !== (state.processed_revision_watermark === null) ||
     state.processed_revision_watermark !== null && (!Number.isSafeInteger(state.processed_revision_watermark) || state.processed_revision_watermark < state.baseline_revision_watermark)) error('INVALID_MAINTENANCE_STATE')
+  const initialized = Date.parse(state.initialized_at)
+  if (state.last_completed_at && Date.parse(state.last_completed_at) < initialized || state.last_checked_at && Date.parse(state.last_checked_at) < initialized || state.last_completed_at && state.last_checked_at && Date.parse(state.last_checked_at) < Date.parse(state.last_completed_at)) error('INVALID_MAINTENANCE_STATE')
   if (state.scan_cursor !== null) assertId(state.scan_cursor)
+  if ((state.scan_cursor === null) !== (state.scan_revision_watermark === null) || state.scan_revision_watermark !== null && (!Number.isSafeInteger(state.scan_revision_watermark) || state.scan_revision_watermark < (state.processed_revision_watermark ?? state.baseline_revision_watermark))) error('INVALID_MAINTENANCE_STATE')
   return state
 }
 
@@ -114,6 +117,7 @@ export function evaluateMaintenanceDue(state, { now, revisionWatermark, days = 7
   const floor = state.processed_revision_watermark ?? state.baseline_revision_watermark
   if (revisionWatermark < floor) error('MAINTENANCE_WATERMARK_ROLLBACK')
   const since = Date.parse(state.last_completed_at ?? state.initialized_at), at = lifecycleTime(now)
+  if (at < since) error('MAINTENANCE_CLOCK_ROLLBACK')
   const dueByTime = at >= since + days * DAY, dueByWrites = revisionWatermark - floor >= writes
   return Object.freeze({ due: dueByTime || dueByWrites, due_by_time: dueByTime, due_by_writes: dueByWrites,
     writes_since_completion: revisionWatermark - floor, next_due_at: new Date(since + days * DAY).toISOString() })

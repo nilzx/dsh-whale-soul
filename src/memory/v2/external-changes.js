@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readdirSync } from 'node:fs'
 import { join, parse, resolve, sep } from 'node:path'
 import { API_VERSION, MemoryError, assertId, assertOnly, digest, failure, stableStringify } from './contracts.js'
-import { buildRecordDescriptor, buildRecordStateDescriptor, loadRecordHead, recordBundleHash, verifyRecordBundle } from './record-integrity.js'
+import { buildRecordDescriptor, buildRecordStateDescriptor, loadRecordHead, recordBundlePath, recordBundleHash, verifyRecordBundle } from './record-integrity.js'
 import { RECORD_FILES, readBundleAt } from './integrity-transaction.js'
 import { getPurgeState } from './purge-ledger.js'
 import { retentionBlockReason } from './retention.js'
@@ -12,7 +12,7 @@ const json = (value) => `${JSON.stringify(value, null, 2)}\n`
 const clone = (value) => JSON.parse(JSON.stringify(value))
 const fail = (code) => { throw new MemoryError(code) }
 const allowedFields = ['title', 'tags', 'gist', 'detail']
-const metadataFields = new Set(['schema_version', 'record_id', 'revision_id', 'revision', 'memory_space_id', 'subject_id', 'actor_ids', 'persona_id', 'agent_identity_id', 'created_at', 'observed_at', 'updated_at', 'valid_from', 'valid_to', 'expires_at', 'retention', 'claim_kind', 'confidence', 'title', 'type', 'tags', 'canonical_key', 'provenance_refs', 'visibility', 'pinned', 'status', 'supersedes', 'revision_history', 'layers', 'assets', 'asset_metadata_hash', 'legacy', 'external_revision'])
+const metadataFields = new Set(['schema_version', 'record_id', 'revision_id', 'revision', 'memory_space_id', 'subject_id', 'actor_ids', 'persona_id', 'agent_identity_id', 'created_at', 'observed_at', 'updated_at', 'valid_from', 'valid_to', 'expires_at', 'retention', 'claim_kind', 'confidence', 'title', 'type', 'tags', 'canonical_key', 'provenance_refs', 'visibility', 'pinned', 'status', 'supersedes', 'revision_history', 'layers', 'assets', 'asset_metadata_hash', 'legacy', 'external_revision', 'lifecycle'])
 const bytes = (value) => Buffer.isBuffer(value) ? value : Buffer.from(value)
 const decode = (value) => { try { return new TextDecoder('utf-8', { fatal: true }).decode(value) } catch { fail('INVALID_EXTERNAL_UNICODE') } }
 const safeStat = (path) => { try { return lstatSync(path) } catch (error) { if (error.code === 'ENOENT') return null; throw error } }
@@ -149,8 +149,7 @@ export class MemoryExternalChanges {
   }
 
   #candidate(head, revisionId) {
-    const candidates = [`records/${head.record_id}${revisionId === head.head_revision_id ? '' : `/revisions/${revisionId}`}`,
-      `records/${head.record_id}/revisions/${revisionId}`]
+    const candidates = [recordBundlePath(head, revisionId === head.head_revision_id ? null : revisionId), recordBundlePath(head, revisionId)]
     const folder = this.#path(`quarantine/${head.record_id}`)
     if (existsSync(folder)) for (const change of readdirSync(folder, { withFileTypes: true })) {
       if (!change.isDirectory() || change.isSymbolicLink()) continue
@@ -243,7 +242,7 @@ export class MemoryExternalChanges {
       const ledger = join(this.store.root, '.administration/record-heads', this.store.memorySpaceId)
       const all = args.record_ids ?? [...new Set([
         ...(existsSync(ledger) ? readdirSync(ledger).filter((name) => name.endsWith('.json')).map((name) => name.slice(0, -5)) : []),
-        ...readdirSync(this.#path('records'), { withFileTypes: true }).filter((entry) => entry.isDirectory() || entry.isSymbolicLink()).map((entry) => entry.name),
+        ...this.store._recordIds(),
       ])]
       if (!Array.isArray(all) || all.length > 10000 || new Set(all).size !== all.length) fail('INVALID_RECORD_IDS')
       all.forEach((id) => assertId(id))
@@ -252,8 +251,8 @@ export class MemoryExternalChanges {
         this.#authorize(ctx, false, signal)
         let head
         try { head = this.#head(id) } catch (error) { items.push({ record_id: id, status: 'unavailable', reason_code: error.code }); continue }
-        const current = this.#path(`records/${id}`)
-        const base = existsSync(current) ? `records/${id}` : head.change_id ? `quarantine/${id}/${head.change_id}/source` : `records/${id}`
+        const located = recordBundlePath(head), current = this.#path(located)
+        const base = existsSync(current) ? located : head.change_id ? `quarantine/${id}/${head.change_id}/source` : located
         let observed
         try { observed = this.#observe(base) } catch (error) { items.push({ record_id: id, status: 'unsafe', reason_code: error.code }); continue }
         try { if (head.state === 'clean') { verifyRecordBundle(head, observed.files); items.push({ record_id: id, status: 'clean' }); continue } } catch {}
@@ -283,7 +282,7 @@ export class MemoryExternalChanges {
             { path: 'index/records.json', data: json(this.store._index(records.filter((record) => record.record_id !== id), watermark)) }]
           if (observed.snapshot_safe) for (const [name, data] of Object.entries(observed.files)) changes.push({ path: `quarantine/${id}/${changeId}/snapshot/${name}`, data })
           return { changes, record_descriptors: [buildRecordStateDescriptor({ root: this.store.root, spaceId: this.store.memorySpaceId, recordId: id, state: 'quarantined', changeId, operationId })],
-            ...(!observed.missing ? { external_descriptor: { schema_version: 1, action: 'capture', record_id: id, change_id: changeId, source_identity: observed.identity, ...(base.startsWith('quarantine/') ? { source_change_id: head.change_id } : {}) } } : {}),
+            ...(!observed.missing ? { external_descriptor: { schema_version: 1, action: 'capture', record_id: id, change_id: changeId, source_identity: observed.identity, ...(head.schema_version === 2 ? { bundle_location: head.bundle_location } : {}), ...(base.startsWith('quarantine/') ? { source_change_id: head.change_id } : {}) } } : {}),
             result: { api_version: API_VERSION, status: 'quarantined', change_id: changeId, record_id: id, pending: false, affected_ids: [id] } }
         }, ctx, { authorize: check })
         items.push(result)
@@ -398,7 +397,9 @@ export class MemoryExternalChanges {
         if (chosen.revision_id === head.head_revision_id) { record = chosen.candidate.record; files = chosen.candidate.files; mode = 'repair' }
         else {
           record = clone(chosen.candidate.record); mode = 'adopt'
-          record.meta = { ...record.meta, revision_id: randomUUID(), revision: head.head_revision + 1, supersedes: head.head_revision_id, updated_at: now,
+          const currentLifecycle = this.#candidate(head, head.head_revision_id)?.record.meta.lifecycle
+          if (head.bundle_location === 'cold' && !currentLifecycle) fail('TRUSTED_REVISION_UNAVAILABLE')
+          record.meta = { ...record.meta, ...(currentLifecycle ? { status: currentLifecycle.tier === 'active' ? 'active' : 'archived', lifecycle: clone(currentLifecycle) } : {}), revision_id: randomUUID(), revision: head.head_revision + 1, supersedes: head.head_revision_id, updated_at: now,
             external_revision: { protected: true, source: 'owner_restore', change_id: entry.change_id, restored_from: chosen.revision_id } }
         }
       } else {
@@ -421,8 +422,7 @@ export class MemoryExternalChanges {
             observed_hash: entry.observed_hash, patch_hash: digest(patchText), growth_eligible: false, maturity_eligible: false } }
       }
       if (!files) {
-        const changes = this.store._recordChanges(record)
-        files = Object.fromEntries(changes.filter((change) => change.path.startsWith(`records/${head.record_id}/`) && change.path.split('/').length === 3).map((change) => [change.path.split('/').at(-1), change.data]))
+        files = this.store._recordFiles(record)
       }
       const descriptor = buildRecordDescriptor({ root: this.store.root, spaceId: this.store.memorySpaceId, meta: record.meta, files, operationId, mode })
       const publicationId = digest({ operationId, review: args.review_digest }), prefix = `external-changes/${head.record_id}/${entry.change_id}/staged/${publicationId}`
@@ -441,7 +441,7 @@ export class MemoryExternalChanges {
         if (args.action === 'adopt') for (const evidence of record.evidence) changes.set(`evidence/${evidence.evidence_id}.json`, json(evidence))
         return { changes: [...changes].map(([path, value]) => ({ path, data: value })), record_descriptors: [descriptor],
           external_descriptor: { schema_version: 1, action: 'publish', record_id: head.record_id, change_id: entry.change_id,
-            bundle_hash: recordBundleHash(files), publication_id: publicationId, resolution: { status: args.action === 'adopt' ? 'adopted' : 'restored', operation_id: operationId, revision_id: record.meta.revision_id } },
+            ...(head.schema_version === 2 ? { bundle_location: head.bundle_location } : {}), bundle_hash: recordBundleHash(files), publication_id: publicationId, resolution: { status: args.action === 'adopt' ? 'adopted' : 'restored', operation_id: operationId, revision_id: record.meta.revision_id } },
           result: { api_version: API_VERSION, operation_id: operationId, status: 'committed', reason_code: args.action === 'adopt' ? 'EXTERNAL_ADOPTED' : 'EXTERNAL_RESTORED',
             record_id: head.record_id, revision_id: record.meta.revision_id, revision: record.meta.revision, affected_ids: [head.record_id], pending: false } }
       }, ctx, { authorize: check })

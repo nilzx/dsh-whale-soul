@@ -99,7 +99,7 @@ export function pathIsPurged(path, state) {
   const parts = path.replaceAll('\\', '/').split('/')
   const records = new Set(state.record_ids)
   for (let index = 0; index < parts.length - 1; index++) {
-    if (['records', 'entries', 'cold', 'external-changes'].includes(parts[index]) && records.has(parts[index + 1])) return true
+    if (['records', 'entries', 'cold', 'transitions', 'external-changes'].includes(parts[index]) && records.has(parts[index + 1])) return true
     if (parts[index] === 'quarantine' && state.record_ids.some((id) => parts[index + 1] === id || parts[index + 1].startsWith(`${id}-`))) return true
     if (parts[index] === 'evidence' && (state.evidence_ids ?? []).includes(parts[index + 1]?.replace(/\.json$/, ''))) return true
     if (parts[index] === 'assets' && (state.asset_files ?? []).includes(parts[index + 1])) return true
@@ -252,7 +252,7 @@ export function reconcilePurgeState(root, spaceRoot, write) {
     const path = inside(root, resolve(spaceRoot, relativePath))
     if (existsSync(path)) { rmSync(path, { recursive: true, force: true }); removed.push(relativePath) }
   }
-  for (const id of state.record_ids) for (const prefix of ['records', 'cold', 'external-changes']) remove(`${prefix}/${id}`)
+  for (const id of state.record_ids) for (const prefix of ['records', 'cold', 'cold/records', 'cold/transitions', 'external-changes']) remove(`${prefix}/${id}`)
   for (const id of state.evidence_ids ?? []) remove(`evidence/${id}.json`)
   for (const file of state.asset_files ?? []) remove(`assets/${file}`)
   if (state.clear_legacy_narratives) remove('cold/legacy-v1/dreams')

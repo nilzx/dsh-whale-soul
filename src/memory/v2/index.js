@@ -10,3 +10,7 @@ export { retrieveMemory, buildMemoryContext } from './retrieval.js'
 export { recordRetentionAllowed } from './read-policy.js'
 export { API_VERSION, FORMAT_VERSION, MemoryError } from './contracts.js'
 export { MEMORY_PROVIDER_PROTOCOL, assertMemoryProvider, assertProviderStore, createLocalMemoryProvider } from './provider.js'
+
+export { MemoryLifecycle } from './lifecycle.js'
+export { LIFECYCLE_CAPABILITY, LIFECYCLE_POLICY_VERSION, classifyLifecycle } from './lifecycle-policy.js'
+export { MemoryMaintenance } from './maintenance.js'

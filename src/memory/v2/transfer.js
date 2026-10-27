@@ -6,7 +6,7 @@ import { readJson } from './transactions.js'
 import { ASSET_METADATA_FIELDS, validateAssetMetadata } from './assets.js'
 import { assertPersonaFilesAllowed, exportPersonaState, preparePersonaImport, validatePortablePersonaShape, validatePortablePersonaState, personaIdentityProjection, projectedIdentityBinding } from './persona-ledger.js'
 import { exportPurgeState, getPurgeState, preparePurgeImport } from './purge-ledger.js'
-import { buildRecordStateDescriptor, listRecordHeads, loadRecordHead, validateRecordHead, verifyRecordBundle } from './record-integrity.js'
+import { buildRecordStateDescriptor, listRecordHeads, loadRecordHead, recordBundlePath, validateRecordHead, verifyRecordBundle } from './record-integrity.js'
 
 const TRANSFER_FORMAT = 'dsh-memory-space'
 const TRANSFER_VERSION = 2
@@ -16,7 +16,7 @@ const LEGACY_ROOTS = ['entries', 'cold', 'quarantine', 'assets', 'dreams', 'back
 const json = (value) => `${JSON.stringify(value, null, 2)}\n`
 const copy = (value) => JSON.parse(JSON.stringify(value))
 const idPattern = '[A-Za-z0-9][A-Za-z0-9._-]{0,127}'
-const recordPath = new RegExp(`^records/(${idPattern})(?:/revisions/(${idPattern}))?/(${DATA_FILES.map((name) => name.replace('.', '\\.')).join('|')})$`)
+const recordPath = new RegExp(`^(?:cold/)?records/(${idPattern})(?:/revisions/(${idPattern}))?/(${DATA_FILES.map((name) => name.replace('.', '\\.')).join('|')})$`)
 const assetMetadataPath = /(?:^|\/)assets\/(?:[a-f0-9]{64}|a-[a-f0-9]{20})\.json$/
 const scopedAssetFields = ['memory_space_id', 'persona_id', 'agent_identity_id', 'subject_id', 'consent_id', 'evidence_refs', 'record_ids']
 const scopedAsset = (value) => value && scopedAssetFields.some((key) => Object.hasOwn(value, key))
@@ -92,6 +92,7 @@ function sanitizedMetadata(files) {
 }
 
 function opaqueFile(file) {
+  if (recordPath.test(file.path)) return false
   if (/^(?:quarantine|external-changes)\//.test(file.path)) return true
   if (assetMetadataPath.test(file.path)) {
     try { const value = parseJson(file.data); return value.schema_version !== 1 || typeof value.file !== 'string' || !/^[a-f0-9]{64}\.(?:png|jpe?g|webp|gif)$/.test(value.file) } catch { return true }
@@ -149,13 +150,13 @@ function packageArchive(store, manifest, files, policy = exportPolicy('none'), p
 }
 
 function pendingPayload(path, recordId) {
-  return path.startsWith(`records/${recordId}/`) || path.startsWith(`quarantine/${recordId}/`) || path.startsWith(`external-changes/${recordId}/`)
+  return path.startsWith(`records/${recordId}/`) || path.startsWith(`cold/records/${recordId}/`) || path.startsWith(`cold/transitions/${recordId}/`) || path.startsWith(`quarantine/${recordId}/`) || path.startsWith(`external-changes/${recordId}/`)
 }
 
 function validateIntegrityState(state, files, archive, maxBytes) {
   if (state === undefined) return new Set()
   assertOnly(state, ['schema_version', 'heads', 'omitted_pending_ids'])
-  if (state.schema_version !== 1 || !Array.isArray(state.heads) || !Array.isArray(state.omitted_pending_ids) ||
+  if (![1, 2].includes(state.schema_version) || !Array.isArray(state.heads) || !Array.isArray(state.omitted_pending_ids) ||
     state.heads.length > 100_000 || state.omitted_pending_ids.length > 100_000 || Buffer.byteLength(stableStringify(state)) > maxBytes) throw new MemoryError('INVALID_TRANSFER_INTEGRITY_STATE')
   const heads = new Map(), omitted = new Set()
   for (const id of state.omitted_pending_ids) { assertId(id); if (omitted.has(id)) throw new MemoryError('INVALID_TRANSFER_INTEGRITY_STATE'); omitted.add(id) }
@@ -166,16 +167,17 @@ function validateIntegrityState(state, files, archive, maxBytes) {
   }))
   for (const head of state.heads) {
     validateRecordHead(head)
+    if (state.schema_version === 1 && head.schema_version !== 1) throw new MemoryError('TRANSFER_INTEGRITY_VERSION_MISMATCH')
     if (head.memory_space_id !== archive.memory_space_id || heads.has(head.record_id)) throw new MemoryError('TRANSFER_INTEGRITY_SCOPE_MISMATCH')
     heads.set(head.record_id, head)
     const purged = archive.purge_state?.record_ids.includes(head.record_id) === true
     if (head.state === 'purged' ? !purged : purged) throw new MemoryError('TRANSFER_INTEGRITY_PURGE_CONFLICT')
     if (head.state === 'clean') {
       if (omitted.has(head.record_id)) throw new MemoryError('INVALID_TRANSFER_INTEGRITY_STATE')
-      verifyRecordBundle(head, bundle(`records/${head.record_id}`))
-      for (const revision of head.revisions) verifyRecordBundle(head, bundle(`records/${head.record_id}/revisions/${revision.revision_id}`), revision.revision_id)
+      verifyRecordBundle(head, bundle(recordBundlePath(head)))
+      for (const revision of head.revisions) verifyRecordBundle(head, bundle(recordBundlePath(head, revision.revision_id)), revision.revision_id)
     } else if (head.state === 'purged') {
-      if (omitted.has(head.record_id) || files.some((file) => file.path.startsWith(`records/${head.record_id}/`))) throw new MemoryError('TRANSFER_INTEGRITY_PURGE_CONFLICT')
+      if (omitted.has(head.record_id) || files.some((file) => file.path.startsWith(`records/${head.record_id}/`) || file.path.startsWith(`cold/records/${head.record_id}/`))) throw new MemoryError('TRANSFER_INTEGRITY_PURGE_CONFLICT')
     } else if (omitted.has(head.record_id)) {
       if (files.some((file) => pendingPayload(file.path, head.record_id))) throw new MemoryError('TRANSFER_PENDING_OMISSION_CONFLICT')
     } else {
@@ -188,7 +190,7 @@ function validateIntegrityState(state, files, archive, maxBytes) {
     const match = recordPath.exec(file.path)
     if (!match) continue
     const head = heads.get(match[1])
-    if (!head || match[2] && !head.revisions.some((revision) => revision.revision_id === match[2])) throw new MemoryError('TRANSFER_UNANCHORED_RECORD')
+    if (!head || !file.path.startsWith(`${recordBundlePath(head)}/`) || match[2] && !head.revisions.some((revision) => revision.revision_id === match[2])) throw new MemoryError('TRANSFER_UNANCHORED_RECORD')
   }
   return new Set([...heads.values()].filter((head) => head.state === 'quarantined').map((head) => head.record_id))
 }
@@ -209,16 +211,16 @@ function validateFiles(files, spaceId, quarantinedIds = new Set()) {
     if (match && quarantinedIds.has(match[1])) continue
     if (match) {
       const base = file.path.slice(0, -match[3].length)
-      if (!map.has(`${base}meta.json`) || !map.has(`records/${match[1]}/meta.json`)) throw new MemoryError('TRANSFER_ORPHAN_LAYER')
+      if (!map.has(`${base}meta.json`) || !map.has(`${file.path.startsWith('cold/') ? 'cold/records' : 'records'}/${match[1]}/meta.json`)) throw new MemoryError('TRANSFER_ORPHAN_LAYER')
     }
     if (match && match[3] === 'meta.json') {
       const meta = validateRecord(parseJson(file.data))
       recordViews.push(meta)
       if (meta.record_id !== match[1] || (match[2] && meta.revision_id !== match[2]) || meta.memory_space_id !== spaceId) throw new MemoryError('TRANSFER_SCOPE_MISMATCH')
-      if (!map.has(`records/${meta.record_id}/revisions/${meta.revision_id}/meta.json`)) throw new MemoryError('TRANSFER_MISSING_REVISION')
+      if (!map.has(`${file.path.startsWith('cold/') ? 'cold/records' : 'records'}/${meta.record_id}/revisions/${meta.revision_id}/meta.json`)) throw new MemoryError('TRANSFER_MISSING_REVISION')
       for (const previous of meta.revision_history ?? []) {
         assertId(previous.revision_id, 'revision_id')
-        if (!map.has(`records/${meta.record_id}/revisions/${previous.revision_id}/meta.json`)) throw new MemoryError('TRANSFER_MISSING_REVISION')
+        if (!map.has(`${file.path.startsWith('cold/') ? 'cold/records' : 'records'}/${meta.record_id}/revisions/${previous.revision_id}/meta.json`)) throw new MemoryError('TRANSFER_MISSING_REVISION')
       }
       const base = file.path.slice(0, -'meta.json'.length)
       const integrityFile = map.get(`${base}integrity.json`)
@@ -401,7 +403,7 @@ export class MemoryTransfer {
         const state = exportPurgeState(this.#store.root, this.#store.memorySpaceId)
         const personaState = exportPersonaState(this.#store.root, this.#store.memorySpaceId)
         await validatePortablePersonaState(personaState, this.#store.memorySpaceId)
-        const integrityState = { schema_version: 1, heads, omitted_pending_ids: args?.opaque_policy === 'omit' ? pending : [] }
+        const integrityState = { schema_version: heads.some((head) => head.schema_version === 2) ? 2 : 1, heads, omitted_pending_ids: args?.opaque_policy === 'omit' ? pending : [] }
         const archive = packageArchive(this.#store, manifest, selected, policy, state, personaState, integrityState)
         const decoded = validateTransferArchive(archive, this.#limits)
         return { api_version: API_VERSION, status: 'ok', archive, record_ids: decoded.records.map((meta) => meta.record_id), pending_record_ids: pending, omitted_pending_ids: integrityState.omitted_pending_ids }

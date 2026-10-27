@@ -68,8 +68,8 @@ function administrationCoordination(root) {
   if (owner.acquired_at !== undefined && (typeof owner.acquired_at !== 'string' || !Number.isFinite(Date.parse(owner.acquired_at)))) throw new MemoryError('MEMORY_ROOT_RECOVERY_REQUIRED')
   return true
 }
-function checkRecordSchemas(spaceRoot, root, spaceId) {
-  const records = join(spaceRoot, 'records'), folder = safeStat(records)
+function checkRecordSchemas(spaceRoot, root, spaceId, location = 'records') {
+  const records = join(spaceRoot, location), folder = safeStat(records)
   if (!folder) return
   if (!folder.isDirectory()) throw new MemoryError('MEMORY_SPACE_RECOVERY_REQUIRED')
   const check = (path, recordId, revisionId = null) => {
@@ -122,6 +122,7 @@ export function inspectMemoryRoot(root, memorySpaceId) {
   const manifest = rootFile.value
   if (!plain(manifest)) throw new MemoryError('INVALID_ROOT_MANIFEST')
   if (manifest.format_version !== FORMAT_VERSION) throw new MemoryError('UNSUPPORTED_FORMAT_VERSION')
+  if (manifest.lifecycle_capabilities !== undefined && (!Array.isArray(manifest.lifecycle_capabilities) || manifest.lifecycle_capabilities.some((value) => value !== 'physical-cold-v1') || new Set(manifest.lifecycle_capabilities).size !== manifest.lifecycle_capabilities.length)) throw new MemoryError('UNSUPPORTED_LIFECYCLE_CAPABILITY')
   if (!validIds(manifest.spaces)) throw new MemoryError('INVALID_ROOT_MANIFEST')
   if (manifest.api_version === undefined || manifest.api_version === '1.0.0') throw new MemoryError('INTEGRITY_BASELINE_REQUIRED')
   if (manifest.api_version !== API_VERSION) throw new MemoryError('UNSUPPORTED_API_VERSION')
@@ -140,5 +141,6 @@ export function inspectMemoryRoot(root, memorySpaceId) {
   if (space.format_version !== FORMAT_VERSION || space.memory_space_id !== memorySpaceId) throw new MemoryError('UNSUPPORTED_SPACE_FORMAT')
   if (!Number.isSafeInteger(space.revision_watermark) || space.revision_watermark < 0 || !Number.isSafeInteger(space.purge_generation ?? 0) || (space.purge_generation ?? 0) < 0) throw new MemoryError('INVALID_SPACE_MANIFEST')
   checkRecordSchemas(spaceRoot, root, memorySpaceId)
+  checkRecordSchemas(spaceRoot, root, memorySpaceId, 'cold/records')
   return { kind: 'v2', rootManifest: manifest, spaceManifest: space }
 }
