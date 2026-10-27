@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { join } from 'node:path'
-import { MemoryStoreV2 } from '../memory/v2/store.js'
+import { assertMemoryProvider, assertProviderStore, createLocalMemoryProvider } from '../memory/v2/provider.js'
 import { buildMemoryContext, retrieveMemory } from '../memory/v2/retrieval.js'
 import { recordRetentionAllowed } from '../memory/v2/read-policy.js'
 import { createKnownSlotCatalog, createMemoryBatchSelector, createMemoryBatchSelectionAssessor, isBatchSelectionDecision, normalizeMemorySlotKey } from '../memory/v2/selection-batch.js'
@@ -35,11 +35,13 @@ export class PersonaRuntime {
     this.#options = options
     this.core = options.core ?? getWhaleCore()
     this.coreInstructions = options.coreInstructions ?? getWhaleCorePrompt()
-    this.store = new MemoryStoreV2({ root: options.root, memory_space_id: options.memorySpaceId ?? 'owner',
+    this.memoryProvider = assertMemoryProvider(options.memoryProvider ?? createLocalMemoryProvider())
+    const storageOptions = { root: options.root, memory_space_id: options.memorySpaceId ?? 'owner',
       evidenceResolver: (id) => this.state?.resolveMemoryEvidence(id), faultInjector: (phase, data) => {
         options.faultInjector?.(phase, data)
         if (phase === 'after_prepare') { this.#assertLive(); check(this.#operation.getStore()); check(this.#lifetime.signal); this.#sessionBoundary.getStore()?.checkSync() }
-      } })
+      } }
+    this.store = assertProviderStore(this.memoryProvider.createStore(storageOptions), storageOptions)
     this.state = new PersonaState({ store: this.store, persona_id: this.core.persona_id,
       core_version: this.core.version, mode: options.stabilityMode ?? 'auto', subject_id: options.subjectId ?? 'owner' })
     this.#ready = this.#initialize()
@@ -51,7 +53,7 @@ export class PersonaRuntime {
   }
   ready() { return this.#ready }
   get disposed() { return this.#disposed }
-  #assertLive() { if (this.#disposed) throw new MemoryError('PERSONA_DISPOSED') }
+  #assertLive() { if (this.#disposed) throw new MemoryError('PERSONA_DISPOSED'); this.memoryProvider.assertAvailable() }
   #dream(phase, payload) {
     if (this.#disposed) return
     try { this.#options.onDream?.(phase, payload) } catch {}

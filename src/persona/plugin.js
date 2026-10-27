@@ -12,9 +12,10 @@ import { registerAssetRoutes } from '../memory/asset-route.js'
 import { assetUrl } from '../memory/assets.js'
 import { observeSessionIdentityBoundary } from './session-fence.js'
 import { installSessionDispatch } from './session-dispatch.js'
+import { assertMemoryProvider } from '../memory/v2/provider.js'
 
 export const name = 'whale-soul-persona'
-export const inject = ['systemPrompt', 'tools', 'llm', 'sandboxPolicy', 'fs', 'subprocess', 'sandbox', 'agents']
+export const inject = ['whaleMemory', 'systemPrompt', 'tools', 'llm', 'sandboxPolicy', 'fs', 'subprocess', 'sandbox', 'agents']
 const runtimes = new WeakMap()
 export const runtimeFor = (ctx) => runtimes.get(ctx)
 const serviceTools = ['soul_recall', 'soul_remember', 'soul_forget', 'soul_view_image', 'soul_meme_save', 'soul_meme_recall', 'soul_meme_use', 'soul_react',
@@ -22,6 +23,7 @@ const serviceTools = ['soul_recall', 'soul_remember', 'soul_forget', 'soul_view_
 
 /** Explicit constructors make the host composition testable without global state. */
 export async function installPersonaPlugin(ctx, config = {}, host) {
+  const memoryProvider = assertMemoryProvider(ctx.get('whaleMemory'))
   if (typeof host.scopeOf !== 'function' || typeof host.scopeChainOf !== 'function' || !host.scopeOf(ctx)) throw new Error('whale-soul: trusted persona scope required')
   const ownerScope = host.scopeOf(ctx)
   const ownsAgent = (agent) => host.scopeChainOf(agent).includes(ownerScope) && ctx.get('agents')?.get(agent.id) === agent
@@ -54,7 +56,7 @@ export async function installPersonaPlugin(ctx, config = {}, host) {
     },
   }).await()
   let images
-  runtime = new PersonaRuntime({ ...config, root, llm: { prepareCall: (...args) => ctx.get('llm').prepareCall(...args) }, createAssembler: () => new host.BlockAssembler(),
+  runtime = new PersonaRuntime({ ...config, root, memoryProvider, llm: { prepareCall: (...args) => ctx.get('llm').prepareCall(...args) }, createAssembler: () => new host.BlockAssembler(),
     sessionHost: { scopeChainOf: host.scopeChainOf, resolveDshHome: host.privateRootBindings.resolveDshHome, observer, z: host.z, ownsAgent },
     additionalEvidenceAllowed: (id, context, meta) => images?.evidenceAllowed(id, context, meta) ?? false,
     onDream: (phase, payload) => ctx.emit(`whale-soul/dream-${phase}`, payload) })

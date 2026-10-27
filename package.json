@@ -24,7 +24,8 @@
     "./locale": "./src/locale.js",
     "./client": "./src/client.js",
     "./persona": "./src/persona/plugin.js",
-    "./memory": "./src/memory/v2/index.js"
+    "./memory": "./src/memory/v2/index.js",
+    "./memory-provider": "./src/memory/provider-plugin.js"
   },
   "files": [
     "src",
