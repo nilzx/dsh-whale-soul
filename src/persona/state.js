@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { MEMORY_TYPES, MemoryError, assertId, assertOnly, digest, timestamp } from '../memory/v2/contracts.js'
 import { deriveEventEvidenceId, normalizeHostEvent } from '../memory/v2/evidence.js'
-import { getPersonaAnchor, personaBinding } from '../memory/v2/persona-ledger.js'
+import { getPersonaAnchor, personaBinding, normalizeIndividualKey, personaIdentityProjection, projectedIdentityBinding } from '../memory/v2/persona-ledger.js'
 import { getPurgeState } from '../memory/v2/purge-ledger.js'
 import { StabilityPolicy, STABILITY_MODES } from './stability.js'
 import { isSelectionDecision } from '../memory/v2/selection.js'
@@ -16,13 +16,14 @@ const clone = (value) => JSON.parse(JSON.stringify(value))
 
 /** Host adapter. This class is never exposed as a model tool. */
 export class PersonaState {
-  #store; #personaId; #subjectId; #coreVersion; #mode; #identity; #binding; #policy; #facade
-  constructor({ store, persona_id, core_version, mode = 'auto', subject_id } = {}) {
+  #store; #personaId; #subjectId; #coreVersion; #mode; #identity; #binding; #individualKey; #policy; #facade
+  constructor({ store, persona_id, core_version, mode = 'auto', subject_id, individual_key = 'default' } = {}) {
     if (!store || typeof store.managedTransaction !== 'function') throw new MemoryError('TRUSTED_STORE_REQUIRED')
     this.#store = store; this.#personaId = assertId(persona_id); this.#subjectId = assertId(subject_id)
     if (typeof core_version !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/.test(core_version)) throw new MemoryError('INVALID_CORE_VERSION')
     if (!STABILITY_MODES.includes(mode)) throw new MemoryError('INVALID_MODE')
-    this.#coreVersion = core_version; this.#mode = mode; this.#binding = personaBinding(persona_id, subject_id)
+    this.#individualKey = normalizeIndividualKey(individual_key)
+    this.#coreVersion = core_version; this.#mode = mode; this.#binding = personaBinding(persona_id, subject_id, this.#individualKey)
     this.#facade = Object.freeze({ getProfile: () => this.#readyPolicy().getProfile(), snapshot: () => this.#readyPolicy().snapshot(), flush: () => this.#readyPolicy().flush() })
   }
   #readyPolicy() { if (!this.#policy) throw new MemoryError('PERSONA_STATE_NOT_INITIALIZED'); return this.#policy }
@@ -62,7 +63,7 @@ export class PersonaState {
   #changes(anchor, manifest, evidence = []) {
     return [...evidence, { path: `${this.#base()}/stability.json`, data: json({ ...anchor.snapshot, anchor_revision: anchor.revision }) },
       { path: 'manifest.json', data: json({ ...manifest, revision_watermark: manifest.revision_watermark + 1,
-        identities: { ...(manifest.identities ?? {}), [anchor.agent_identity_id]: { persona_id: anchor.persona_id, subject_id: anchor.subject_id, agent_identity_id: anchor.agent_identity_id, created_at: anchor.created_at } } }) }]
+        identities: { ...(manifest.identities ?? {}), [anchor.agent_identity_id]: personaIdentityProjection(anchor) } }) }]
   }
   async initialize() {
     if (!this.#store.initialized) await this.#store.initialize()
@@ -72,7 +73,10 @@ export class PersonaState {
       const previous = this.#anchor()
       if (!previous) {
         const matching = Object.entries(manifest.identities ?? {}).filter(([, v]) => v?.persona_id === this.#personaId && v?.subject_id === this.#subjectId)
-        if (matching.length) throw new MemoryError('PERSONA_ANCHOR_REQUIRED')
+        for (const [identityId, identity] of matching) {
+          const binding = projectedIdentityBinding(identity), other = getPersonaAnchor(this.#store.root, this.#store.memorySpaceId, binding)
+          if (binding === this.#binding || !other || other.agent_identity_id !== identityId) throw new MemoryError('PERSONA_ANCHOR_REQUIRED')
+        }
       }
       const id = previous?.agent_identity_id ?? provisional.agent_identity_id
       this.#identity = Object.freeze({ persona_id: this.#personaId, agent_identity_id: id, subject_id: this.#subjectId, memory_space_id: this.#store.memorySpaceId })
@@ -81,7 +85,8 @@ export class PersonaState {
         if (previous.snapshot.mode === this.#mode && previous.core_version === this.#coreVersion) return { changes: [], result: { status: 'ready', agent_identity_id: id, anchor_revision: previous.revision } }
       }
       const anchor = previous ? { ...previous, revision: previous.revision + 1, core_version: this.#coreVersion } : {
-        schema_version: 1, memory_space_id: this.#store.memorySpaceId, binding_id: this.#binding, ...this.identity,
+        schema_version: this.#individualKey === 'default' ? 1 : 3, memory_space_id: this.#store.memorySpaceId, binding_id: this.#binding, ...this.identity,
+        ...(this.#individualKey === 'default' ? {} : { binding_scheme: 2, individual_key: this.#individualKey, items: [] }),
         core_version: this.#coreVersion, created_at: new Date().toISOString(), revision: 1, credentials: [], revoked_ids: [],
       }
       this.#policy = await this.#rebuild(anchor); anchor.snapshot = this.#policy.snapshot()
@@ -275,7 +280,7 @@ export class PersonaState {
         allow_persist:false,growth_eligible:false,maturity_eligible:decision.event_maturity_eligible && !duplicate,source_hash:digest(event),
         plan_version:2,item_ids:bindings.map((item)=>item.evidence_id),plan_hash:digest({selection:decision,bindings}),normalized_content_hash:contentHash,
         duplicate_content:duplicate,plan_decision:decision.decision === 'selected'?'selected':'ignore',reason_code:decision.reason_code,content_units:event.content.length }
-      const anchor = { ...previous,schema_version:2,revision:previous.revision+1,credentials:[...previous.credentials,credential],items:[...(previous.items??[]),...bindings] }
+      const anchor = { ...previous,schema_version:Math.max(2,previous.schema_version),revision:previous.revision+1,credentials:[...previous.credentials,credential],items:[...(previous.items??[]),...bindings] }
       anchor.snapshot=(await this.#rebuild(anchor)).snapshot()
       this.#authorize(ctx,'memory.write')
       return {changes:this.#changes(anchor,manifest,files),persona_descriptor:this.#descriptor(anchor,previous),result:{status:'recorded',event_evidence_id:eventId,item_ids:credential.item_ids}}
@@ -366,7 +371,7 @@ export class PersonaState {
       const approved = { ...full, growth_eligible: full.growth_eligible && !duplicate, maturity_eligible: full.maturity_eligible && !duplicate }
       const storedCredential = { ...credential, normalized_content_hash: normalized, duplicate_content: duplicate, growth_eligible: approved.growth_eligible, maturity_eligible: approved.maturity_eligible,
         ...(approved.allow_persist ? { payload_hash: digest(approved) } : {}) }
-      const anchor = { ...previous, schema_version: 2, items: previous.items ?? [], revision: previous.revision + 1, credentials: [...previous.credentials, storedCredential] }
+      const anchor = { ...previous, schema_version: Math.max(2, previous.schema_version), items: previous.items ?? [], revision: previous.revision + 1, credentials: [...previous.credentials, storedCredential] }
       const policy = await this.#rebuild(anchor); anchor.snapshot = policy.snapshot()
       this.#authorize(ctx, 'memory.write')
       return { changes: this.#changes(anchor, manifest, approved.allow_persist ? [{ path: `${this.#base()}/evidence/${evidenceId}.json`, data: json(approved) }] : []),

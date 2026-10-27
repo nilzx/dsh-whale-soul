@@ -113,7 +113,7 @@ export class MemoryAdministration {
         for (const id of recordIds) {
           if (previous.record_ids.includes(id)) continue
           const current = this.store._readRecord(id).meta
-          if (!context.capabilities.includes('memory.manage') && !context.allowed_subject_ids.includes(current.subject_id)) throw new MemoryError('SUBJECT_DENIED')
+          if (!context.capabilities.includes('memory.manage') && (!context.allowed_subject_ids.includes(current.subject_id) || current.subject_id !== context.subject_id || current.agent_identity_id !== context.agent_identity_id || current.persona_id !== context.persona_id)) throw new MemoryError('SUBJECT_DENIED')
           if (args.expected_revisions[id] !== current.revision) throw new MemoryError('REVISION_CONFLICT')
           targetMetas.push(...recordMetadata(this.store, id))
         }
