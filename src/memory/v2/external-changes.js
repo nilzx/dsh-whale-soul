@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readdirSync } from 'node:fs'
 import { join, parse, resolve, sep } from 'node:path'
 import { API_VERSION, MemoryError, assertId, assertOnly, digest, failure, stableStringify } from './contracts.js'
-import { buildRecordDescriptor, buildRecordStateDescriptor, loadRecordHead, recordBundleHash, verifyRecordBundle } from './record-integrity.js'
+import { buildRecordDescriptor, buildRecordStateDescriptor, loadRecordHead, recordBundleHash, validateRecordHead, verifyRecordBundle } from './record-integrity.js'
 import { RECORD_FILES, readBundleAt } from './integrity-transaction.js'
 import { getPurgeState } from './purge-ledger.js'
 import { retentionBlockReason } from './retention.js'
@@ -11,6 +11,7 @@ import { recordRetentionAllowed } from './read-policy.js'
 const json = (value) => `${JSON.stringify(value, null, 2)}\n`
 const clone = (value) => JSON.parse(JSON.stringify(value))
 const fail = (code) => { throw new MemoryError(code) }
+const RECORD_BASELINE_API_VERSION = '1.1.0'
 const allowedFields = ['title', 'tags', 'gist', 'detail']
 const metadataFields = new Set(['schema_version', 'record_id', 'revision_id', 'revision', 'memory_space_id', 'subject_id', 'actor_ids', 'persona_id', 'agent_identity_id', 'created_at', 'observed_at', 'updated_at', 'valid_from', 'valid_to', 'expires_at', 'retention', 'claim_kind', 'confidence', 'title', 'type', 'tags', 'canonical_key', 'provenance_refs', 'visibility', 'pinned', 'status', 'supersedes', 'revision_history', 'layers', 'assets', 'asset_metadata_hash', 'legacy', 'external_revision'])
 const bytes = (value) => Buffer.isBuffer(value) ? value : Buffer.from(value)
@@ -68,14 +69,14 @@ export class MemoryExternalChanges {
   }
 
   #path(relativePath) { return this.store.engine.resolvePath(relativePath) }
-  #read(relativePath) {
+  #read(relativePath, maxBytes = this.maxFileBytes) {
     const path = this.#path(relativePath)
     let fd
     try {
       fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
       const before = fstatSync(fd)
       if (!before.isFile() || before.nlink !== 1) fail('UNSAFE_EXTERNAL_FILE')
-      if (before.size > this.maxFileBytes) fail('EXTERNAL_SNAPSHOT_BUDGET_EXCEEDED')
+      if (before.size > maxBytes) fail('EXTERNAL_SNAPSHOT_BUDGET_EXCEEDED')
       const data = readFileSync(fd), after = fstatSync(fd)
       if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs || data.length !== after.size) fail('EXTERNAL_SOURCE_UNSTABLE')
       return data
@@ -174,21 +175,67 @@ export class MemoryExternalChanges {
     return null
   }
 
+  // Only the owner may resume this exact records-only bootstrap transaction.
+  async #recoverBaseline(operationId, snapshot, ctx, signal, authorize) {
+    if (!/^[a-f0-9]{64}$/.test(snapshot)) fail('BASELINE_SNAPSHOT_CONFLICT')
+    const journal = this.#path('journal'), receiptPath = `operations/${digest(operationId)}.json`
+    if (!readdirSync(journal).length && !existsSync(this.#path(receiptPath))) return null
+    const requestHash = digest({ action: 'establishIntegrityBaseline', source_snapshot: snapshot })
+    const receipt = (value) => {
+      assertOnly(value, ['operation_id', 'request_hash', 'result'])
+      assertOnly(value.result, ['api_version', 'operation_id', 'status', 'reason_code', 'record_ids', 'affected_ids', 'source_snapshot', 'source_quiescence', 'pending'])
+      if (!['1.1.0', API_VERSION].includes(value.result.api_version) || value.result.source_quiescence !== 'owner_declared' || !Array.isArray(value.result.record_ids) || new Set(value.result.record_ids).size !== value.result.record_ids.length || digest([...value.result.record_ids].sort()) !== digest([...(value.result.affected_ids ?? [])].sort())) fail('OPERATION_CONFLICT')
+      value.result.record_ids.forEach(id => assertId(id))
+      if (value.operation_id !== operationId || value.request_hash !== requestHash || value.result?.reason_code !== 'BASELINE_ESTABLISHED' ||
+        value.result.operation_id !== operationId || value.result.source_snapshot !== snapshot || value.result.status !== 'committed' || value.result.pending !== false) fail('OPERATION_CONFLICT')
+      return { ...value.result, replayed: true }
+    }
+    return this.store.engine.locked(() => {
+      this.#authorize(ctx, true, signal, authorize)
+      const entries = readdirSync(journal, { withFileTypes: true })
+      if (entries.length > 1) fail('BASELINE_RECOVERY_REQUIRED')
+      for (const entry of entries) {
+        try {
+          if (!entry.isDirectory() || entry.isSymbolicLink()) fail('BASELINE_RECOVERY_REQUIRED')
+          const id = assertId(entry.name), base = `journal/${id}`, value = JSON.parse(decode(this.#read(`${base}/prepared.json`, 64 * 1024 * 1024)))
+          assertOnly(value, ['transaction_id', 'operation_id', 'receipt_key', 'generation', 'changes', 'record_descriptors', 'root_upgrade', 'receipt'])
+          if (value.transaction_id !== id || value.operation_id !== operationId || value.receipt_key !== digest(operationId) || !Number.isSafeInteger(value.generation) || value.generation < 0 || !Array.isArray(value.changes) || value.changes.length || !Array.isArray(value.record_descriptors)) fail('BASELINE_RECOVERY_REQUIRED')
+          assertOnly(value.root_upgrade, ['expected_hash', 'manifest'])
+          if (!/^[a-f0-9]{64}$/.test(value.root_upgrade.expected_hash) || value.root_upgrade.manifest?.format_version !== 2 || value.root_upgrade.manifest.api_version !== RECORD_BASELINE_API_VERSION || digest(value.root_upgrade.manifest.spaces) !== digest([this.store.memorySpaceId])) fail('BASELINE_RECOVERY_REQUIRED')
+          receipt(value.receipt)
+          const generations = new Map()
+          for (const descriptor of value.record_descriptors) {
+            assertOnly(descriptor, ['expected_generation', 'next']); validateRecordHead(descriptor.next)
+            const head = descriptor.next, expected = generations.get(head.record_id) ?? 0
+            if (head.memory_space_id !== this.store.memorySpaceId || head.state !== 'clean' || head.change_id !== null || descriptor.expected_generation !== expected || head.generation !== expected + 1) fail('BASELINE_RECOVERY_REQUIRED')
+            generations.set(head.record_id, head.generation)
+          }
+          const ids = [...generations.keys()].sort(), result = value.receipt.result
+          if (digest(ids) !== digest([...(result.record_ids ?? [])].sort()) || digest(ids) !== digest([...(result.affected_ids ?? [])].sort())) fail('BASELINE_RECOVERY_REQUIRED')
+          if (existsSync(this.#path(`${base}/COMMIT`)) && decode(this.#read(`${base}/COMMIT`)) !== id) fail('BASELINE_RECOVERY_REQUIRED')
+        } catch { fail('BASELINE_RECOVERY_REQUIRED') }
+      }
+      this.store.engine._recover()
+      this.#authorize(ctx, true, signal, authorize)
+      if (existsSync(this.#path(receiptPath))) {
+        if (JSON.parse(decode(this.#rootFile('manifest.json'))).api_version !== RECORD_BASELINE_API_VERSION) fail('BASELINE_RECOVERY_REQUIRED')
+        return receipt(JSON.parse(decode(this.#read(receiptPath))))
+      }
+      return null // An exact PREPARE without COMMIT was discarded; rescan the source.
+    })
+  }
+
   async establishBaseline(args, ctx, { signal = null, authorize = null } = {}) {
     const operationId = args?.operation_id ?? randomUUID()
     try {
       this.#authorize(ctx, true, signal, authorize)
       assertOnly(args, ['operation_id', 'dry_run', 'source_quiescent', 'expected_snapshot'])
       if (args.source_quiescent !== true) fail('SOURCE_QUIESCENCE_REQUIRED')
-      const rootBytes = this.#rootFile('manifest.json'), manifest = JSON.parse(decode(rootBytes))
-      if (manifest.api_version === API_VERSION && args.dry_run === false && args.expected_snapshot) {
-        const path = this.#path(`operations/${digest(operationId)}.json`)
-        if (existsSync(path)) {
-          const receipt = JSON.parse(decode(this.#read(`operations/${digest(operationId)}.json`)))
-          if (receipt.operation_id !== operationId || receipt.request_hash !== digest({ action: 'establishIntegrityBaseline', source_snapshot: args.expected_snapshot }) || receipt.result?.reason_code !== 'BASELINE_ESTABLISHED') fail('OPERATION_CONFLICT')
-          return { ...receipt.result, replayed: true }
-        }
+      if (args.dry_run === false && args.expected_snapshot) {
+        const recovered = await this.#recoverBaseline(operationId, args.expected_snapshot, ctx, signal, authorize)
+        if (recovered) return recovered
       }
+      const rootBytes = this.#rootFile('manifest.json'), manifest = JSON.parse(decode(rootBytes))
       if (manifest.format_version !== 2 || manifest.api_version !== '1.0.0') fail('BASELINE_REQUIRES_LEGACY_V2_API')
       if (!Array.isArray(manifest.spaces) || manifest.spaces.length !== 1 || manifest.spaces[0] !== this.store.memorySpaceId) fail('MULTISPACE_BASELINE_REQUIRED')
       if (existsSync(join(this.store.root, '.writer.lock')) || existsSync(join(this.store.root, '.writer-recovery.lock'))) fail('WRITER_BUSY')
@@ -235,7 +282,7 @@ export class MemoryExternalChanges {
       }
       return await this.store.engine.run(operationId, { action: 'establishIntegrityBaseline', source_snapshot: snapshot }, () => {
         check()
-        return { changes: [], record_descriptors: descriptors, root_upgrade: { expected_hash: source['root-manifest'], manifest: { ...manifest, api_version: API_VERSION } },
+        return { changes: [], record_descriptors: descriptors, root_upgrade: { expected_hash: source['root-manifest'], manifest: { ...manifest, api_version: RECORD_BASELINE_API_VERSION } },
           result: { api_version: API_VERSION, operation_id: operationId, status: 'committed', reason_code: 'BASELINE_ESTABLISHED', record_ids: ids, affected_ids: ids, source_snapshot: snapshot, source_quiescence: 'owner_declared', pending: false } }
       }, { authorize: check })
     } catch (error) { return failure(error, operationId) }
