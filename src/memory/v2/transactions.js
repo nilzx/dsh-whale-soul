@@ -170,9 +170,12 @@ export class TransactionEngine {
     const fromLockRoot = relative(this.lockRoot, target)
     if (fromLockRoot === '..' || fromLockRoot.startsWith(`..${sep}`) || isAbsolute(fromLockRoot)) throw new MemoryError('UNSAFE_STORAGE_PATH')
     let current = this.lockRoot
+    // Recheck the public field per call. Noncanonical mutations retain join's
+    // original normalization and errors; no filesystem proof is cached.
+    const appendComponents = typeof current === 'string' && isAbsolute(current) && current === resolve(current)
     const pieces = fromLockRoot.split(sep)
     for (const part of ['', ...pieces]) {
-      if (part) current = join(current, part)
+      if (part) current = appendComponents ? current.endsWith(sep) ? current + part : current + sep + part : join(current, part)
       let stat
       try { stat = lstatSync(current) } catch (error) { if (error?.code !== 'ENOENT') throw error }
       if (stat?.isSymbolicLink()) throw new MemoryError('UNSAFE_STORAGE_PATH')

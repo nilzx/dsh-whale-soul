@@ -67,7 +67,8 @@ function safe(root, target, file = false) {
   let current = parse(path).root
   const parts = path.slice(current.length).split(sep).filter(Boolean)
   for (let index = 0; index < parts.length; index++) {
-    current = join(current, parts[index])
+    // resolve() already normalized these single components; keep every stat.
+    current = current.endsWith(sep) ? current + parts[index] : current + sep + parts[index]
     let stat
     try { stat = lstatSync(current) } catch (error) { if (error.code === 'ENOENT') continue; fail('UNSAFE_STORAGE_PATH') }
     if (stat.isSymbolicLink() || (index < parts.length - 1 ? !stat.isDirectory() : file ? !stat.isFile() : !stat.isDirectory())) fail('UNSAFE_STORAGE_PATH')
