@@ -29,7 +29,7 @@ function observe(source,space){
 async function prepare(store,source,operationId){
  if(readdirSync(source).some(name=>!['manifest.json','spaces','.administration','exports','backups'].includes(name)&&!/^(?:\.writer(?:-recovery)?\.lock|\.(?:lock-candidate|retired-lock)-[a-f0-9-]{36})$/.test(name)))fail('UNSUPPORTED_SELF_UPGRADE_SOURCE')
  const root=JSON.parse(read(join(source,'manifest.json'))),spaceId=store.memorySpaceId,base=join(source,'spaces',spaceId)
- if(root.format_version!==2||!['1.1.0',API_VERSION].includes(root.api_version)||!root.spaces?.includes(spaceId))fail('UNSUPPORTED_SELF_UPGRADE_SOURCE')
+ if(root.format_version!==2||!['1.1.0','1.2.0',API_VERSION].includes(root.api_version)||!root.spaces?.includes(spaceId))fail('UNSUPPORTED_SELF_UPGRADE_SOURCE')
  if(existsSync(join(base,'journal'))&&readdirSync(join(base,'journal')).length)fail('SOURCE_RECOVERY_REQUIRED')
  const manifest=JSON.parse(read(join(base,'manifest.json')))
  if(manifest.format_version!==2||manifest.memory_space_id!==spaceId)fail('UNSUPPORTED_SELF_UPGRADE_SOURCE')
@@ -41,6 +41,7 @@ async function prepare(store,source,operationId){
  for(const anchor of personaState.anchors){
   const id=anchor.agent_identity_id,old=loadSelfHead(source,spaceId,id),growth=readSelfFiles(source,spaceId,id)
   if(old){verifySelfFiles(old,growth,anchor);heads.push(old)}else{
+   if(root.api_version!=='1.1.0')fail('SELF_UPGRADE_SOURCE_ANCHOR_REQUIRED')
    upgrades++;validateSelfFiles(growth,anchor)
    heads.push(validateSelfHead({schema_version:1,memory_space_id:spaceId,binding_id:anchor.binding_id,persona_id:anchor.persona_id,agent_identity_id:id,subject_id:anchor.subject_id,core_version:anchor.core_version,generation:1,parent_hash:null,operation_id:operationId,files:[],files_hash:digest([])}))
    for(const[path,data]of growth){const moved=`cold/legacy-self/${id}/${path}`;legacy.push(moved);files.push({path:moved,data,size:data.length,sha256:digest(data)})}

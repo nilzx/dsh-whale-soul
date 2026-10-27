@@ -1,6 +1,6 @@
 # Persona self integrity and owner upgrades
 
-The current storage API is **1.2.0**. Facts and episodes have root record heads; each individual's self manifest, proposals, traits and history have a separate root self head. Original evidence and maturity remain governed by the independent persona ledger. An internally consistent set of edited self files does not establish authority.
+The current storage API is **1.3.0**. Facts and episodes have root record heads; each individual's self manifest, proposals, traits and history have a separate root self head. Original evidence and maturity remain governed by the independent persona ledger. An internally consistent set of edited self files does not establish authority.
 
 Normal writes verify the previous complete self bundle before deriving the next head in the same durable transaction. Context assembly rejects damaged or unanchored self data. `PersonaSelfAdministration.restoreSelf` restores only bytes matching the existing trusted head; it cannot assign an arbitrary personality value.
 
