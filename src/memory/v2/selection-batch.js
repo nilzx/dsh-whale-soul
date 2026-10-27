@@ -7,6 +7,8 @@ export { normalizeMemorySlotKey } from './slot-policy.js'
 const decisions = new WeakSet(), catalogs = new WeakSet()
 const ITEM_FIELDS = ['decision', 'kind', 'subject_scope', 'canonical_key', 'evidence_quote', 'time_quote', 'target_ref', 'growth_relevant', 'maturity_relevant', 'confidence']
 const keyPattern = /^[a-z][a-z0-9_]*(?:[.:-][a-z0-9_]+)*$/
+// Only explicit operation labels; temporal/causal factual headings stay intact.
+const factLabelPrefix = /^(?:更正|纠正|修正|更新|修改|补充)(?:(?:饮品|饮料|食物|点心|口味|颜色|沟通|语言)(?:的)?)?(?:偏好|事实|信息|资料|称呼|姓名|记忆|记录)[：:][ \t]*/u
 // Omit complete, deictic storage or current-operation wording/source notes.
 // A factual payload or lasting interpersonal boundary is not such a control.
 const contentControlAnchors = [
@@ -143,15 +145,19 @@ export function createMemoryBatchSelector({ assess, clock = Date.now, timeoutMs 
       const items = [], usedTargets = new Set(), usedKeys = new Set(), spans = []
       let maturity = false
       for (const candidate of verdict.items) {
-        const quote = candidate.evidence_quote, start = event.content.indexOf(quote), end = start + quote.length
+        let quote = candidate.evidence_quote, start = event.content.indexOf(quote)
+        const end = start + quote.length
         if (start < 0 || event.content.indexOf(quote, start + 1) >= 0 || spans.some(([left, right]) => start < right && end > left)) fail('BATCH_INVALID_EXACT_SPAN')
         spans.push([start, end])
+        const label = factLabelPrefix.exec(quote)?.[0]
+        if (label && label.length < quote.length) { start += label.length; quote = quote.slice(label.length) }
         if (candidate.time_quote !== null && !quote.includes(candidate.time_quote)) fail('BATCH_TIME_OUTSIDE_ITEM')
         if (isContentControlOnly(quote)) {
           if (candidate.target_ref !== null || candidate.canonical_key !== null) fail('BATCH_CONTROL_SLOT_FORBIDDEN')
           continue
         }
         const { target_ref, ...singleVerdict } = candidate
+        singleVerdict.evidence_quote = quote
         // Reuse the proven eligibility/time rules on this item's local source,
         // so a second clause's temporary restriction cannot taint the first.
         const single = await createMemorySelector({ clock, timeoutMs, assess: () => singleVerdict }).select({ ...event, content: quote }, { signal })
