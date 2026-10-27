@@ -18,6 +18,7 @@ import { MEMORY_REVISION_REASON as REASON, verifyMemoryReceipt } from './memory-
 import { getPurgeState } from '../memory/v2/purge-ledger.js'
 import { personaBinding, normalizeIndividualKey } from '../memory/v2/persona-ledger.js'
 import { SessionIdentityFence, createSessionBoundary, observeSessionIdentityBoundary } from './session-fence.js'
+import { resolveSharedRecordEvidence } from '../memory/v2/evidence.js'
 import { isMemoryMaintenanceHost } from './memory-maintenance-host.js'
 import { canonicalProtectionPath } from './protection.js'
 import { createInjectedSurfaceController, INJECTED_CONTEXT_NAMES } from './injected-surface.js'
@@ -93,7 +94,8 @@ export class PersonaRuntime {
   #hostContext(sessionId) { return this.state.issueContext(sessionId, ['memory.manage']) }
   #evidenceAllowed(id, _context, meta) {
     if (meta?.claim_kind === 'legacy' && meta.legacy && typeof id === 'string' && id.startsWith('legacy-')) return true
-    return this.state.resolveMemoryEvidence(id) !== null || this.#options.additionalEvidenceAllowed?.(id, _context, meta) === true
+    return this.state.resolveMemoryEvidence(id) !== null || resolveSharedRecordEvidence(this.store, id, _context, meta) !== null ||
+      this.#options.additionalEvidenceAllowed?.(id, _context, meta) === true
   }
   #correctionBoundary({ item, context }) {
     this.#assertLive(); check(this.#lifetime.signal); check(this.#operation.getStore())

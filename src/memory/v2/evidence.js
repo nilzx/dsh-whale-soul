@@ -1,4 +1,36 @@
 import { MemoryError, assertId, digest, timestamp } from './contracts.js'
+import { existsSync, readFileSync } from 'node:fs'
+import { getPersonaAnchor, projectedIdentityBinding } from './persona-ledger.js'
+import { evidenceBinding, validateBoundItemPayload } from './batch-bindings.js'
+import { getPurgeState } from './purge-ledger.js'
+
+/** @internal Resolve provenance for an already verified, explicitly shared record. No persona is initialized or projected. */
+export function resolveSharedRecordEvidence(store, id, context, meta) {
+  store._authorize(context, 'memory.read')
+  if (!['space', 'identities'].includes(meta?.visibility?.kind) || !store._visible(meta, context) ||
+    meta.memory_space_id !== store.memorySpaceId || !meta.provenance_refs?.includes(id)) return null
+  const identity = store._manifest().identities?.[meta.agent_identity_id]
+  if (!identity || ['persona_id', 'agent_identity_id', 'subject_id'].some(key => identity[key] !== meta[key])) return null
+  const binding = projectedIdentityBinding(identity)
+  const currentAnchor = () => getPersonaAnchor(store.root, store.memorySpaceId, binding)
+  const anchor = currentAnchor()
+  if (!anchor || ['persona_id', 'agent_identity_id', 'subject_id', 'memory_space_id'].some(key => anchor[key] !== meta[key])) return null
+  const credential = evidenceBinding(anchor, assertId(id))
+  if (!credential?.payload_hash || anchor.revoked_ids.includes(id) ||
+    credential.event_evidence_id && anchor.revoked_ids.includes(credential.event_evidence_id) ||
+    !credential.event_evidence_id && credential.allow_persist !== true) return null
+  const purge = getPurgeState(store.root, store.memorySpaceId)
+  if (purge.record_ids.includes(meta.record_id) || [...purge.evidence_ids, ...purge.related_evidence_ids].includes(id)) return null
+  const path = store.engine.resolvePath(`self/${anchor.agent_identity_id}/evidence/${id}.json`)
+  if (!existsSync(path)) return null
+  let value
+  try { value = JSON.parse(readFileSync(path, 'utf8')) } catch { throw new MemoryError('PERSONA_EVIDENCE_REPAIR_REQUIRED') }
+  if (digest(value) !== credential.payload_hash) throw new MemoryError('EXTERNAL_PERSONA_EVIDENCE_CHANGE')
+  if (credential.event_evidence_id) validateBoundItemPayload(anchor, credential, value)
+  if (value.allow_persist !== true) return null
+  if (anchor.revision !== currentAnchor()?.revision || purge.generation !== getPurgeState(store.root, store.memorySpaceId).generation) throw new MemoryError('PERSONA_EVIDENCE_BUSY')
+  return value
+}
 
 /** Canonical host event identity; no model-provided metadata is accepted. */
 export function normalizeHostEvent(record, identity) {
