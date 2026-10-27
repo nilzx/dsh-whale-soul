@@ -9,6 +9,7 @@ import { commitPurgeDescriptor, filterRecoveryChanges, getPurgeState, pathIsPurg
 import { commitRecordDescriptor, commitImportedRecordHead } from './record-integrity.js'
 import { descriptorsForChanges } from './integrity-transaction.js'
 import { applyExternalCapture, applyExternalPublish, applyRootUpgrade } from './external-journal.js'
+import { repairCompletedRecordChanges } from './record-recovery.js'
 
 function syncDir(path) {
   let fd
@@ -246,6 +247,7 @@ export class TransactionEngine {
       if (!committed) { rmSync(path, { recursive: true, force: true }); continue }
       const completed = readJson(this.resolvePath(`operations/${transaction.receipt_key}.json`), null)
       if (completed && completed.operation_id === transaction.operation_id && completed.request_hash === transaction.receipt?.request_hash) {
+        try { repairCompletedRecordChanges(this, transaction) } catch { throw new MemoryError('COMMIT_RECOVERY_REQUIRED') }
         rmSync(path, { recursive: true, force: true }); syncDir(journal); continue
       }
       if (!this.recoveryGuard(transaction)) {
