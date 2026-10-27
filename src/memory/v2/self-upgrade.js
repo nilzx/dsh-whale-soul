@@ -1,3 +1,4 @@
+import { prepareSourceProtection, sourceProtectionSnapshot } from './source-protection.js'
 import { randomUUID } from 'node:crypto'
 import { existsSync, lstatSync, readFileSync, readdirSync } from 'node:fs'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
@@ -20,7 +21,7 @@ function walk(root,prefix,files){const path=join(root,prefix);safe(path);if(!exi
 function observe(source,space){
  if(existsSync(join(source,'spaces',space,'journal'))&&readdirSync(join(source,'spaces',space,'journal')).length)fail('SOURCE_RECOVERY_REQUIRED')
  const inputs=[]
- for(const path of ['manifest.json','.administration/persona-ledger.json','.administration/purge-ledger.json'])if(existsSync(join(source,path)))inputs.push([path,digest(read(join(source,path)))])
+ for(const path of ['manifest.json','.administration/persona-ledger.json','.administration/purge-ledger.json','.administration/source-protection.json'])if(existsSync(join(source,path)))inputs.push([path,digest(read(join(source,path)))])
  for(const prefix of [`.administration/record-heads/${space}`,`.administration/self-heads/${space}`,`spaces/${space}`]){const files=[];walk(source,prefix,files);for(const file of files)if(!file.path.includes('/index/')&&!file.path.includes('/operations/')&&!file.path.includes('/journal/'))inputs.push([file.path,file.sha256])}
  return digest(inputs.sort(([a],[b])=>a.localeCompare(b)))
 }
@@ -55,7 +56,7 @@ async function prepare(store,source,operationId){
  const archive=packageOwnerArchive(store,{...manifest,identities},files,{purgeState:exportPurgeState(source,spaceId),personaState,heads:listRecordHeads(source,spaceId),selfState:{schema_version:1,heads}})
  validateTransferArchive(archive)
  if(observe(source,spaceId)!==before)fail('SELF_UPGRADE_SOURCE_CHANGED')
- return{archive,snapshot:before,legacy,identityIds:personaState.anchors.map(anchor=>anchor.agent_identity_id)}
+ return{archive,snapshot:before,legacy,identityIds:personaState.anchors.map(anchor=>anchor.agent_identity_id),localSources:sourceProtectionSnapshot(source).state?.sources??[]}
 }
 
 /** Explicit separate-root upgrade. Old unanchored traits never become active. */
@@ -66,6 +67,7 @@ export async function upgradeLegacySelf(store,args,context){
   store._authorize(context,'memory.manage');assertOnly(args,['operation_id','source_root','source_quiescent','expected_snapshot','legacy_self_policy','dry_run'])
   if(typeof args.source_root!=='string'||!isAbsolute(args.source_root))fail('ABSOLUTE_SOURCE_REQUIRED')
   const source=resolve(args.source_root);safe(source)
+  if(!existsSync(source)||!lstatSync(source).isDirectory())fail('UNSUPPORTED_SELF_UPGRADE_SOURCE')
   if(inside(source,store.root)||inside(store.root,source))fail('SEPARATE_UPGRADE_ROOT_REQUIRED')
   if(args.source_quiescent!==true)fail('SOURCE_QUIESCENCE_REQUIRED')
   if(args.legacy_self_policy!=='preserve_opaque')fail('EXPLICIT_LEGACY_SELF_POLICY_REQUIRED')
@@ -76,7 +78,7 @@ export async function upgradeLegacySelf(store,args,context){
   if(args.dry_run!==false)return{api_version:API_VERSION,status:'preview',source_snapshot:prepared.snapshot,identity_ids:prepared.identityIds,legacy_self_files:prepared.legacy,file_count:prepared.archive.files.length,writes:false,source_quiescence:'owner_declared',legacy_policy:'preserved_opaque_not_loaded'}
   if(args.expected_snapshot!==prepared.snapshot)fail('SELF_UPGRADE_SNAPSHOT_CONFLICT')
   const finalCheck=()=>{store._authorize(context,'memory.manage');if(observe(source,store.memorySpaceId)!==prepared.snapshot)fail('SELF_UPGRADE_SOURCE_CHANGED')}
-  const administration=new MemoryAdministration({store}),transfer=new MemoryTransfer({store,importGuard:input=>{finalCheck();return administration.assertImportAllowed(input)},finalImportAuthorize:finalCheck})
+  const administration=new MemoryAdministration({store}),transfer=new MemoryTransfer({store,importGuard:input=>{finalCheck();return administration.assertImportAllowed(input)},finalImportAuthorize:finalCheck,sourceProtectionBuilder:()=>prepareSourceProtection(store.root,source,prepared.snapshot,operationId,prepared.localSources)})
   const imported=await transfer.importSpace({operation_id:operationId,archive:prepared.archive,identity_mode:'preserve',accept_persona_state:true,accept_purge_state:true,accept_integrity_state:true,accept_self_integrity:true},context)
   return{...imported,source_snapshot:prepared.snapshot,legacy_self_files:prepared.legacy,legacy_policy:'preserved_opaque_not_loaded'}
  }catch(error){return failure(error,operationId)}finally{release?.()}

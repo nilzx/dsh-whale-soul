@@ -382,9 +382,10 @@ export class MemoryTransfer {
   #limits
   #importGuard
   #beforeSourceRecheck
+  #sourceProtectionBuilder
   #finalImportAuthorize
 
-  constructor({ store, importGuard, beforeSourceRecheck, finalImportAuthorize, maxFiles = 10_000, maxBytes = 64 * 1024 * 1024, maxFileBytes = 8 * 1024 * 1024 }) {
+  constructor({ store, importGuard, beforeSourceRecheck, finalImportAuthorize, sourceProtectionBuilder, maxFiles = 10_000, maxBytes = 64 * 1024 * 1024, maxFileBytes = 8 * 1024 * 1024 }) {
     if (typeof store?.managedRead !== 'function' || typeof store?.managedTransaction !== 'function') throw new MemoryError('MANAGED_MEMORY_REQUIRED')
     this.#store = store
     this.#limits = { maxFiles, maxBytes, maxFileBytes }
@@ -392,6 +393,8 @@ export class MemoryTransfer {
     this.#beforeSourceRecheck = beforeSourceRecheck
     if (finalImportAuthorize !== undefined && typeof finalImportAuthorize !== 'function') throw new MemoryError('TRUSTED_AUTHORIZER_REQUIRED')
     this.#finalImportAuthorize = finalImportAuthorize
+    if (sourceProtectionBuilder !== undefined && typeof sourceProtectionBuilder !== 'function') throw new MemoryError('TRUSTED_AUTHORIZER_REQUIRED')
+    this.#sourceProtectionBuilder = sourceProtectionBuilder
   }
 
   async exportSpace(args, context) {
@@ -486,7 +489,7 @@ export class MemoryTransfer {
         changes.push({ path: 'index/records.json', data: json(this.#store._index(merged, watermark)) })
       }
       if (recheckSource) await recheckSource()
-      return { changes, ...(self.imports.length ? { self_imports: self.imports } : {}), ...(descriptor ? { purge_descriptor: descriptor } : {}), ...(persona.descriptors.length ? { persona_descriptors: persona.descriptors } : {}), ...(recordDescriptors.length ? { record_descriptors: recordDescriptors } : {}), ...(recordImports.length ? { record_imports: recordImports } : {}), result: { api_version: API_VERSION, operation_id: operationId, status: changes.length ? 'committed' : 'unchanged', reason_code: 'OK', imported_files: decoded.files.length, record_ids: decoded.records.map((meta) => meta.record_id), pending_record_ids: (archive.integrity_state?.heads ?? []).filter((head) => head.state === 'quarantined').map((head) => head.record_id), omitted_pending_ids: archive.integrity_state?.omitted_pending_ids ?? [], checksum: archive.checksum, revision_watermark: watermark, purge_generation: state.generation, pending: false } }
+      return { changes, ...(this.#sourceProtectionBuilder ? { source_protection_descriptor: this.#sourceProtectionBuilder() } : {}), ...(self.imports.length ? { self_imports: self.imports } : {}), ...(descriptor ? { purge_descriptor: descriptor } : {}), ...(persona.descriptors.length ? { persona_descriptors: persona.descriptors } : {}), ...(recordDescriptors.length ? { record_descriptors: recordDescriptors } : {}), ...(recordImports.length ? { record_imports: recordImports } : {}), result: { api_version: API_VERSION, operation_id: operationId, status: changes.length ? 'committed' : 'unchanged', reason_code: 'OK', imported_files: decoded.files.length, record_ids: decoded.records.map((meta) => meta.record_id), pending_record_ids: (archive.integrity_state?.heads ?? []).filter((head) => head.state === 'quarantined').map((head) => head.record_id), omitted_pending_ids: archive.integrity_state?.omitted_pending_ids ?? [], checksum: archive.checksum, revision_watermark: watermark, purge_generation: state.generation, pending: false } }
     }, context, { authorize: () => this.#finalImportAuthorize?.() })
   }
 

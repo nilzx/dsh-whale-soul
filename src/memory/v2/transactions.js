@@ -1,3 +1,4 @@
+import { commitSourceProtection, validateSourceProtectionDescriptor } from './source-protection.js'
 import { randomUUID } from 'node:crypto'
 import { hostname } from 'node:os'
 import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
@@ -189,6 +190,7 @@ export class TransactionEngine {
     if (transaction.purge_descriptor) this._checkpoint('after_purge_ledger', { operation_id: transaction.operation_id })
     commitSessionDescriptor(this.lockRoot, this.root, transaction.session_descriptor, atomicWrite)
     if (transaction.session_descriptor) this._checkpoint('after_session_ledger', { operation_id: transaction.operation_id })
+    if (transaction.source_protection_descriptor) commitSourceProtection(this.lockRoot, transaction.source_protection_descriptor, atomicWrite, phase => this._checkpoint(phase, { operation_id: transaction.operation_id }))
     if (transaction.root_upgrade) applyRootUpgrade(this.lockRoot, transaction.root_upgrade, atomicWrite)
     const purgeState = getPurgeState(this.lockRoot, this.memorySpaceId)
     const external = transaction.external_descriptor
@@ -303,6 +305,7 @@ export class TransactionEngine {
       if (!built || !Array.isArray(built.changes)) throw new MemoryError('INVALID_TRANSACTION')
       built = { ...built, ...prepareSelfTransaction(this.lockRoot, this.memorySpaceId, built, operationId, getPurgeState(this.lockRoot, this.memorySpaceId)) }
       for (const descriptor of built.self_descriptors) validateSelfDescriptor(descriptor)
+      if (built?.source_protection_descriptor) validateSourceProtectionDescriptor(built.source_protection_descriptor)
       if (built?.session_descriptor) validateSessionDescriptor(built.session_descriptor)
       if (built?.purge_descriptor) validateManagedPurgeArtifacts(this.lockRoot, this.memorySpaceId)
       if (!built || !Array.isArray(built.changes)) throw new MemoryError('INVALID_TRANSACTION')
@@ -333,6 +336,7 @@ export class TransactionEngine {
         ...(built.record_imports ? { record_imports: built.record_imports } : {}),
         ...(built.external_descriptor ? { external_descriptor: built.external_descriptor } : {}),
         ...(built.root_upgrade ? { root_upgrade: built.root_upgrade } : {}),
+        ...(built.source_protection_descriptor ? { source_protection_descriptor: built.source_protection_descriptor } : {}),
         receipt: { operation_id: operationId, request_hash: requestHash, result: built.result },
       }
       const path = this.resolvePath(`journal/${transaction.transaction_id}`)

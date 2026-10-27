@@ -1,3 +1,4 @@
+import { sourceProtectionSnapshot } from './source-protection.js'
 import { lstatSync, readFileSync, readdirSync } from 'node:fs'
 import { dirname, join, parse, resolve } from 'node:path'
 import { FORMAT_VERSION, RECORD_SCHEMA_VERSION, API_VERSION, MemoryError, assertId, digest } from './contracts.js'
@@ -126,6 +127,7 @@ export function inspectMemoryRoot(root, memorySpaceId) {
   if (manifest.api_version === undefined || manifest.api_version === '1.0.0') throw new MemoryError('INTEGRITY_BASELINE_REQUIRED')
   if (manifest.api_version === '1.1.0') throw new MemoryError('SELF_INTEGRITY_UPGRADE_REQUIRED', 'Preserve this root and use the local owner upgrade-self command with a separate destination root. Existing unanchored self growth is not adopted automatically.')
   if (manifest.api_version !== API_VERSION) throw new MemoryError('UNSUPPORTED_API_VERSION')
+  sourceProtectionSnapshot(root)
   if (manifest.record_schema_versions !== undefined && (!Array.isArray(manifest.record_schema_versions) || !manifest.record_schema_versions.length || manifest.record_schema_versions.some((version) => version !== RECORD_SCHEMA_VERSION))) throw new MemoryError('UNSUPPORTED_RECORD_SCHEMA')
   if (names.some((name) => legacyMarkers.has(name))) throw new MemoryError('MIXED_MEMORY_ROOT', 'Mixed legacy and v2 memory found. Preserve this root and use an explicit owner recovery workflow; do not delete manifests.')
   const spaceRoot = join(root, 'spaces', memorySpaceId), spaceStat = safeStat(spaceRoot), listed = manifest.spaces.includes(memorySpaceId)

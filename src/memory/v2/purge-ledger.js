@@ -1,3 +1,4 @@
+import { validateSourceProtectionDescriptor } from './source-protection.js'
 import { validateImportedSelfDescriptor, prunePortableSelfArchive, isGrowthSelfPath } from './self-transfer.js'
 import { validateSelfDescriptor, decodeSelfSnapshot, filterSelfSnapshot } from './self-integrity.js'
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs'
@@ -167,7 +168,7 @@ function walkFiles(root, callback, prefix = '') {
 function managedJournal(name, spaceId) { return name.split('/').includes(spaceId) && /(?:^|\/)journal\/[^/]+\/prepared\.json$/.test(name) }
 function validateJournal(value) {
   try {
-    assertOnly(value, ['transaction_id','operation_id','receipt_key','generation','changes','purge_descriptor','persona_descriptor','persona_descriptors','session_descriptor','record_descriptors','record_imports','self_descriptors','self_imports','external_descriptor','root_upgrade','receipt'])
+    assertOnly(value, ['transaction_id','operation_id','receipt_key','generation','changes','purge_descriptor','persona_descriptor','persona_descriptors','session_descriptor','record_descriptors','record_imports','self_descriptors','self_imports','external_descriptor','root_upgrade','source_protection_descriptor','receipt'])
     assertId(value.transaction_id);assertId(value.operation_id)
     if (!/^[a-f0-9]{64}$/.test(value.receipt_key) || !Number.isSafeInteger(value.generation) || value.generation < 0 || !Array.isArray(value.changes)) throw new Error()
     for (const change of value.changes) {
@@ -175,6 +176,7 @@ function validateJournal(value) {
       if (typeof change.path !== 'string' || isAbsolute(change.path) || change.path.includes('\\') || change.path.split('/').some((part)=>!part||part==='.'||part==='..')) throw new Error()
       if (change.data !== null && (typeof change.data !== 'string' || Buffer.from(change.data,'base64').toString('base64') !== change.data)) throw new Error()
     }
+    if (value.source_protection_descriptor) validateSourceProtectionDescriptor(value.source_protection_descriptor)
     if (value.session_descriptor) validateSessionDescriptor(value.session_descriptor)
     for (const descriptor of value.self_imports ?? []) validateImportedSelfDescriptor(descriptor)
     for (const descriptor of value.self_descriptors ?? []) validateSelfDescriptor(descriptor)

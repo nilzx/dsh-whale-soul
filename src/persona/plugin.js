@@ -1,3 +1,4 @@
+import { protectMigrationSources } from './source-protection.js'
 import { fileURLToPath } from 'node:url'
 import { mkdirSync } from 'node:fs'
 import { resolveMemoryRoot } from '../paths.js'
@@ -32,7 +33,7 @@ export async function installPersonaPlugin(ctx, config = {}, host) {
   ctx.effect(() => () => observer.dispose(), 'whale-soul.persona.session-observer()')
   const root = resolveMemoryRoot(config)
   mkdirSync(root, { recursive: true, mode: 0o700 })
-  const resolvePrivateRoots = createHostPrivateRoots(ctx, host.privateRootBindings)
+  const resolvePrivateRoots = protectMigrationSources(createHostPrivateRoots(ctx, host.privateRootBindings), root)
   const protection = createHostProtection(ctx, { protectedRoots: [fileURLToPath(new URL('../..', import.meta.url)), root],
     resolvePrivateRoots, writableRoots: host.writableRoots, readTools: ['read', 'read_image', 'glob', 'grep'], serviceTools })
   protection.install()

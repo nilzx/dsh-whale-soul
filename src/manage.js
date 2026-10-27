@@ -142,7 +142,7 @@ function validateRoot(root, space, allowNew) {
   const administration = join(root, '.administration')
   if (existsSync(administration)) {
     if (!leaf(administration).isDirectory()) fail('INVALID_ADMINISTRATION_ROOT')
-    if (readdirSync(administration).some((entry) => !['purge-ledger.json', 'persona-ledger.json', 'session-bindings.json', 'record-heads', 'self-heads', 'repair.lock'].includes(entry))) fail('UNSUPPORTED_MANAGED_REFERENCE')
+    if (readdirSync(administration).some((entry) => !['purge-ledger.json', 'persona-ledger.json', 'session-bindings.json', 'record-heads', 'self-heads', 'source-protection.json', 'repair.lock'].includes(entry))) fail('UNSUPPORTED_MANAGED_REFERENCE')
   }
   const journal = join(root, 'spaces', space, 'journal')
   if (existsSync(journal) && readdirSync(journal).length) fail('MANAGEMENT_RECOVERY_REQUIRED')
@@ -171,7 +171,7 @@ function snapshot(root, space) {
     if (limits.bytes > 256 * 1024 * 1024 || limits.files > 20000) fail('MANAGEMENT_PREVIEW_BUDGET_EXCEEDED')
     entries.push({ path: relativePath, data, sha256: hash(data) })
   }
-  for (const path of ['manifest.json', '.administration/purge-ledger.json', '.administration/persona-ledger.json', '.administration/session-bindings.json', '.administration/record-heads', '.administration/self-heads', `spaces/${space}`, 'exports', 'backups']) walk(path)
+  for (const path of ['manifest.json', '.administration/purge-ledger.json', '.administration/persona-ledger.json', '.administration/session-bindings.json', '.administration/record-heads', '.administration/self-heads', '.administration/source-protection.json', `spaces/${space}`, 'exports', 'backups']) walk(path)
   return { entries, checksum: hash(JSON.stringify(entries.map(({ path, sha256 }) => ({ path, sha256 })))) }
 }
 async function services(root, space) {
