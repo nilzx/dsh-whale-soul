@@ -1,4 +1,5 @@
 import { registerMemoryStoreWriter } from './maintenance-writers.js'
+import { repairSourceProtectionMarker } from './source-protection.js'
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -48,13 +49,14 @@ export class MemoryStoreV2 {
       const { rootManifest, spaceManifest: manifest } = inspectMemoryRoot(this.root, this.memorySpaceId)
       const rootManifestPath = join(this.root, 'manifest.json')
       this.engine.resolvePath('manifest.json')
-      for (const path of Object.values(this.paths)) mkdirSync(path, { recursive: true, mode: 0o700 })
+      for (const path of [...Object.values(this.paths), this.engine.resolvePath('cold/records')]) mkdirSync(path, { recursive: true, mode: 0o700 })
       const manifestPath = join(this.spaceRoot, 'manifest.json')
       const now = new Date().toISOString()
       if (!manifest) atomicWrite(manifestPath, json({ format_version: FORMAT_VERSION, memory_space_id: this.memorySpaceId, revision_watermark: 0, purge_generation: 0, created_at: now, identities: {}, migrations: [] }))
       const spaces = [...new Set([...(rootManifest?.spaces ?? []), this.memorySpaceId])].sort()
       atomicWrite(rootManifestPath, json(rootManifest ? { ...rootManifest, spaces } : { format_version: FORMAT_VERSION, api_version: API_VERSION, record_schema_versions: [RECORD_SCHEMA_VERSION], spaces, created_at: now }))
       this.engine._recover()
+      repairSourceProtectionMarker(this.root, atomicWrite)
       reconcilePurgeState(this.root, this.spaceRoot, atomicWrite)
       reconcileMaintenanceState(this.root, this.spaceRoot, atomicWrite)
       this._rebuildIndex()

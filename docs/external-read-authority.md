@@ -1,0 +1,32 @@
+# Owner-reviewed quotation reads
+
+This optional file-provider extension connects approved external **record** edits to persona reads. It grants no management, interaction, maturity, or growth authority. Self/core integrity and protected user corrections remain separate work.
+
+`createExternalReadAuthority({store,maxRecords:10})` prepares a synchronous, immutable lease from an actual `memory.read` context. Discovery first uses a bounded neutral authorized/retention-filtered catalog, before the persona rejects unknown evidence. It never accepts a model-selected filesystem root or falls back to `memory.manage`.
+
+```js
+const authority = createExternalReadAuthority({ store })
+const lease = await authority.prepare({ query: 'colour', limit: 8 }, context, {
+  signal,
+  authorize: () => hostAgentAndProviderStillCurrent(),
+})
+lease.evidenceAllowed(evidenceId, context, frozenMeta) // synchronous boolean
+lease.recordAllowed(authorizedRecord, context)        // synchronous boolean
+lease.isCurrent()                                    // synchronous boolean
+```
+
+Each lease verifies a clean root head, current bundle hashes, original scope, visibility, active time, purge generation, and retention. Only an anchored `owner_external_edit` quotation with its exact patch hash, deterministic evidence ID and committed revision is approved. An `owner_restore` quotation must trace to that real adopted revision. Restoring native user evidence does not grant an exception to its original revocation policy. Historical quotations are deliberately not promoted by a current lease. Unknown sidecars, copied contexts, JSON-cloned leases and self-reported flags cannot acquire authority.
+
+The runtime composes these leases with its existing native/image evidence policies for automatic context, recall and offered correction slots. The same total 2400 UTF16 context budget remains in force. Loaded rows identify their source as `owner_reviewed_quotation`. Reading or owner review does not update the current-message save receipt or persona maturity.
+
+## Final main-request boundary
+
+Approved owner data uses the distinct host context name `whale-soul:owner-reviewed-memory`; the combined memory context occupies either that section or the ordinary memory section, never two independent 2400-unit budgets. The host's actual `isAgentLoopRequest` function distinguishes official main envelopes from read-only selector/reflector calls. `installPersonaPlugin` factory callers must supply this public rc.3 binding; production `apply()` imports it directly.
+
+The dispatcher checks the deep-frozen branded envelope and binds each exact request/section reference to the issued read lease. It checks again before iterator entry and each streamed result. A newly prepared cache cannot silently rebind an already checked old request. User text containing the section name is ordinary user data; it cannot mint a host runtime snapshot.
+
+Official rc.3 retains older runtime-context snapshots in the Session. Unknown or invalid older owner-review sections therefore fail closed before `adapter.stream`, even if the current context is empty or contains a newer valid revision. This implementation **does not delete old Session history** or claim complete transcript cleanup. A stale/unknown retained owner section, process restart, a bounded lease registry or expiry may require a new Session. Native-history cleanup and a managed surface-replacement workflow remain unimplemented; this conservative behavior must not be described as a complete user-correction journey.
+
+The live provider identity is also checked through a trusted host callback; disposal or replacement cannot keep old cached owner reads active. No error body needs to contain file paths, credentials, record contents or provider secrets.
+
+中文摘要：所有者审核后的事实按“人工审核引用”读取，仍受身份、时间、清除、不记和敏感门阀约束，不能变成人格成长依据。官方会保留旧动态快照；旧的人工事实快照失效时，本阶段在主模型入口拒绝请求，可能需要新会话。尚未做历史净化或受保护事实的真实用户窄更正，不声称完整旅程已通过。

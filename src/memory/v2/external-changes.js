@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readdirSync } from 'node:fs'
 import { join, parse, resolve, sep } from 'node:path'
 import { API_VERSION, MemoryError, assertId, assertOnly, digest, failure, stableStringify } from './contracts.js'
-import { buildRecordDescriptor, buildRecordStateDescriptor, loadRecordHead, recordBundlePath, recordBundleHash, verifyRecordBundle } from './record-integrity.js'
+import { buildRecordDescriptor, buildRecordStateDescriptor, loadRecordHead, recordBundlePath, recordBundleHash, validateRecordHead, verifyRecordBundle } from './record-integrity.js'
 import { RECORD_FILES, readBundleAt } from './integrity-transaction.js'
 import { getPurgeState } from './purge-ledger.js'
 import { retentionBlockReason } from './retention.js'
@@ -11,6 +11,7 @@ import { recordRetentionAllowed } from './read-policy.js'
 const json = (value) => `${JSON.stringify(value, null, 2)}\n`
 const clone = (value) => JSON.parse(JSON.stringify(value))
 const fail = (code) => { throw new MemoryError(code) }
+const RECORD_BASELINE_API_VERSION = '1.1.0'
 const allowedFields = ['title', 'tags', 'gist', 'detail']
 const metadataFields = new Set(['schema_version', 'record_id', 'revision_id', 'revision', 'memory_space_id', 'subject_id', 'actor_ids', 'persona_id', 'agent_identity_id', 'created_at', 'observed_at', 'updated_at', 'valid_from', 'valid_to', 'expires_at', 'retention', 'claim_kind', 'confidence', 'title', 'type', 'tags', 'canonical_key', 'provenance_refs', 'visibility', 'pinned', 'status', 'supersedes', 'revision_history', 'layers', 'assets', 'asset_metadata_hash', 'legacy', 'external_revision', 'lifecycle', 'agreement'])
 const bytes = (value) => Buffer.isBuffer(value) ? value : Buffer.from(value)
@@ -49,24 +50,33 @@ export class MemoryExternalChanges {
     this.maxSnapshotBytes = Math.min(maxSnapshotBytes, 16 * 1024 * 1024)
   }
 
-  #authorize(ctx, bootstrap = false, signal = null) {
+  #authorize(ctx, bootstrap = false, signal = null, authorize = null) {
     if (signal?.aborted) fail('OPERATION_CANCELLED')
-    if (!bootstrap) return this.store._authorize(ctx, 'memory.manage')
-    if (!ctx || !this.store.contexts.has(ctx)) fail('UNTRUSTED_CONTEXT')
-    if (!ctx.capabilities.includes('memory.manage')) fail('CAPABILITY_DENIED')
-    if (Date.parse(ctx.expires_at) <= Date.now()) fail('CONTEXT_EXPIRED')
+    if (!bootstrap) this.store._authorize(ctx, 'memory.manage')
+    else {
+      if (!ctx || !this.store.contexts.has(ctx)) fail('UNTRUSTED_CONTEXT')
+      if (!ctx.capabilities.includes('memory.manage')) fail('CAPABILITY_DENIED')
+      if (Date.parse(ctx.expires_at) <= Date.now()) fail('CONTEXT_EXPIRED')
+    }
+    if (authorize !== null) {
+      if (typeof authorize !== 'function') fail('TRUSTED_AUTHORIZER_REQUIRED')
+      let decision
+      try { decision = authorize() } catch { fail('HOST_AUTHORIZATION_DENIED') }
+      if (decision && typeof decision.then === 'function') { Promise.resolve(decision).catch(() => {}); fail('ASYNC_AUTHORIZER_UNSUPPORTED') }
+      if (decision !== true) fail('HOST_AUTHORIZATION_DENIED')
+    }
     return ctx
   }
 
   #path(relativePath) { return this.store.engine.resolvePath(relativePath) }
-  #read(relativePath) {
+  #read(relativePath, maxBytes = this.maxFileBytes) {
     const path = this.#path(relativePath)
     let fd
     try {
       fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
       const before = fstatSync(fd)
       if (!before.isFile() || before.nlink !== 1) fail('UNSAFE_EXTERNAL_FILE')
-      if (before.size > this.maxFileBytes) fail('EXTERNAL_SNAPSHOT_BUDGET_EXCEEDED')
+      if (before.size > maxBytes) fail('EXTERNAL_SNAPSHOT_BUDGET_EXCEEDED')
       const data = readFileSync(fd), after = fstatSync(fd)
       if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs || data.length !== after.size) fail('EXTERNAL_SOURCE_UNSTABLE')
       return data
@@ -164,21 +174,67 @@ export class MemoryExternalChanges {
     return null
   }
 
-  async establishBaseline(args, ctx, { signal = null } = {}) {
+  // Only the owner may resume this exact records-only bootstrap transaction.
+  async #recoverBaseline(operationId, snapshot, ctx, signal, authorize) {
+    if (!/^[a-f0-9]{64}$/.test(snapshot)) fail('BASELINE_SNAPSHOT_CONFLICT')
+    const journal = this.#path('journal'), receiptPath = `operations/${digest(operationId)}.json`
+    if (!readdirSync(journal).length && !existsSync(this.#path(receiptPath))) return null
+    const requestHash = digest({ action: 'establishIntegrityBaseline', source_snapshot: snapshot })
+    const receipt = (value) => {
+      assertOnly(value, ['operation_id', 'request_hash', 'result'])
+      assertOnly(value.result, ['api_version', 'operation_id', 'status', 'reason_code', 'record_ids', 'affected_ids', 'source_snapshot', 'source_quiescence', 'pending'])
+      if (!['1.1.0', API_VERSION].includes(value.result.api_version) || value.result.source_quiescence !== 'owner_declared' || !Array.isArray(value.result.record_ids) || new Set(value.result.record_ids).size !== value.result.record_ids.length || digest([...value.result.record_ids].sort()) !== digest([...(value.result.affected_ids ?? [])].sort())) fail('OPERATION_CONFLICT')
+      value.result.record_ids.forEach(id => assertId(id))
+      if (value.operation_id !== operationId || value.request_hash !== requestHash || value.result?.reason_code !== 'BASELINE_ESTABLISHED' ||
+        value.result.operation_id !== operationId || value.result.source_snapshot !== snapshot || value.result.status !== 'committed' || value.result.pending !== false) fail('OPERATION_CONFLICT')
+      return { ...value.result, replayed: true }
+    }
+    return this.store.engine.locked(() => {
+      this.#authorize(ctx, true, signal, authorize)
+      const entries = readdirSync(journal, { withFileTypes: true })
+      if (entries.length > 1) fail('BASELINE_RECOVERY_REQUIRED')
+      for (const entry of entries) {
+        try {
+          if (!entry.isDirectory() || entry.isSymbolicLink()) fail('BASELINE_RECOVERY_REQUIRED')
+          const id = assertId(entry.name), base = `journal/${id}`, value = JSON.parse(decode(this.#read(`${base}/prepared.json`, 64 * 1024 * 1024)))
+          assertOnly(value, ['transaction_id', 'operation_id', 'receipt_key', 'generation', 'changes', 'record_descriptors', 'root_upgrade', 'receipt'])
+          if (value.transaction_id !== id || value.operation_id !== operationId || value.receipt_key !== digest(operationId) || !Number.isSafeInteger(value.generation) || value.generation < 0 || !Array.isArray(value.changes) || value.changes.length || !Array.isArray(value.record_descriptors)) fail('BASELINE_RECOVERY_REQUIRED')
+          assertOnly(value.root_upgrade, ['expected_hash', 'manifest'])
+          if (!/^[a-f0-9]{64}$/.test(value.root_upgrade.expected_hash) || value.root_upgrade.manifest?.format_version !== 2 || value.root_upgrade.manifest.api_version !== RECORD_BASELINE_API_VERSION || digest(value.root_upgrade.manifest.spaces) !== digest([this.store.memorySpaceId])) fail('BASELINE_RECOVERY_REQUIRED')
+          receipt(value.receipt)
+          const generations = new Map()
+          for (const descriptor of value.record_descriptors) {
+            assertOnly(descriptor, ['expected_generation', 'next']); validateRecordHead(descriptor.next)
+            const head = descriptor.next, expected = generations.get(head.record_id) ?? 0
+            if (head.memory_space_id !== this.store.memorySpaceId || head.state !== 'clean' || head.change_id !== null || descriptor.expected_generation !== expected || head.generation !== expected + 1) fail('BASELINE_RECOVERY_REQUIRED')
+            generations.set(head.record_id, head.generation)
+          }
+          const ids = [...generations.keys()].sort(), result = value.receipt.result
+          if (digest(ids) !== digest([...(result.record_ids ?? [])].sort()) || digest(ids) !== digest([...(result.affected_ids ?? [])].sort())) fail('BASELINE_RECOVERY_REQUIRED')
+          if (existsSync(this.#path(`${base}/COMMIT`)) && decode(this.#read(`${base}/COMMIT`)) !== id) fail('BASELINE_RECOVERY_REQUIRED')
+        } catch { fail('BASELINE_RECOVERY_REQUIRED') }
+      }
+      this.store.engine._recover()
+      this.#authorize(ctx, true, signal, authorize)
+      if (existsSync(this.#path(receiptPath))) {
+        if (JSON.parse(decode(this.#rootFile('manifest.json'))).api_version !== RECORD_BASELINE_API_VERSION) fail('BASELINE_RECOVERY_REQUIRED')
+        return receipt(JSON.parse(decode(this.#read(receiptPath))))
+      }
+      return null // An exact PREPARE without COMMIT was discarded; rescan the source.
+    })
+  }
+
+  async establishBaseline(args, ctx, { signal = null, authorize = null } = {}) {
     const operationId = args?.operation_id ?? randomUUID()
     try {
-      this.#authorize(ctx, true, signal)
+      this.#authorize(ctx, true, signal, authorize)
       assertOnly(args, ['operation_id', 'dry_run', 'source_quiescent', 'expected_snapshot'])
       if (args.source_quiescent !== true) fail('SOURCE_QUIESCENCE_REQUIRED')
-      const rootBytes = this.#rootFile('manifest.json'), manifest = JSON.parse(decode(rootBytes))
-      if (manifest.api_version === API_VERSION && args.dry_run === false && args.expected_snapshot) {
-        const path = this.#path(`operations/${digest(operationId)}.json`)
-        if (existsSync(path)) {
-          const receipt = JSON.parse(decode(this.#read(`operations/${digest(operationId)}.json`)))
-          if (receipt.operation_id !== operationId || receipt.request_hash !== digest({ action: 'establishIntegrityBaseline', source_snapshot: args.expected_snapshot }) || receipt.result?.reason_code !== 'BASELINE_ESTABLISHED') fail('OPERATION_CONFLICT')
-          return { ...receipt.result, replayed: true }
-        }
+      if (args.dry_run === false && args.expected_snapshot) {
+        const recovered = await this.#recoverBaseline(operationId, args.expected_snapshot, ctx, signal, authorize)
+        if (recovered) return recovered
       }
+      const rootBytes = this.#rootFile('manifest.json'), manifest = JSON.parse(decode(rootBytes))
       if (manifest.format_version !== 2 || manifest.api_version !== '1.0.0') fail('BASELINE_REQUIRES_LEGACY_V2_API')
       if (!Array.isArray(manifest.spaces) || manifest.spaces.length !== 1 || manifest.spaces[0] !== this.store.memorySpaceId) fail('MULTISPACE_BASELINE_REQUIRED')
       if (existsSync(join(this.store.root, '.writer.lock')) || existsSync(join(this.store.root, '.writer-recovery.lock'))) fail('WRITER_BUSY')
@@ -209,11 +265,11 @@ export class MemoryExternalChanges {
         source[`${id}/current`] = recordBundleHash(files); ids.push(id)
       }
       const snapshot = digest(source)
-      this.#authorize(ctx, true)
+      this.#authorize(ctx, true, signal, authorize)
       if (args.dry_run !== false) return { api_version: API_VERSION, status: 'preview', source_snapshot: snapshot, record_ids: ids, record_count: ids.length, writes: false, source_quiescence: 'owner_declared' }
       if (args.expected_snapshot !== snapshot) fail('BASELINE_SNAPSHOT_CONFLICT')
       const check = () => {
-        this.#authorize(ctx, true, signal)
+        this.#authorize(ctx, true, signal, authorize)
         if (digest(this.#rootFile('manifest.json')) !== source['root-manifest']) fail('BASELINE_SNAPSHOT_CONFLICT')
         for (const [path, hash] of Object.entries(source)) {
           if (path === 'root-manifest') continue
@@ -225,16 +281,16 @@ export class MemoryExternalChanges {
       }
       return await this.store.engine.run(operationId, { action: 'establishIntegrityBaseline', source_snapshot: snapshot }, () => {
         check()
-        return { changes: [], record_descriptors: descriptors, root_upgrade: { expected_hash: source['root-manifest'], manifest: { ...manifest, api_version: API_VERSION } },
+        return { changes: [], record_descriptors: descriptors, root_upgrade: { expected_hash: source['root-manifest'], manifest: { ...manifest, api_version: RECORD_BASELINE_API_VERSION } },
           result: { api_version: API_VERSION, operation_id: operationId, status: 'committed', reason_code: 'BASELINE_ESTABLISHED', record_ids: ids, affected_ids: ids, source_snapshot: snapshot, source_quiescence: 'owner_declared', pending: false } }
       }, { authorize: check })
     } catch (error) { return failure(error, operationId) }
   }
 
-  async scan(args = {}, ctx, { signal = null } = {}) {
+  async scan(args = {}, ctx, { signal = null, authorize = null } = {}) {
     const operationId = args.operation_id ?? randomUUID()
     try {
-      this.#authorize(ctx, false, signal)
+      this.#authorize(ctx, false, signal, authorize)
       assertOnly(args, ['operation_id', 'record_ids', 'capture', 'limit', 'cursor'])
       if (args.capture !== undefined && typeof args.capture !== 'boolean') fail('INVALID_CAPTURE_OPTION')
       const limit = args.limit ?? 100, offset = args.cursor === undefined ? 0 : Number(args.cursor)
@@ -248,7 +304,7 @@ export class MemoryExternalChanges {
       all.forEach((id) => assertId(id))
       const items = []
       for (const id of [...all].sort().slice(offset, offset + limit)) {
-        this.#authorize(ctx, false, signal)
+        this.#authorize(ctx, false, signal, authorize)
         let head
         try { head = this.#head(id) } catch (error) { items.push({ record_id: id, status: 'unavailable', reason_code: error.code }); continue }
         const located = recordBundlePath(head), current = this.#path(located)
@@ -269,7 +325,7 @@ export class MemoryExternalChanges {
           snapshot_safe: observed.snapshot_safe === true, file_hashes: observed.hashes ?? Object.fromEntries(RECORD_FILES.map((name) => [name, null])), source_identity: observed.identity, created_at: new Date().toISOString(), purge_generation: getPurgeState(this.store.root, this.store.memorySpaceId).generation }
         const currentHead = head
         const check = () => {
-          this.#authorize(ctx, false, signal)
+          this.#authorize(ctx, false, signal, authorize)
           const fresh = this.#head(id)
           if (fresh.generation !== currentHead.generation) fail('EXTERNAL_HEAD_CONFLICT')
           if (this.#observe(base).observed_hash !== observed.observed_hash) fail('EXTERNAL_SOURCE_UNSTABLE')
@@ -287,14 +343,14 @@ export class MemoryExternalChanges {
         }, ctx, { authorize: check })
         items.push(result)
       }
-      this.#authorize(ctx)
+      this.#authorize(ctx, false, signal, authorize)
       return { api_version: API_VERSION, status: 'ok', items, cursor: offset + limit < all.length ? String(offset + limit) : null }
     } catch (error) { return failure(error, operationId) }
   }
 
-  async list(args = {}, ctx, { signal = null } = {}) {
+  async list(args = {}, ctx, { signal = null, authorize = null } = {}) {
     try {
-      this.#authorize(ctx, false, signal); assertOnly(args, ['limit', 'cursor', 'include_resolved'])
+      this.#authorize(ctx, false, signal, authorize); assertOnly(args, ['limit', 'cursor', 'include_resolved'])
       const limit = args.limit ?? 100, offset = args.cursor === undefined ? 0 : Number(args.cursor)
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100 || !Number.isSafeInteger(offset) || offset < 0) fail('INVALID_SCAN_BUDGET')
       const rows = []
@@ -312,7 +368,7 @@ export class MemoryExternalChanges {
           } catch (error) { rows.push({ change_id: change.name, record_id: record.name, status: 'invalid', reason_code: error instanceof MemoryError ? error.code : 'EXTERNAL_CHANGE_INVALID' }) }
         }
       }
-      rows.sort((a, b) => a.change_id.localeCompare(b.change_id)); this.#authorize(ctx)
+      rows.sort((a, b) => a.change_id.localeCompare(b.change_id)); this.#authorize(ctx, false, signal, authorize)
       return { api_version: API_VERSION, status: 'ok', items: rows.slice(offset, offset + limit), cursor: offset + limit < rows.length ? String(offset + limit) : null }
     } catch (error) { return failure(error) }
   }
@@ -350,15 +406,15 @@ export class MemoryExternalChanges {
     return { entry, head, base, candidates, diff, rejected, review_digest: digestValue }
   }
 
-  async preview(args, ctx, { signal = null } = {}) {
+  async preview(args, ctx, { signal = null, authorize = null } = {}) {
     try {
-      this.#authorize(ctx, false, signal); assertOnly(args, ['change_id', 'expected_observed_hash'])
+      this.#authorize(ctx, false, signal, authorize); assertOnly(args, ['change_id', 'expected_observed_hash'])
       const entry = this.#change(args.change_id), head = this.#head(entry.record_id)
       if (head.state !== 'quarantined' || head.change_id !== entry.change_id) fail('EXTERNAL_REVIEW_STALE')
       if (args.expected_observed_hash !== entry.observed_hash) fail('EXTERNAL_OBSERVATION_CONFLICT')
       const data = this.#preview(entry, head)
       if (stableStringify(data.diff).length > 16000) fail('PREVIEW_BUDGET_EXCEEDED')
-      this.#authorize(ctx)
+      this.#authorize(ctx, false, signal, authorize)
       return { api_version: API_VERSION, status: 'review_required', ...this.#summary(entry), review_digest: data.review_digest,
         head_revision_id: head.head_revision_id, head_generation: head.generation, diff: clone(data.diff), rejection_reasons: data.rejected,
         allowed_actions: data.rejected.length || data.base.revision_id !== head.head_revision_id ? ['restore'] : ['adopt', 'restore'],
@@ -366,10 +422,10 @@ export class MemoryExternalChanges {
     } catch (error) { return failure(error) }
   }
 
-  async resolve(args, ctx, { signal = null } = {}) {
+  async resolve(args, ctx, { signal = null, authorize = null } = {}) {
     const operationId = args?.operation_id ?? randomUUID()
     try {
-      this.#authorize(ctx, false, signal)
+      this.#authorize(ctx, false, signal, authorize)
       assertOnly(args, ['operation_id', 'change_id', 'action', 'review_digest', 'expected_change_revision', 'expected_head_revision_id', 'expected_observed_hash', 'fields', 'restore_revision_id'])
       if (!['adopt', 'restore'].includes(args.action)) fail('INVALID_REVIEW_ACTION')
       const receiptPath = this.#path(`operations/${digest(operationId)}.json`)
@@ -383,7 +439,7 @@ export class MemoryExternalChanges {
       const entry = this.#change(args.change_id), head = this.#head(entry.record_id)
       const data = this.#preview(entry, head)
       const check = () => {
-        this.#authorize(ctx, false, signal)
+        this.#authorize(ctx, false, signal, authorize)
         const fresh = this.#head(entry.record_id)
         if (fresh.state !== 'quarantined' || fresh.change_id !== entry.change_id || fresh.generation !== head.generation || fresh.head_revision_id !== args.expected_head_revision_id ||
           args.expected_change_revision !== entry.change_revision || args.expected_observed_hash !== entry.observed_hash || this.#preview(entry, fresh).review_digest !== args.review_digest) fail('EXTERNAL_REVIEW_CONFLICT')

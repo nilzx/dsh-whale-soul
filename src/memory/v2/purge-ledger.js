@@ -1,3 +1,6 @@
+import { validateSourceProtectionDescriptor } from './source-protection.js'
+import { validateImportedSelfDescriptor, prunePortableSelfArchive, isGrowthSelfPath } from './self-transfer.js'
+import { validateSelfDescriptor, decodeSelfSnapshot, filterSelfSnapshot } from './self-integrity.js'
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { MemoryError, assertId, assertOnly, digest } from './contracts.js'
@@ -118,7 +121,7 @@ function sanitizeSelfManifest(value, exists) {
     for (const key of Object.keys(next.maintenance)) {
       if (!Array.isArray(next.maintenance[key])) continue
       const before = next.maintenance[key]
-      const after = before.filter((item) => typeof item === 'string' ? Boolean(next.proposals?.[item]) : Boolean(next.proposals?.[item?.proposal_id]))
+      const after = before.filter((item) => typeof item === 'string' ? Boolean(next.proposals?.[item]) : Boolean(next.proposals?.[item?.proposal_id]) || String(item?.proposal_id).startsWith('trait:') && Boolean(next.traits?.[String(item.proposal_id).slice(6)]))
       if (before.length !== after.length) { next.maintenance[key] = after; changed = true }
     }
   }
@@ -165,7 +168,7 @@ function walkFiles(root, callback, prefix = '') {
 function managedJournal(name, spaceId) { return name.split('/').includes(spaceId) && /(?:^|\/)journal\/[^/]+\/prepared\.json$/.test(name) }
 function validateJournal(value) {
   try {
-    assertOnly(value, ['transaction_id','operation_id','receipt_key','generation','changes','purge_descriptor','persona_descriptor','persona_descriptors','session_descriptor','record_descriptors','record_imports','external_descriptor','root_upgrade','receipt'])
+    assertOnly(value, ['transaction_id','operation_id','receipt_key','generation','changes','purge_descriptor','persona_descriptor','persona_descriptors','session_descriptor','record_descriptors','record_imports','self_descriptors','self_imports','external_descriptor','root_upgrade','source_protection_descriptor','receipt'])
     assertId(value.transaction_id);assertId(value.operation_id)
     if (!/^[a-f0-9]{64}$/.test(value.receipt_key) || !Number.isSafeInteger(value.generation) || value.generation < 0 || !Array.isArray(value.changes)) throw new Error()
     for (const change of value.changes) {
@@ -173,7 +176,10 @@ function validateJournal(value) {
       if (typeof change.path !== 'string' || isAbsolute(change.path) || change.path.includes('\\') || change.path.split('/').some((part)=>!part||part==='.'||part==='..')) throw new Error()
       if (change.data !== null && (typeof change.data !== 'string' || Buffer.from(change.data,'base64').toString('base64') !== change.data)) throw new Error()
     }
+    if (value.source_protection_descriptor) validateSourceProtectionDescriptor(value.source_protection_descriptor)
     if (value.session_descriptor) validateSessionDescriptor(value.session_descriptor)
+    for (const descriptor of value.self_imports ?? []) validateImportedSelfDescriptor(descriptor)
+    for (const descriptor of value.self_descriptors ?? []) validateSelfDescriptor(descriptor)
     for (const descriptor of value.persona_descriptors ?? (value.persona_descriptor ? [value.persona_descriptor] : [])) { assertOnly(descriptor,['expected_revision','anchor']);validatePersonaAnchor(descriptor.anchor) }
     for (const descriptor of value.record_descriptors ?? []) { assertOnly(descriptor,['expected_generation','next']);validateRecordHead(descriptor.next);if(!Number.isSafeInteger(descriptor.expected_generation)||descriptor.expected_generation<0)throw new Error() }
     for (const descriptor of value.record_imports ?? []) { assertOnly(descriptor,['expected_generation','next']);validateRecordHead(descriptor.next);if(descriptor.expected_generation!==0)throw new Error() }
@@ -191,6 +197,8 @@ export function validateManagedPurgeArtifacts(root, spaceId) {
     if (managedJournal(name, spaceId)) { validateJournal(optionalData(path)); return }
     if (!path.endsWith('.json')) return
     const archive = optionalData(path)
+    if (archive?.snapshot_format === 'dsh-persona-self') { decodeSelfSnapshot(archive);filterSelfSnapshot(root,spaceId,archive,[]);return }
+    if (archive?.self_integrity_state && archive.memory_space_id === spaceId) prunePortableSelfArchive(archive,[])
     if (archive?.transfer_format !== 'dsh-memory-space' || archive.memory_space_id !== spaceId) return
     const { checksum, ...payload } = archive
     if (!Array.isArray(archive.files) || checksum !== digest(payload)) throw new MemoryError('MANAGED_ARCHIVE_REPAIR_REQUIRED')
@@ -210,9 +218,10 @@ export function validateManagedPurgeArtifacts(root, spaceId) {
 
 function filterArchive(archive, state, write, path) {
   if (archive?.transfer_format !== 'dsh-memory-space' || !Array.isArray(archive.files)) return false
+  const self = archive.self_integrity_state ? prunePortableSelfArchive(archive,[...state.evidence_ids,...state.related_evidence_ids]) : null
   let retained = archive.files.filter((entry) => {
     if (pathIsPurged(entry.path, state)) return false
-    if (/^(self|candidates)\//.test(entry.path) && entry.path.endsWith('.json')) {
+    if (/^(?:self|candidates|cold\/legacy-self)\//.test(entry.path) && entry.path.endsWith('.json')) {
       let value
       try { value = JSON.parse(Buffer.from(entry.data, 'base64').toString('utf8')) } catch { throw new MemoryError('MANAGED_ARCHIVE_REPAIR_REQUIRED') }
       if (referencesPurged(value, state)) return false
@@ -222,6 +231,7 @@ function filterArchive(archive, state, write, path) {
   let metadataChanged = false
   const retainedPaths = new Set(retained.map((entry) => entry.path))
   retained = retained.map((entry) => {
+    if (self && isGrowthSelfPath(entry.path)) return entry
     const match = /^self\/([^/]+)\/manifest\.json$/.exec(entry.path)
     if (!match) return entry
     const value = JSON.parse(Buffer.from(entry.data, 'base64').toString('utf8'))
@@ -231,8 +241,14 @@ function filterArchive(archive, state, write, path) {
     const data = Buffer.from(json(cleaned.value))
     return { ...entry, data: data.toString('base64'), size: data.length, sha256: digest(data) }
   })
+  if (self) {
+    const before = digest(retained)
+    retained = [...retained.filter(entry=>!isGrowthSelfPath(entry.path)),...self.files].sort((a,b)=>a.path.localeCompare(b.path))
+    if (digest(retained)!==before || digest(self.state)!==digest(archive.self_integrity_state)) metadataChanged = true
+  }
   if (!metadataChanged && retained.length === archive.files.length && archive.purge_generation >= state.generation) return false
   const cleaned = { ...archive, revision_watermark: Math.max(archive.revision_watermark, state.revision_floor), purge_generation: state.generation, purge_state: portable(state), files: retained }
+  if (self) cleaned.self_integrity_state = self.state
   if (cleaned.integrity_state) cleaned.integrity_state = { ...cleaned.integrity_state,
     heads: cleaned.integrity_state.heads.filter((head) => !state.record_ids.includes(head.record_id)),
     omitted_pending_ids: cleaned.integrity_state.omitted_pending_ids.filter((id) => !state.record_ids.includes(id)) }
@@ -303,6 +319,10 @@ export function reconcilePurgeState(root, spaceRoot, write) {
       if (scoped && /(?:^|\/)index\//.test(name)) { rmSync(path, { force: true }); removed.push(`${category}/${name}`); return }
       if (path.endsWith('.json')) {
         const archive = optionalData(path)
+        if (archive?.snapshot_format === 'dsh-persona-self') {
+          try { const next=filterSelfSnapshot(root,spaceId,archive,[...state.evidence_ids,...state.related_evidence_ids]);if(next){write(path,json(next));sanitized.push(`${category}/${name}`)} } catch { unresolved.push(`${category}/${name}`) }
+          return
+        }
         if (archive?.transfer_format === 'dsh-memory-space' && archive.memory_space_id === spaceId) {
           try { if (filterArchive(archive, state, write, path)) sanitized.push(`${category}/${name}`) } catch { unresolved.push(`${category}/${name}`) }
         }

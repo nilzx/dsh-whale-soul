@@ -13,7 +13,19 @@ const json = (value) => `${JSON.stringify(value, null, 2)}\n`
 const clone = (value) => JSON.parse(JSON.stringify(value))
 const plain = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
 const fail = (code) => { throw new MemoryError(code, `${code}：无法确认这个会话属于当前个体，请新建会话后继续；现有记忆不会因此重置。`) }
-function material(event) { return !metadataTypes.has(event.type) }
+function initialPermissionMetadata(event) {
+  const data = event.data
+  if (!plain(data)) return false
+  const keys = Object.keys(data)
+  if (event.type === 'permission/preset') return keys.length === 1 && keys[0] === 'preset' && typeof data.preset === 'string' && /^[A-Za-z0-9_.:-]{1,200}$/.test(data.preset)
+  if (event.type !== 'sandbox/mode' && event.type !== 'approval/policy') return false
+  const key = event.type === 'sandbox/mode' ? 'mode' : 'policy'
+  if (keys.some((entry) => entry !== key && entry !== 'source') || !Object.hasOwn(data, key) || Object.hasOwn(data, 'source') && data.source !== 'delegation') return false
+  return (key === 'mode' ? ['read-only', 'workspace-write', 'danger-full-access'] : ['ask', 'never']).includes(data[key])
+}
+// The Web host pins these payload-free knobs before publishing a fresh Session.
+// Unknown events and metadata carrying extra content remain material history.
+function material(event) { return !metadataTypes.has(event.type) && !initialPermissionMetadata(event) }
 function metadata(event) {
   return { seq: event.seq, time: event.time, type: event.type }
 }
@@ -37,9 +49,12 @@ const projection = (z) => Object.freeze({ key: PROJECTION_KEY, stateVersion: 1,
 export function observeSessionIdentityBoundary(ctx, ownsAgent, z) {
   const registry = ctx?.get?.('sessionProjections'), agents = ctx?.get?.('agents'), sessions = ctx?.get?.('sessions')
   if (!registry?.register || !registry?.stateOf || !agents?.get || typeof sessions?.list !== 'function' || typeof ownsAgent !== 'function' || typeof z?.object !== 'function') fail('TRUSTED_SESSION_BINDINGS_REQUIRED')
+  const eventContext = ctx.root
+  const original = (value) => value?.[Symbol.for('cordis.original')] ?? value
+  if (!eventContext?.on || original(eventContext.get('sessions')) !== original(sessions) || original(eventContext.get('agents')) !== original(agents)) fail('TRUSTED_SESSION_BINDINGS_REQUIRED')
   const disposeProjection = registry.register(projection(z)), seen = new WeakMap(), coverage = new WeakMap()
   for (const session of sessions.list()) coverage.set(session, { next: session.seq, complete: session.seq === 0, first: null })
-  const disposeEvents = ctx.on('session/event', (session, event) => {
+  const disposeEvents = eventContext.on('session/event', (session, event) => {
     let history = coverage.get(session)
     if (!history) coverage.set(session, history = { next: 0, complete: event.seq === 0, first: null })
     if (event.seq !== history.next) history.complete = false

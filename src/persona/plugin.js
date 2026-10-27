@@ -1,3 +1,4 @@
+import { protectMigrationSources } from './source-protection.js'
 import { fileURLToPath } from 'node:url'
 import { mkdirSync } from 'node:fs'
 import { resolveMemoryRoot } from '../paths.js'
@@ -26,6 +27,7 @@ const serviceTools = ['soul_recall', 'soul_remember', 'soul_forget', 'soul_view_
 /** Explicit constructors make the host composition testable without global state. */
 export async function installPersonaPlugin(ctx, config = {}, host) {
   const memoryProvider = assertMemoryProvider(ctx.get('whaleMemory'))
+  const original = Symbol.for('cordis.original'), providerIdentity = memoryProvider[original] ?? memoryProvider
   if (typeof host.scopeOf !== 'function' || typeof host.scopeChainOf !== 'function' || !host.scopeOf(ctx)) throw new Error('whale-soul: trusted persona scope required')
   const ownerScope = host.scopeOf(ctx)
   const ownsAgent = (agent) => host.scopeChainOf(agent).includes(ownerScope) && ctx.get('agents')?.get(agent.id) === agent
@@ -33,7 +35,7 @@ export async function installPersonaPlugin(ctx, config = {}, host) {
   ctx.effect(() => () => observer.dispose(), 'whale-soul.persona.session-observer()')
   const root = resolveMemoryRoot(config)
   mkdirSync(root, { recursive: true, mode: 0o700 })
-  const resolvePrivateRoots = createHostPrivateRoots(ctx, host.privateRootBindings)
+  const resolvePrivateRoots = protectMigrationSources(createHostPrivateRoots(ctx, host.privateRootBindings), root)
   const protection = createHostProtection(ctx, { protectedRoots: [fileURLToPath(new URL('../..', import.meta.url)), root],
     resolvePrivateRoots, writableRoots: host.writableRoots, readTools: ['read', 'read_image', 'glob', 'grep'], serviceTools })
   protection.install()
@@ -60,7 +62,8 @@ export async function installPersonaPlugin(ctx, config = {}, host) {
   let images
   runtime = new PersonaRuntime({ ...config, root, memoryProvider, llm: { prepareCall: (...args) => ctx.get('llm').prepareCall(...args) }, createAssembler: () => new host.BlockAssembler(),
     getMemoryMaintenanceHost: () => memoryMaintenance,
-    sessionHost: { scopeChainOf: host.scopeChainOf, resolveDshHome: host.privateRootBindings.resolveDshHome, observer, z: host.z, ownsAgent },
+    isMemoryProviderCurrent: () => { const current = ctx.get('whaleMemory'); return (current?.[original] ?? current) === providerIdentity },
+    sessionHost: { scopeChainOf: host.scopeChainOf, resolveDshHome: host.privateRootBindings.resolveDshHome, observer, z: host.z, ownsAgent, isAgentLoopRequest: host.isAgentLoopRequest },
     additionalEvidenceAllowed: (id, context, meta) => images?.evidenceAllowed(id, context, meta) ?? false,
     onDream: (phase, payload) => ctx.emit(`whale-soul/dream-${phase}`, payload) })
   runtimes.set(ctx, runtime)
@@ -68,7 +71,8 @@ export async function installPersonaPlugin(ctx, config = {}, host) {
   await runtime.ready()
   memoryMaintenance = installMemoryMaintenanceHost(ctx, { runtime, ownsAgent, scopeChainOf: host.scopeChainOf, config })
   ctx.effect(() => () => memoryMaintenance.dispose(), 'whale-soul.persona.memory-maintenance()')
-  const dispatch = installSessionDispatch(ctx, { runtime, ownsAgent, scopeChainOf: host.scopeChainOf, resolveDshHome: host.privateRootBindings.resolveDshHome, serviceTools })
+  const dispatch = installSessionDispatch(ctx, { runtime, ownsAgent, scopeChainOf: host.scopeChainOf, resolveDshHome: host.privateRootBindings.resolveDshHome,
+    isAgentLoopRequest: host.isAgentLoopRequest, serviceTools })
   ctx.effect(() => () => dispatch.dispose(), 'whale-soul.persona.session-dispatch()')
   const assetRoute = registerAssetRoutes(ctx, { root: runtime.store.spaceRoot })
   const assetPreview = (asset) => {
@@ -87,10 +91,13 @@ export async function installPersonaPlugin(ctx, config = {}, host) {
     name: 'deployment:persona-prefix', order: ctx.systemPrompt.getSectionOrder('DEPLOYMENT_PERSONA_PREFIX'),
     text: getWhaleCorePrompt(), interpolate: false,
   }), 'whale-soul.persona.core()')
-  const contextNames = { growth: 'whale-soul:growth', memory: 'whale-soul:memory' }
+  const contextNames = { growth: 'whale-soul:growth', memory: 'whale-soul:memory', external: 'whale-soul:owner-reviewed-memory' }
   for (const [kind, contextName] of Object.entries(contextNames)) ctx.effect(() => ctx.systemPrompt.context({
     name: contextName, order: kind === 'growth' ? 390 : 400, required: true, interpolate: false,
-    text: (context) => runtime.contextFor(context.agent)[kind],
+    text: (context) => {
+      const view = runtime.contextFor(context.agent)
+      return kind === 'growth' ? view.growth : runtime.memoryContextNameFor(context.agent) === contextName ? view.memory : ''
+    },
   }), `whale-soul.persona.context(${kind})`)
   ctx.effect(() => ctx.systemPrompt.context({ name: 'whale-soul:memory-operation', order: 410,
     required: true, interpolate: false, text: (context) => runtime.operationContextFor(context.agent),
@@ -111,7 +118,8 @@ export async function installPersonaPlugin(ctx, config = {}, host) {
     const result = await next()
     const view = context.agent ? runtime.contextFor(context.agent) : { memory: '', growth: '' }
     result.contexts = result.contexts.filter((entry) => !Object.values(contextNames).includes(entry.name))
-    for (const kind of ['growth', 'memory']) if (view[kind]) result.contexts.push({ name: contextNames[kind], text: view[kind], interpolate: false })
+    if (view.growth) result.contexts.push({ name: contextNames.growth, text: view.growth, interpolate: false })
+    if (view.memory) result.contexts.push({ name: runtime.memoryContextNameFor(context.agent), text: view.memory, interpolate: false })
     return result
   }), 'whale-soul.persona.assemble()')
   ctx.effect(() => ctx.on('agent/created', async ({ agent }) => { await runtime.attachAgent(agent); images.attachAgent(agent) }), 'whale-soul.persona.agent-created()')
@@ -141,7 +149,7 @@ export async function apply(ctx, config = {}) {
     '@deepseek-ai/dsh-home-paths', '@deepseek-ai/dsh-credentials-local', '@deepseek-ai/dsh-session-persistence-jsonl',
     '@deepseek-ai/dsh-storage-json', '@deepseek-ai/dsh-storage', '@deepseek-ai/dsh-attachment-local',
   ].map((specifier) => import(specifier)))
-  await installPersonaPlugin(ctx, config, { BlockAssembler: llm.BlockAssembler, writableRoots: sandbox.writableRoots,
+  await installPersonaPlugin(ctx, config, { BlockAssembler: llm.BlockAssembler, isAgentLoopRequest: llm.isAgentLoopRequest, writableRoots: sandbox.writableRoots,
     scopeOf: scope.scopeOf, scopeChainOf: scope.scopeChainOf, z: zod.z, BashSandbox: bashSandbox.default,
     FsTools: fsTools, BashTools: bashTools, FsSearchTools: fsSearchTools, privateRootBindings: {
       resolveDshHome: home.resolveDshHome, LocalCredentialProvider: credentials.LocalCredentialProvider, resolveCredentialSpec: credentials.resolveSpec,

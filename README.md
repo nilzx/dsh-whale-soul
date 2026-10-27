@@ -50,6 +50,7 @@ After installation, start a new session and choose **Whale Chan** (shown as **é²
 
 - Choose **Whale Chan** and chat normally. She can still do normal Agent work: files, shell, web, schedules, skills, and so on.
 - Configure `stabilityMode` on the `dsh-whale-soul/persona` plugin row. [Stability rules](docs/stability.md) describe the four modes and persistent maturity.
+- Read [self integrity and owner upgrades](docs/self-integrity.md) before moving an older memory root to API 1.2. Existing unanchored growth is preserved as opaque history.
 - Use the [local management CLI](docs/management.md) for owner operations. V2 rejects integrity-breaking direct edits; external-change review and the full memory lifecycle are still under implementation.
 
 ## Privacy and safety
