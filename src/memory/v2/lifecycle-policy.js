@@ -66,6 +66,7 @@ export function buildLifecyclePlan(records, { now, mode = 'maintenance', recordI
     const state = classifyLifecycle(meta, { now: at })
     let reason = null, target = 'cold'
     if (state.protected) reason = 'PROTECTED_RECORD'
+    else if (meta.agreement?.state === 'open') reason = 'OPEN_AGREEMENT_EXEMPT'
     else if (mode === 'restore') { target = 'active'; if (state.tier !== 'cold') reason = 'NOT_COLD' }
     else if (state.tier !== 'active') reason = 'NOT_ACTIVE'
     else if (mode === 'maintenance') {

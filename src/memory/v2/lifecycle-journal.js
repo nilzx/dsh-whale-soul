@@ -74,13 +74,19 @@ export function validateLifecycleDescriptor(value) {
   return decoded
 }
 
+export function declareLifecycleCapability(engine, write) {
+  const rootManifestPath = join(engine.lockRoot, 'manifest.json'), stat = lstatSync(rootManifestPath)
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > 1024 * 1024) throw new MemoryError('UNSAFE_STORAGE_PATH')
+  const rootManifest = JSON.parse(readFileSync(rootManifestPath, 'utf8'))
+  if (rootManifest.lifecycle_capabilities !== undefined && (!Array.isArray(rootManifest.lifecycle_capabilities) || rootManifest.lifecycle_capabilities.some((item) => item !== LIFECYCLE_CAPABILITY))) throw new MemoryError('UNSUPPORTED_LIFECYCLE_CAPABILITY')
+  if (!rootManifest.lifecycle_capabilities?.includes(LIFECYCLE_CAPABILITY)) write(rootManifestPath, json({ ...rootManifest, lifecycle_capabilities: [LIFECYCLE_CAPABILITY] }))
+}
+
 /** Atomic detach retains originals; exclusive destination publication never overwrites foreign bytes. */
 export function applyLifecycleTransition(engine, value, write, checkpoint = () => {}) {
   const targetFiles = validateLifecycleDescriptor(value), previous = value.previous_head, next = value.record_descriptor.next
   if (previous.memory_space_id !== engine.memorySpaceId) throw new MemoryError('RECORD_SCOPE_MISMATCH')
-  const rootManifestPath = join(engine.lockRoot, 'manifest.json'), rootManifest = JSON.parse(readFileSync(rootManifestPath, 'utf8'))
-  if (rootManifest.lifecycle_capabilities !== undefined && (!Array.isArray(rootManifest.lifecycle_capabilities) || rootManifest.lifecycle_capabilities.some((item) => item !== LIFECYCLE_CAPABILITY))) throw new MemoryError('UNSUPPORTED_LIFECYCLE_CAPABILITY')
-  if (!rootManifest.lifecycle_capabilities?.includes(LIFECYCLE_CAPABILITY)) write(rootManifestPath, json({ ...rootManifest, lifecycle_capabilities: [LIFECYCLE_CAPABILITY] }))
+  declareLifecycleCapability(engine, write)
   const base = `cold/transitions/${value.record_id}/${value.operation_id}`, sourceBase = recordBundlePath(previous), targetBase = recordBundlePath(next)
   const source = engine.resolvePath(sourceBase), savedBase = `${base}/source`, saved = engine.resolvePath(savedBase), target = engine.resolvePath(targetBase)
   const decisionPath = engine.resolvePath(`${base}/decision.json`), ownershipPath = engine.resolvePath(`${base}/publication.json`)

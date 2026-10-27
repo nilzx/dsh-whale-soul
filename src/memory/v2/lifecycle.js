@@ -6,7 +6,6 @@ import { buildRecordDescriptor, loadRecordHead, recordBundlePath } from './recor
 import { LIFECYCLE_POLICY_VERSION, buildLifecyclePlan, isLifecycleProtected, lifecycleTime } from './lifecycle-policy.js'
 import { readLifecycleTree } from './lifecycle-journal.js'
 
-const json = (value) => JSON.stringify(value, null, 2) + '\n'
 const copy = (value) => structuredClone(value)
 const scope = (ctx) => [ctx.memory_space_id, ctx.subject_id, ctx.persona_id, ctx.agent_identity_id, ctx.session_id]
 const plans = new WeakMap()
@@ -61,7 +60,7 @@ export class MemoryLifecycle {
       for (const action of plan.actions) {
         const original = capture.snapshots.get(action.record_id)
         const op = `lifecycle-${digest([operation_id, action.record_id]).slice(0, 48)}`
-        let prepared = false
+        let prepared = false, preparedRecord = null
         const assertCurrent = () => {
           checkHost()
           const current = loadRecordHead(this.store.root, this.store.memorySpaceId, action.record_id)
@@ -70,7 +69,7 @@ export class MemoryLifecycle {
           const record = this.store._readRecord(action.record_id)
           if (record.meta.revision !== action.expected_revision || record.meta.revision_id !== action.source_revision_id) throw new MemoryError('REVISION_CONFLICT')
           if (isLifecycleProtected(record.meta)) throw new MemoryError('PROTECTED_RECORD')
-          if (prepared) readLifecycleTree(this.store.engine, recordBundlePath(current), current)
+          if (prepared) { readLifecycleTree(this.store.engine, recordBundlePath(current), current); this.store._commitChanges(preparedRecord) }
         }
         const result = await this.store.managedTransaction(op, { action: 'lifecycle', plan_checksum: plan.checksum, record_id: action.record_id, expected_revision: action.expected_revision }, () => {
           assertCurrent()
@@ -90,13 +89,9 @@ export class MemoryLifecycle {
           Object.assign(targetFiles, files, Object.fromEntries(Object.entries(files).map(([name, data]) => [`revisions/${revisionId}/${name}`, data])))
           totalBytes += [...Object.values(sourceFiles), ...Object.values(targetFiles)].reduce((size, value) => size + Buffer.byteLength(value), 0)
           if (totalBytes > this.maxBatchBytes) throw new MemoryError('LIFECYCLE_BATCH_BYTES_EXCEEDED')
-          const manifest = this.store._manifest(), watermark = manifest.revision_watermark + 1
-          const other = this.store._records().records.filter((meta) => meta.record_id !== action.record_id)
-          prepared = true
-          return { changes: [
-            { path: 'manifest.json', data: json({ ...manifest, revision_watermark: watermark }) },
-            { path: 'index/records.json', data: json(this.store._index([...other, record.meta], watermark)) },
-          ], lifecycle_descriptor: { schema_version: 1, operation_id: op, record_id: action.record_id,
+          const derived = this.store._commitChanges(record).filter((change) => ['manifest.json', 'index/records.json'].includes(change.path))
+          preparedRecord = record; prepared = true
+          return { changes: derived, lifecycle_descriptor: { schema_version: 1, operation_id: op, record_id: action.record_id,
             source_identity: { dev: stat.dev, ino: stat.ino }, previous_head: oldHead, record_descriptor: descriptor,
             source_hashes: Object.fromEntries(Object.entries(sourceFiles).map(([name, bytes]) => [name, digest(bytes)])),
             target_files: Object.fromEntries(Object.entries(targetFiles).map(([name, bytes]) => [name, Buffer.from(bytes).toString('base64')])) },

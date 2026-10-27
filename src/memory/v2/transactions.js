@@ -10,7 +10,7 @@ import { commitRecordDescriptor, commitImportedRecordHead } from './record-integ
 import { descriptorsForChanges } from './integrity-transaction.js'
 import { applyExternalCapture, applyExternalPublish, applyRootUpgrade } from './external-journal.js'
 import { commitMaintenanceDescriptor, reconcileMaintenanceState, validateMaintenanceDescriptor } from './lifecycle-ledger.js'
-import { applyLifecycleTransition, validateLifecycleDescriptor } from './lifecycle-journal.js'
+import { applyLifecycleTransition, declareLifecycleCapability, validateLifecycleDescriptor } from './lifecycle-journal.js'
 import { repairCompletedRecordChanges } from './record-recovery.js'
 
 function syncDir(path) {
@@ -190,6 +190,7 @@ export class TransactionEngine {
     if (transaction.session_descriptor) this._checkpoint('after_session_ledger', { operation_id: transaction.operation_id })
     if (transaction.root_upgrade) applyRootUpgrade(this.lockRoot, transaction.root_upgrade, atomicWrite)
     const purgeState = getPurgeState(this.lockRoot, this.memorySpaceId)
+    if ([...(transaction.record_imports ?? []), ...(transaction.record_descriptors ?? [])].some((descriptor) => descriptor.next.schema_version === 2)) declareLifecycleCapability(this, atomicWrite)
     const lifecycle = transaction.lifecycle_descriptor
     if (lifecycle) {
       if (purgeState.record_ids.includes(lifecycle.record_id)) return { ...transaction.receipt.result, status: 'purged', reason_code: 'PURGED_BY_MANAGEMENT', affected_ids: [] }
