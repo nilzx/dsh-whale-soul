@@ -1,7 +1,7 @@
 import { registerMemoryStoreWriter } from './maintenance-writers.js'
 import { repairSourceProtectionMarker } from './source-protection.js'
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { API_VERSION, CAPABILITIES, CLAIM_KINDS, FORMAT_VERSION, MEMORY_TYPES, MemoryError, RECORD_SCHEMA_VERSION, assertId, assertOnly, digest, failure, stableStringify, text, timestamp, validateRecord } from './contracts.js'
 import { TransactionEngine, atomicWrite, readJson } from './transactions.js'
@@ -9,7 +9,7 @@ import { getPurgeState, reconcilePurgeState } from './purge-ledger.js'
 import { reconcileMaintenanceState } from './lifecycle-ledger.js'
 import { normalizeMemorySlotKey } from './slot-policy.js'
 import { inspectMemoryRoot } from './root-format.js'
-import { listRecordHeads, loadRecordHead, locateRecordBundle, recordBundlePath, verifyRecordBundle } from './record-integrity.js'
+import { listRecordHeadIds, loadRecordHead, readVerifiedRecord, recordBundlePath } from './record-integrity.js'
 import { reserveProtectedCorrectionPermit, assertProtectedCorrectionAttempt, applyProtectedCorrectionMetadata, finishProtectedCorrectionAttempt } from './protected-correction.js'
 
 const DATA_FILES = ['meta.json', 'gist.md', 'detail.md', 'evidence.jsonl']
@@ -109,19 +109,11 @@ export class MemoryStoreV2 {
   }
 
   _readRecord(id, revisionId = null) {
-    const head = loadRecordHead(this.root, this.memorySpaceId, id)
-    if (!head) throw new MemoryError('INTEGRITY_BASELINE_REQUIRED')
-    if (!revisionId && head.state !== 'clean') throw new MemoryError(head.state === 'purged' ? 'RECORD_PURGED' : 'RECORD_QUARANTINED')
-    const { directory: dir } = locateRecordBundle(this, head, revisionId)
-    const alternate = `${head.bundle_location === 'cold' ? 'records' : 'cold/records'}/${assertId(id, 'record_id')}`
-    if ([...DATA_FILES, 'integrity.json', 'revisions'].some((name) => existsSync(this.engine.resolvePath(`${alternate}/${name}`)))) throw new MemoryError('AMBIGUOUS_RECORD_LOCATION')
-    const files = Object.fromEntries([...DATA_FILES, 'integrity.json'].map((file) => [file, readFileSync(join(dir, file))]))
-    try { return verifyRecordBundle(head, files, revisionId ?? head.head_revision_id) }
-    catch (error) { if (error.code === 'RECORD_HASH_MISMATCH') throw new MemoryError('EXTERNAL_CHANGE'); throw error }
+    return readVerifiedRecord(this, id, revisionId)
   }
 
   _recordIds() {
-    const ids = new Set(listRecordHeads(this.root, this.memorySpaceId).map((head) => head.record_id))
+    const ids = new Set(listRecordHeadIds(this.root, this.memorySpaceId))
     for (const folder of ['records', 'cold/records']) {
       const path = this.engine.resolvePath(folder)
       if (!existsSync(path)) continue

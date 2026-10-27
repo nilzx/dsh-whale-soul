@@ -1,4 +1,4 @@
-import { lstatSync, readFileSync, readdirSync } from 'node:fs'
+import { existsSync, lstatSync, readFileSync, readdirSync } from 'node:fs'
 import { isAbsolute, join, parse, relative, resolve, sep } from 'node:path'
 import { MEMORY_TYPES, MemoryError, assertId, digest, validateRecord } from './contracts.js'
 import { normalizeMemorySlotKey } from './slot-policy.js'
@@ -14,6 +14,36 @@ const STATES = ['clean', 'quarantined', 'purged']
 const HASH = /^[a-f0-9]{64}$/
 const MAX_HEAD_BYTES = 16 * 1024 * 1024
 const MAX_BUNDLE_BYTES = 64 * 1024 * 1024
+const HEAD_CACHE_MAX_ENTRIES = 16_384
+// Accounting covers raw bytes plus serialized heads, not a hard V8 heap limit.
+const HEAD_CACHE_MAX_BYTES = 64 * 1024 * 1024
+const headSnapshots = new WeakSet()
+const headCache = new Map()
+let headCacheBytes = 0
+
+function freezeHead(value) {
+  if (value && typeof value === 'object') { Object.values(value).forEach(freezeHead); Object.freeze(value) }
+  return value
+}
+
+function removeCachedHead(key) {
+  const previous = headCache.get(key)
+  if (previous) { headCache.delete(key); headCacheBytes -= previous.cost }
+}
+
+function rememberHead(key, bytes, head) {
+  removeCachedHead(key)
+  const cost = bytes.byteLength + Buffer.byteLength(JSON.stringify(head))
+  if (cost > HEAD_CACHE_MAX_BYTES) return
+  while (headCache.size >= HEAD_CACHE_MAX_ENTRIES || headCacheBytes + cost > HEAD_CACHE_MAX_BYTES) removeCachedHead(headCache.keys().next().value)
+  headCache.set(key, { bytes, head, cost }); headCacheBytes += cost
+}
+
+function snapshotScope(head, spaceId, recordId) {
+  if (!headSnapshots.has(head)) fail('RECORD_HEAD_INVALID')
+  if (head.memory_space_id !== spaceId || head.record_id !== recordId) fail('RECORD_SCOPE_MISMATCH')
+  return head
+}
 const fail = (code) => { throw new MemoryError(code) }
 const clone = (value) => JSON.parse(JSON.stringify(value))
 const same = (a, b) => digest(a) === digest(b)
@@ -112,8 +142,10 @@ function scope(head, meta) {
   if (SCOPE.some((key) => head[key] !== meta[key])) fail('RECORD_SCOPE_MISMATCH')
 }
 
-function readBundle(files) {
-  hashes(files)
+function readBundle(files, privateHashes = null) {
+  // Only the private verifier supplies hashes from its own stable byte snapshot.
+  // Other callers retain their original validation of caller-owned buffers.
+  if (privateHashes === null) hashes(files)
   const meta = parseJson(files['meta.json'])
   try { validateRecord(meta) } catch { fail('RECORD_BUNDLE_INVALID') }
   validateLifecycleMetadata(meta)
@@ -121,7 +153,7 @@ function readBundle(files) {
   const integrity = parseJson(files['integrity.json'])
   object(integrity, ['revision_id', 'files'], 'RECORD_BUNDLE_INVALID')
   object(integrity.files, DATA_FILES, 'RECORD_BUNDLE_INVALID')
-  if (integrity.revision_id !== meta.revision_id || DATA_FILES.some((file) => !HASH.test(integrity.files[file]) || digest(files[file]) !== integrity.files[file])) fail('RECORD_HASH_MISMATCH')
+  if (integrity.revision_id !== meta.revision_id || DATA_FILES.some((file) => !HASH.test(integrity.files[file]) || (privateHashes === null ? digest(files[file]) : privateHashes[file]) !== integrity.files[file])) fail('RECORD_HASH_MISMATCH')
   let evidence
   try { evidence = utf8(files['evidence.jsonl']).split('\n').filter((line) => line.trim()).map((line) => JSON.parse(line)) } catch { fail('RECORD_BUNDLE_INVALID') }
   const evidenceIds = evidence.map((entry) => entry?.evidence_id)
@@ -133,22 +165,38 @@ function readBundle(files) {
   return { meta, gist: utf8(files['gist.md']), detail: utf8(files['detail.md']), evidence }
 }
 
-export function loadRecordHead(root, spaceId, recordId) {
+function loadHeadSnapshot(root, spaceId, recordId) {
+  // Path validation, stat and the full current bytes are mandatory on every hit.
   const path = headPath(root, spaceId, recordId)
+  const key = JSON.stringify([resolve(root), spaceId, recordId])
   let bytes
   try {
     const stat = lstatSync(path)
     if (stat.size > MAX_HEAD_BYTES) fail('RECORD_HEAD_TOO_LARGE')
     bytes = readFileSync(path)
-  } catch (error) { if (error.code === 'ENOENT') return null; if (error instanceof MemoryError) throw error; fail('RECORD_HEAD_INVALID') }
+    if (bytes.byteLength > MAX_HEAD_BYTES) fail('RECORD_HEAD_TOO_LARGE')
+  } catch (error) {
+    removeCachedHead(key)
+    if (error.code === 'ENOENT') return null
+    if (error instanceof MemoryError) throw error
+    fail('RECORD_HEAD_INVALID')
+  }
+  const cached = headCache.get(key)
+  if (cached && cached.bytes.equals(bytes)) {
+    headCache.delete(key); headCache.set(key, cached)
+    return snapshotScope(cached.head, spaceId, recordId)
+  }
+  removeCachedHead(key)
   let head
   try { head = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) } catch { fail('RECORD_HEAD_INVALID') }
   validateHead(head)
   if (head.memory_space_id !== spaceId || head.record_id !== recordId) fail('RECORD_SCOPE_MISMATCH')
-  return head
+  freezeHead(head); headSnapshots.add(head)
+  rememberHead(key, bytes, head)
+  return snapshotScope(head, spaceId, recordId)
 }
 
-export function listRecordHeads(root, spaceId) {
+function listHeadSnapshots(root, spaceId) {
   assertId(spaceId, 'memory_space_id')
   if (typeof root !== 'string' || !root || !isAbsolute(root)) fail('UNSAFE_STORAGE_PATH')
   const folder = safe(root, join(root, '.administration', 'record-heads', spaceId))
@@ -158,17 +206,31 @@ export function listRecordHeads(root, spaceId) {
   for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
     if (entry.isSymbolicLink() || !entry.isFile()) fail('UNSAFE_STORAGE_PATH')
     if (!entry.name.endsWith('.json')) continue
-    const head = loadRecordHead(root, spaceId, assertId(entry.name.slice(0, -5)))
+    const head = loadHeadSnapshot(root, spaceId, assertId(entry.name.slice(0, -5)))
     if (!head) fail('RECORD_HEAD_INVALID')
     heads.push(head)
   }
   return heads
 }
 
+// Public readers never expose the private brand or shared frozen cache values.
+export function loadRecordHead(root, spaceId, recordId) {
+  const head = loadHeadSnapshot(root, spaceId, recordId)
+  return head === null ? null : clone(head)
+}
+
+export function listRecordHeads(root, spaceId) {
+  return listHeadSnapshots(root, spaceId).map(clone)
+}
+
+/** @internal Strict enumeration for Store; every current head is still read. */
+export function listRecordHeadIds(root, spaceId) {
+  return listHeadSnapshots(root, spaceId).map((head) => head.record_id)
+}
+
 export function recordBundleHash(files) { return digest(hashes(files)) }
 
-export function recordBundlePath(head, revisionId = null) {
-  validateHead(head)
+function validatedBundlePath(head, revisionId = null) {
   const location = head.schema_version === 2 ? head.bundle_location : 'records'
   const base = `${location === 'cold' ? 'cold/records' : 'records'}/${head.record_id}`
   if (revisionId === null) return base
@@ -177,14 +239,23 @@ export function recordBundlePath(head, revisionId = null) {
   return `${base}/revisions/${revisionId}`
 }
 
-/** Resolve only a validated root-head location, never a model-supplied root. */
-export function locateRecordBundle(store, head, revisionId = null) {
+export function recordBundlePath(head, revisionId = null) {
   validateHead(head)
+  return validatedBundlePath(head, revisionId)
+}
+
+function locateValidatedBundle(store, head, revisionId = null) {
   if (!store || store.memorySpaceId !== head.memory_space_id || typeof store.root !== 'string' ||
     typeof store.spaceRoot !== 'string' || typeof store.engine?.root !== 'string' || typeof store.engine?.resolvePath !== 'function' ||
     resolve(store.spaceRoot) !== resolve(store.root, 'spaces', head.memory_space_id) || resolve(store.engine.root) !== resolve(store.spaceRoot)) fail('RECORD_SCOPE_MISMATCH')
-  const base = recordBundlePath(head, revisionId)
+  const base = validatedBundlePath(head, revisionId)
   return Object.freeze({ base, directory: store.engine.resolvePath(base) })
+}
+
+/** Resolve only a validated root-head location, never a model-supplied root. */
+export function locateRecordBundle(store, head, revisionId = null) {
+  validateHead(head)
+  return locateValidatedBundle(store, head, revisionId)
 }
 
 function checkLifecycleLocation(meta, location) {
@@ -192,20 +263,79 @@ function checkLifecycleLocation(meta, location) {
   if (location === 'cold' && !['cold', 'archived'].includes(lifecycle?.tier) || location === 'records' && lifecycle?.tier === 'cold') fail('LIFECYCLE_LOCATION_CONFLICT')
 }
 
-export function verifyRecordBundle(head, files, revisionId = head?.head_revision_id) {
-  validateHead(head)
+function verifyPrivateBundle(head, files, revisionId) {
   assertId(revisionId, 'revision_id')
   const expected = head.revisions.find((entry) => entry.revision_id === revisionId)
   if (!expected) fail('RECORD_CHAIN_CONFLICT')
   const actual = hashes(files)
-  if (!same(actual, expected.files) || digest(actual) !== expected.bundle_hash) fail('RECORD_HASH_MISMATCH')
-  const record = readBundle(files), { meta } = record
+  if (FILES.some((file) => actual[file] !== expected.files[file]) || digest(actual) !== expected.bundle_hash) fail('RECORD_HASH_MISMATCH')
+  const record = readBundle(files, actual), { meta } = record
   scope(head, meta)
   if (meta.revision_id !== expected.revision_id || meta.revision !== expected.revision || (meta.supersedes ?? null) !== expected.parent_revision_id ||
     !same([...meta.provenance_refs].sort(), [...expected.evidence_ids].sort()) || !same([...(meta.assets ?? [])].sort(), [...expected.asset_files].sort())) fail('RECORD_CHAIN_CONFLICT')
   if (revisionId === head.head_revision_id && (meta.type !== head.record_type || slotHash(meta) !== head.canonical_key_hash)) fail('RECORD_CHAIN_CONFLICT')
   if (revisionId === head.head_revision_id) checkLifecycleLocation(meta, head.schema_version === 2 ? head.bundle_location : 'records')
   return record
+}
+
+function copyCallerFiles(files) {
+  object(files, FILES, 'RECORD_BUNDLE_INVALID')
+  const snapshot = {}
+  let bytes = 0
+  for (const name of FILES) {
+    const value = files[name]
+    if (!(typeof value === 'string' && value.isWellFormed() || Buffer.isBuffer(value))) fail('RECORD_BUNDLE_INVALID')
+    bytes += Buffer.byteLength(value)
+    if (bytes > MAX_BUNDLE_BYTES) fail('RECORD_BUNDLE_TOO_LARGE')
+    snapshot[name] = Buffer.isBuffer(value) ? Buffer.from(value) : value
+  }
+  return snapshot
+}
+
+function copyCallerHead(head) {
+  const visiting = new WeakSet()
+  const inspect = (value, depth = 0) => {
+    if (value === null || ['string', 'boolean', 'number'].includes(typeof value)) return
+    if (!value || typeof value !== 'object' || depth > 16 || visiting.has(value) ||
+      (Array.isArray(value) ? Object.getPrototypeOf(value) !== Array.prototype : ![Object.prototype, null].includes(Object.getPrototypeOf(value))) ||
+      Object.getOwnPropertySymbols(value).length) fail('RECORD_HEAD_INVALID')
+    visiting.add(value)
+    for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(value))) {
+      if (descriptor.get || descriptor.set) fail('RECORD_HEAD_INVALID')
+      inspect(descriptor.value, depth + 1)
+    }
+    visiting.delete(value)
+  }
+  inspect(head)
+  let snapshot
+  try { snapshot = structuredClone(head) } catch { fail('RECORD_HEAD_INVALID') }
+  validateHead(snapshot)
+  return freezeHead(snapshot)
+}
+
+export function verifyRecordBundle(head, files, revisionId = undefined) {
+  // Neither caller-owned head objects nor Buffers can change the proof mid-call.
+  // This data-only snapshot receives no private cache brand.
+  const snapshot = copyCallerHead(head)
+  const selectedRevision = revisionId === undefined ? snapshot.head_revision_id : revisionId
+  assertId(selectedRevision, 'revision_id')
+  if (!snapshot.revisions.some((entry) => entry.revision_id === selectedRevision)) fail('RECORD_CHAIN_CONFLICT')
+  return verifyPrivateBundle(snapshot, copyCallerFiles(files), selectedRevision)
+}
+
+/** @internal Read a record without exposing any trusted head/hash token. */
+export function readVerifiedRecord(store, id, revisionId = null) {
+  if (!store || typeof store.root !== 'string' || typeof store.memorySpaceId !== 'string') fail('RECORD_SCOPE_MISMATCH')
+  const head = loadHeadSnapshot(store.root, store.memorySpaceId, id)
+  if (!head) throw new MemoryError('INTEGRITY_BASELINE_REQUIRED')
+  snapshotScope(head, store.memorySpaceId, id)
+  if (!revisionId && head.state !== 'clean') throw new MemoryError(head.state === 'purged' ? 'RECORD_PURGED' : 'RECORD_QUARANTINED')
+  const { directory: dir } = locateValidatedBundle(store, head, revisionId)
+  const alternate = `${head.bundle_location === 'cold' ? 'records' : 'cold/records'}/${assertId(id, 'record_id')}`
+  if ([...DATA_FILES, 'integrity.json', 'revisions'].some((name) => existsSync(store.engine.resolvePath(`${alternate}/${name}`)))) throw new MemoryError('AMBIGUOUS_RECORD_LOCATION')
+  const files = Object.fromEntries([...DATA_FILES, 'integrity.json'].map((file) => [file, readFileSync(join(dir, file))]))
+  try { return verifyPrivateBundle(head, files, revisionId ?? head.head_revision_id) }
+  catch (error) { if (error.code === 'RECORD_HASH_MISMATCH') throw new MemoryError('EXTERNAL_CHANGE'); throw error }
 }
 
 function previous(root, spaceId, recordId, provided) {
