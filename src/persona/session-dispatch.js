@@ -92,7 +92,12 @@ export function installSessionDispatch(ctx, { runtime, ownsAgent, scopeChainOf, 
             const registration = agent ? owner(agent) : null
             if (registration?.isAgentLoopRequest(options) === true) registration.runtime.assertInjectedContextCurrent(agent, options)
           }
-          if (agent && (candidates(agent).length || confirmedSessions.has(agent.session.id) || bound(agent))) { prepared.claim(options); await ensure(agent) }
+          if (agent && (candidates(agent).length || confirmedSessions.has(agent.session.id) || bound(agent))) {
+            // rc.3 compaction uses the public one-shot stream path. Its adapter
+            // still resolves the route, while the session checks remain live.
+            if (options.purpose !== 'compaction') prepared.claim(options)
+            await ensure(agent)
+          }
           const stream = await next(); finalCheck()
           const iterator = stream[Symbol.asyncIterator](); let completed = false
           try {
