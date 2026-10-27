@@ -1,7 +1,7 @@
 import { registerMemoryStoreWriter } from './maintenance-writers.js'
 import { repairSourceProtectionMarker } from './source-protection.js'
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, readdirSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readdirSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { API_VERSION, CAPABILITIES, CLAIM_KINDS, FORMAT_VERSION, MEMORY_TYPES, MemoryError, RECORD_SCHEMA_VERSION, assertId, assertOnly, digest, failure, stableStringify, text, timestamp, validateRecord } from './contracts.js'
 import { TransactionEngine, atomicWrite, readJson } from './transactions.js'
@@ -9,7 +9,8 @@ import { getPurgeState, reconcilePurgeState } from './purge-ledger.js'
 import { reconcileMaintenanceState } from './lifecycle-ledger.js'
 import { normalizeMemorySlotKey } from './slot-policy.js'
 import { inspectMemoryRoot } from './root-format.js'
-import { listRecordHeadIds, loadRecordHead, readVerifiedRecord, recordBundlePath } from './record-integrity.js'
+import { buildRecordDescriptor, listRecordHeadIds, loadRecordHead, readVerifiedRecord, recordBundlePath } from './record-integrity.js'
+import { readLifecycleTree } from './lifecycle-journal.js'
 import { reserveProtectedCorrectionPermit, assertProtectedCorrectionAttempt, applyProtectedCorrectionMetadata, finishProtectedCorrectionAttempt } from './protected-correction.js'
 
 const DATA_FILES = ['meta.json', 'gist.md', 'detail.md', 'evidence.jsonl']
@@ -272,6 +273,21 @@ export class MemoryStoreV2 {
     ]
   }
 
+  // Publish the corrected active head and the complete cold history in one commit.
+  _coldRevisionTransition(record, operationId) {
+    const previousHead = loadRecordHead(this.root, this.memorySpaceId, record.meta.record_id)
+    const base = recordBundlePath(previousHead), stat = lstatSync(this.engine.resolvePath(base))
+    const sourceFiles = readLifecycleTree(this.engine, base, previousHead), files = this._recordFiles(record)
+    const descriptor = buildRecordDescriptor({ root: this.root, spaceId: this.memorySpaceId, meta: record.meta, files, operationId, bundleLocation: 'records' })
+    if (existsSync(this.engine.resolvePath(recordBundlePath(descriptor.next)))) throw new MemoryError('LIFECYCLE_DESTINATION_EXISTS')
+    const targetFiles = Object.fromEntries(Object.entries(sourceFiles).filter(([name]) => name.startsWith('revisions/')))
+    Object.assign(targetFiles, files, Object.fromEntries(Object.entries(files).map(([name, data]) => [`revisions/${record.meta.revision_id}/${name}`, data])))
+    return { schema_version: 1, operation_id: operationId, record_id: record.meta.record_id,
+      source_identity: { dev: stat.dev, ino: stat.ino }, previous_head: previousHead, record_descriptor: descriptor,
+      source_hashes: Object.fromEntries(Object.entries(sourceFiles).map(([name, bytes]) => [name, digest(bytes)])),
+      target_files: Object.fromEntries(Object.entries(targetFiles).map(([name, bytes]) => [name, Buffer.from(bytes).toString('base64')])) }
+  }
+
   async proposeMemory(args, context) {
     const operationId = args?.operation_id ?? randomUUID()
     try {
@@ -312,12 +328,17 @@ export class MemoryStoreV2 {
         if ((previous.meta.external_revision?.protected === true || previous.meta.legacy?.user_edited === true) && !context.capabilities.includes('memory.manage') && !attempt) throw new MemoryError('PROTECTED_REVISION')
         if (attempt) assertProtectedCorrectionAttempt(attempt, { store: this, args, context, previous })
         if (previous.meta.agreement !== undefined) throw new MemoryError('AGREEMENT_MANAGEMENT_REQUIRED')
-        if (previous.meta.lifecycle?.tier === 'cold') throw new MemoryError('LIFECYCLE_MANAGEMENT_REQUIRED')
+        if (previous.meta.lifecycle?.tier === 'cold' && !attempt) throw new MemoryError('LIFECYCLE_MANAGEMENT_REQUIRED')
         if (previous.meta.revision !== args.expected_revision) throw new MemoryError('REVISION_CONFLICT')
         const record = await this._proposal(args, context, previous)
         if (attempt) applyProtectedCorrectionMetadata(attempt, { store: this, args, context, previous, record })
         this._authorize(context, 'memory.write')
         previousForCheck = previous; preparedRecord = record
+        if (previous.meta.lifecycle?.tier === 'cold') {
+          const lifecycle = this._coldRevisionTransition(record, operationId)
+          const changes = this._commitChanges(record).filter((change) => !change.path.startsWith('cold/records/'))
+          return { changes, lifecycle_descriptor: lifecycle, result: success(operationId, record.meta) }
+        }
         return { changes: this._commitChanges(record), result: success(operationId, record.meta) }
       }, { authorize: () => {
         this._authorize(context, 'memory.write')

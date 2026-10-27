@@ -3,6 +3,7 @@ import { loadRecordHead } from './record-integrity.js'
 import { verifyAnchoredOwnerQuotation } from './external-read-authority.js'
 import { recordRetentionAllowed } from './read-policy.js'
 import { retentionBlockReason } from './retention.js'
+import { LIFECYCLE_POLICY_VERSION } from './lifecycle-policy.js'
 
 const permits = new WeakMap(), attempts = new WeakMap(), factualTypes = new Set(['fact','preference','episode'])
 const fail = (code) => { throw new MemoryError(code) }
@@ -65,26 +66,33 @@ function targetRecord(entry,item,provided) {
   const {store,context}=entry,target=item.target_binding
   const head=loadRecordHead(store.root,store.memorySpaceId,target.record_id)
   if(!head || head.state!=='clean')fail('PROTECTED_CORRECTION_TARGET_UNAVAILABLE')
-  if(head.schema_version===2&&head.bundle_location!=='records')fail('PROTECTED_CORRECTION_UNSUPPORTED_STATE')
+  if(head.schema_version===2&&head.bundle_location!=='records'&&!entry.restoreCold)fail('PROTECTED_CORRECTION_UNSUPPORTED_STATE')
   const record=store._readRecord(target.record_id)
   if(provided&&!same(record,provided))fail('PROTECTED_CORRECTION_TARGET_CHANGED')
   const meta=record.meta
-  if(meta.status!=='active'||meta.lifecycle&&meta.lifecycle.tier!=='active'||meta.retention!=='long_term'||meta.agreement!==undefined||!factualTypes.has(meta.type)||
+  const cold=meta.lifecycle?.tier==='cold'
+  if(cold ? !entry.restoreCold||meta.status!=='archived' : meta.status!=='active'||meta.lifecycle&&meta.lifecycle.tier!=='active'||entry.restoreCold)fail('PROTECTED_CORRECTION_UNSUPPORTED_STATE')
+  if(meta.retention!=='long_term'||meta.agreement!==undefined||!factualTypes.has(meta.type)||
     meta.assets!==undefined&&(!Array.isArray(meta.assets)||meta.assets.length))fail('PROTECTED_CORRECTION_UNSUPPORTED_STATE')
   for(const key of ['valid_from','valid_to','expires_at'])timestamp(meta[key],key)
   if(meta.valid_from&&Date.parse(meta.valid_from)>Date.now()||meta.valid_to&&Date.parse(meta.valid_to)<=Date.now()||meta.expires_at&&Date.parse(meta.expires_at)<=Date.now())fail('PROTECTED_CORRECTION_TARGET_UNAVAILABLE')
   if(meta.visibility?.kind!=='private'||sourceIdentity.some((key)=>meta[key]!==context[key])||!store._visible(meta,context))fail('PROTECTED_CORRECTION_SCOPE_MISMATCH')
   if(meta.revision!==target.expected_revision||meta.type!==target.type||(meta.canonical_key??null)!==target.canonical_key)fail('REVISION_CONFLICT')
   if(!recordRetentionAllowed(record))fail('PROTECTED_CORRECTION_RETENTION_DENIED')
-  const origin=ownerOrigin(store,record,head)
-  if(meta.claim_kind==='user_statement')for(const ref of meta.provenance_refs){
+  const protectedRecord=meta.external_revision?.protected===true
+  if(meta.legacy?.user_edited===true&&!protectedRecord)fail('PROTECTED_CORRECTION_ORIGIN_INVALID')
+  if(!protectedRecord&&!cold)fail('PROTECTED_CORRECTION_ORIGIN_INVALID')
+  const origin=protectedRecord?ownerOrigin(store,record,head):null
+  if(protectedRecord&&meta.claim_kind==='user_statement')for(const ref of meta.provenance_refs){
     const previous=synchronous(()=>entry.resolve(ref),'PROTECTED_CORRECTION_ASYNC_EVIDENCE')
     if(!previous||previous.allow_persist!==true||previous.source!=='user'||previous.claim_kind!=='user_statement'||
       sourceIdentity.some((key)=>previous[key]!==context[key]))fail('PROTECTED_CORRECTION_TARGET_EVIDENCE_REVOKED')
   }
-  const original=store._readRecord(meta.record_id,origin)
-  if(!same(meta.title,original.meta.title)||!same(meta.tags,original.meta.tags))fail('PROTECTED_CORRECTION_ORIGIN_INVALID')
-  return{record,head,origin}
+  if(origin){
+    const original=store._readRecord(meta.record_id,origin)
+    if(!same(meta.title,original.meta.title)||!same(meta.tags,original.meta.tags))fail('PROTECTED_CORRECTION_ORIGIN_INVALID')
+  }
+  return{record,head,origin,cold,protectedRecord}
 }
 function validate(entry,{args,context,previous,record}={}) {
   if(context!==entry.context||digest(args)!==entry.argsHash)fail('PROTECTED_CORRECTION_SCOPE_MISMATCH')
@@ -106,22 +114,24 @@ function validate(entry,{args,context,previous,record}={}) {
     if(sourceIdentity.some((key)=>record.meta[key]!==context[key]) || record.meta.type!==target.record.meta.type || record.meta.status!=='active'||record.meta.retention!=='long_term'||
       ['valid_from','valid_to','expires_at'].some((key)=>(record.meta[key]??null)!==(item.memory_proposal[key]??null))||
       (record.meta.canonical_key??null)!==(target.record.meta.canonical_key??null) || !same(record.meta.visibility,target.record.meta.visibility) ||
-      !same(record.meta.title,target.record.meta.title)||!same(record.meta.tags,target.record.meta.tags)||record.meta.pinned!==target.record.meta.pinned || record.meta.external_revision?.protected!==true)fail('PROTECTED_CORRECTION_RECORD_MISMATCH')
+      target.protectedRecord&&(!same(record.meta.title,target.record.meta.title)||!same(record.meta.tags,target.record.meta.tags))||record.meta.pinned!==target.record.meta.pinned ||
+      (record.meta.external_revision?.protected===true)!==target.protectedRecord || target.cold&&record.meta.lifecycle?.tier!=='active')fail('PROTECTED_CORRECTION_RECORD_MISMATCH')
   }
   return{item,...target}
 }
 
-/** Host-only factory. The injected resolver must re-read the committed item ledger. */
+/** Host-only admitted correction; restore_cold explicitly includes one bound cold fact. */
 export function createProtectedCorrectionAuthority({store,resolveAdmittedItem,checkBoundary}={}) {
   if(typeof store?._authorize!=='function'||typeof store?._readRecord!=='function'||typeof store?.engine?.read!=='function'||
     typeof resolveAdmittedItem!=='function'||typeof checkBoundary!=='function')fail('PROTECTED_CORRECTION_BINDINGS_REQUIRED')
   return Object.freeze({async authorize(input,context,{signal}={}){
-    assertOnly(input,['evidence_id','proposal_hash','args'])
+    assertOnly(input,['evidence_id','proposal_hash','args','restore_cold'])
+    if(input.restore_cold!==undefined&&typeof input.restore_cold!=='boolean')fail('PROTECTED_CORRECTION_UNSUPPORTED_STATE')
     input=structuredClone(input)
     if(signal!==undefined&&!(signal instanceof AbortSignal))fail('INVALID_SIGNAL')
     assertId(input.evidence_id)
     if(!/^[a-f0-9]{64}$/.test(input.proposal_hash??''))fail('PROTECTED_CORRECTION_PROPOSAL_CHANGED')
-    const entry={store,resolve:resolveAdmittedItem,checkBoundary,context,signal,evidenceId:input.evidence_id,proposalHash:input.proposal_hash,argsHash:digest(input.args),status:'issued'}
+    const entry={store,resolve:resolveAdmittedItem,checkBoundary,context,signal,evidenceId:input.evidence_id,proposalHash:input.proposal_hash,argsHash:digest(input.args),restoreCold:input.restore_cold===true,status:'issued'}
     await store.engine.read(()=>{const checked=validate(entry,{args:input.args,context});entry.itemHash=digest(checked.item)})
     validate(entry,{args:input.args,context})
     const permit=Object.freeze(Object.create(null));permits.set(permit,entry);return permit
@@ -143,9 +153,13 @@ export function assertProtectedCorrectionAttempt(attempt,options) {
 }
 export function applyProtectedCorrectionMetadata(attempt,options) {
   const {record,...before}=options,checked=assertProtectedCorrectionAttempt(attempt,before),old=checked.record.meta
-  record.meta.title=old.title;record.meta.tags=structuredClone(old.tags);record.meta.pinned=old.pinned;record.meta.visibility=structuredClone(old.visibility)
-  record.meta.external_revision={protected:true,source:'admitted_user_correction',owner_revision_id:checked.origin,
+  if(checked.protectedRecord){
+    record.meta.title=old.title;record.meta.tags=structuredClone(old.tags);record.meta.pinned=old.pinned;record.meta.visibility=structuredClone(old.visibility)
+    record.meta.external_revision={protected:true,source:'admitted_user_correction',owner_revision_id:checked.origin,
     previous_protected_revision_id:old.revision_id,correction_evidence_id:checked.item.evidence_id,correction_operation_id:options.args.operation_id}
+  }
+  if(checked.cold)record.meta.lifecycle={schema_version:1,tier:'active',changed_at:record.meta.updated_at,reason_code:'USER_CORRECTION_RESTORED',
+    policy_version:LIFECYCLE_POLICY_VERSION,source_revision_id:old.revision_id}
   assertProtectedCorrectionAttempt(attempt,{...options,record})
   return record
 }

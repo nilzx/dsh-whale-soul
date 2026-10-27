@@ -1,78 +1,65 @@
-# 记忆系统设计
+# V2记忆设计
 
-> 本文记录旧版V1设计，保留作兼容和迁移参考。未发布的默认人格已使用V2，直接编辑不会自动获得可信纠错地位。见[本地管理](management.zh-CN.md)和[稳定性](stability.zh-CN.md)；完整V2生命周期与外改审查仍在实施。
+[English](MEMORY.md) · [旧版V1设计](MEMORY-V1.zh-CN.md)
 
-鲸鱼娘的记忆是一个文件驱动、分层、可编辑的记忆花园。目标是**可检查、可修正、可重建**，而不是不可变的数据库。
+改造后，可更换的人格与可靠的记忆提供方分离。事实、共同经历和人格补完采用独立的存储与加载规则。普通对话可以提供新证据和更正，但不能直接改写核心，也不能把“换一种性格”的命令变成稳定倾向。
 
-## 事实源
+## 版本与模块
 
-- `entries/<id>/meta.json` 和层文件是事实源。
-- `index.json`、`index.md`、`topics/` 是派生物；删掉后下次扫描会重建。
-- 不做逐条 hash。合法用户编辑会让 hash 失效，还要引入签名/密钥管理；而真正的问题是索引过期、写到一半、模型静默覆盖。
-- 权威性来自：Agent 单一写入路径、原子写、schema 校验、来源、版本，以及可重建索引。
+| 协议 | 当前版本 |
+|---|---|
+| 中立记忆API / writer最低版本 | 1.3.0 |
+| 存储 / record schema | 2 / 2 |
+| 完整可移植传输包 | 3 |
+| 宿主记忆提供方协议 | 1.0.0 |
 
-## 分层
+`dsh-whale-soul/memory`导出中立存储和管理API。宿主级`memory-provider`把存储提供给`persona`；移除人格不会删除数据。两个模块目前仍在同一包内，见[提供方组合](memory-provider.zh-CN.md)。
 
-| 层 | 文件 | 何时加载 | 作用 |
-|---|---|---|---|
-| L0 | 索引 / 自动目录 | 每次会话 | 标题、tags、类型、salience、一句话要旨 |
-| L1 | `gist.md` | 检索 / `soul_recall` | 这件事意味着什么 |
-| L2 | `detail.md` | 明确 `depth=detail` | 结构化细节、上下文、原话 |
-| L3 | `raw.jsonl` | 明确 `depth=raw` | 原始片段、冷证据 |
+核心是带版本的源码文本。每个持续个体拥有独立的经历依据、成长候选、稳定倾向和成熟度。`individualKey`在同一记忆空间选择个体；预设显示名不等于身份，见[个体身份](individuals.zh-CN.md)。
 
-这个分层借鉴模糊痕迹理论：要旨比逐字细节活得久。它是工程类比，不是宣称模拟大脑。
+## 存储与正文
 
-## 条目 schema
+在配置的`memoryRoot`下，选定空间使用：
 
-`meta.json` 包含：
+| 路径 | 内容 |
+|---|---|
+| `spaces/<space>/records/<record_id>/` | 当前事实/经历及有锚的`revisions/`历史 |
+| `spaces/<space>/cold/records/<record_id>/` | 完整物理冷藏条目及修订历史 |
+| `spaces/<space>/self/<agent_identity_id>/` | 原始依据、候选、稳定倾向与成长历史 |
+| `.administration/` | 根级身份、record/self完整性、清除和生命周期状态 |
 
-- `id`、`schema_version`、`type`、`title`、`summary`
-- `tags`、`entities`、`links`
-- `emotional_weight`、`salience`（emotional/identity/recurrence/novelty/unresolved）
-- `confidence`、`source`、`user_edited`、`pinned`
-- `created_at`、`updated_at`、`last_access`、`access_count`
-- `valid_from`、`valid_to`、`supersedes`、`superseded_by`
-- `layers`、`assets`、`canonical_key`
-- `status`，可选 `archived_at`
+每个record包含`meta.json`、`gist.md`、`detail.md`、`evidence.jsonl`和`integrity.json`。要旨和详情表达记忆本身；来源、归属、时间、有效期及修订信息独立保存，原始依据留在证据层。保存命令、权限话术、测试标记、原始管理patch和维护诊断不进入记忆正文。“只限本周”“偶尔”等限定属于含义，不能清理掉。
 
-tags 使用命名空间（`who:master`、`topic:food/rice`、`mood:warm`、`kind:preference`）。缺少 `kind:` 或 `topic:` 会自动补。
+索引是投影，不能替代修订历史和根锚。直接修改文件后重算hash，不会令修改自动成为可信事实。
 
-## 写入与去重
+## 取舍与纠错
 
-`soul_remember` 先构造 candidate，再找匹配的 active 条目：
+主回复前，运行时从实际用户消息中选择长期事实、重要经历和持续计划。同一消息可以保存多项事实，各自报告结果。闲聊、一次任务指令、引用或虚构、明确“不记”的信息，不会仅因模型看到就成为长期事实；敏感凭证不保留。
 
-1. 同一个 canonical key；或
-2. 同类型 + 有意义的 tag 重叠 + 标题/要旨相似。
+保存要求是控制信息：“记住我偏好白茶”保留白茶偏好，不额外写一条“要求保存”的经历。回复只能确认实际提交成功的摘录。目标不明确时保持未决，不静默覆盖无关条目。
 
-安全匹配则合并：tags 取并集，证据追加到 `detail`/`raw`，重算 salience，保留 links。canonical key 相同但内容明显不同，则新建版本，旧条目 `superseded_by`。用户编辑过的条目不静默覆盖，新内容作为 related 条目保存。
+更正绑定具体record及修订号，保留旧版本和来源。明确自然更正可定位冷藏事实，在一次提交中恢复并修订；获准目标与版本仍须匹配。受保护条目的标题、标签、置顶和保护元数据保持，旧正文留在历史中。人工审阅采纳的文字仍标为引用，不冒充当前用户原话或成长事件。直接外改走独立[审查流程](external-review-api.md)，不按修改时间自动采纳。
 
-宁可保守：不确定的相似度应该变成 link 或独立条目，而不是静默合并。
+## 明确双方约定
 
-## 衰退与做梦
+[首版对话桥接](agreements.zh-CN.md)识别明确的中英文未来约定提议。提议保持`proposed`；独立用户确认与Agent实际执行`soul_agreement_accept`两者齐备才成为`open`。明确取消和期限分别处理。保存指令不变成约定，这些事件也不增加成长或成熟度。交付结果匹配、广泛语义覆盖及实际Web验收仍未完成。
 
-`retrievability` 使用按类型区分的半衰期，并受 access count 和 salience 影响。真正的整理只在“到期 + 会话空闲”时运行：
+## 召回与生命周期
 
-- `detail` 先移入 `cold/`。
-- `raw` 再移入 `cold/`。
-- gist 可以压缩成目录行。
-- 很旧的低分量条目归档。
-- `pinned` 和 `user_edited` 受保护。
-- 永久删除需要显式开启 `autoPurgeArchived`。
+自动上下文按预算加载选定的现行记忆；`soul_recall`支持要旨、详情和原始证据检索，遵循当前身份与可见范围。`include_cold: true`可显式检索物理冷藏的旧事；普通召回及自动上下文不含冷藏条目。读取冷藏条目本身不等于恢复或修订。
 
-整理只写 `dreams/YYYY-MM-DD.md`，并向可选的身体适配器发内部 dream 事件；不写聊天状态汇报。
+物理生命周期维护需显式开启：`autoMemoryMaintenance`与`automaticCold`默认均为false。冷藏保留条目和历史，不把年代久远当作删除要求。实际行为与限制见[生命周期与更深回忆](lifecycle.zh-CN.md)。
 
-## 用户编辑
+## 独立人格补完
 
-- 用户可以编辑任何条目文件。
-- 加载时扫描文件；`mtime` 和解析结果足以识别外部编辑。
-- 合法编辑视为 `source: user`，标记 `user_edited`，重建索引。
-- 非法条目移入 `quarantine/` 并保留。
-- Agent 不得静默覆盖用户编辑过的条目。修正事实应创建版本或 related 条目。
+实际选择、结果及后续反馈可以成为成长候选依据。反思与当前稳定性门槛决定兼容候选何时沉淀为稳定倾向；候选不会以稳定人格加载。一条消息拆成多项事实仍只算一个事件，重复和改性格命令不能制造成熟度。
 
-## 图片资产
+多变、普通、顽固、自动四档调整后续成长门槛；核心身份和事实纠错保持连续。默认自动随有效经历逐渐稳固，见[稳定性](stability.zh-CN.md)与[人格完整性](self-integrity.zh-CN.md)。长期模型表现仍需独立验收。
 
-图片按 SHA-256 内容寻址存放在 `assets/`，旁边有 JSON 元数据（tags、来源、描述、使用次数）。`soul_meme_save` 是显式动作：`recent_image: true` 会通过 `ctx.attachments` 读取当前会话最近一张图片；也支持本地路径或 URL。身体适配器可以通过本地 `/whale-soul-assets/` 路由把图片 URL 交给可选身体的 `broadcast`（见 [BODY.zh-CN.md](BODY.zh-CN.md)）。不会自动捕获任何图片。
+## 可移植与本地管理
 
-## 隐私
+使用[本地管理CLI](management.zh-CN.md)预览、导出、导入、迁移旧库和精确移除。完整transfer v3保留record位置、来源、修订、个体身份、成长、成熟度，以及适用的完整性和清除状态。仅复制某个`self/`文件夹不是完整的身份续接。当前宿主档位优先于导入快照。
 
-只存本地，不上传云端。人设排除敏感凭证。图片只在用户同意时保存。
+V1通过明确迁移进入独立目标根。早期V2 API1.0先走审阅后的record基线API，再执行`upgrade-self`；API1.1/1.2使用已有独立目标根升级流程。源库保留，见[升级边界](self-integrity.zh-CN.md)。
+
+当前是未发布原型。核心事实、纠错、重启及聚焦成长旅程已有实际验证；组件数量不能替代完整发布、长期成长和可选身体旅程。V2尚未实现新的叙事梦日记，现有反思不同于[V1梦日记](MEMORY-V1.zh-CN.md)。

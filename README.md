@@ -1,6 +1,4 @@
 <p align="center">
-
-Only the `whale-soul` preset is registered. Sessions that reference a retired preset must select the current preset in the host before resuming. This change does not rewrite session history or stored memories.
   <img src="assets/icon.png" alt="Whale Chan" width="128" height="128">
 </p>
 
@@ -10,7 +8,7 @@ An in-character **Whale Chan (鲸鱼娘)** Agent mode for [DeepSeek Harness](htt
 
 [中文文档](README.zh-CN.md)
 
-> Unreleased refactor branch: the default persona now uses the V2 memory runtime. Migration, lifecycle maintenance and end-to-end acceptance are still in progress. Stop the old writer and use the [local management workflow](docs/management.md) before moving legacy data; do not treat this branch as a finished upgrade release.
+> Unreleased refactor preview: the default persona uses V2 memory API 1.3 and full transfer format 3. Fact selection, sourced corrections, independent growth, lifecycle maintenance, owner review and portable transfer are implemented. Focused real-session journeys have passed; full release acceptance, long-term growth and optional body journeys remain open. Use the [local management workflow](docs/management.md) before moving old data.
 
 ## What it is
 
@@ -21,6 +19,7 @@ An in-character **Whale Chan (鲸鱼娘)** Agent mode for [DeepSeek Harness](htt
 - **A continuous persona** — ordinary chat does not rewrite her core identity. Host safety, privacy, permissions and stop controls remain effective.
 - **Language following** — the persona asks for replies and visible explanations in the language of the current message; model behavior is tested separately.
 - **Scoped long-term memory** — selected facts retain original evidence, revisions and identity attribution. Several facts in one message have separate outcomes.
+- **Explicit agreements** — a [narrow conversation bridge](docs/agreements.md) keeps proposals separate from mutual acceptance; clear cancellation and deadlines are supported. Delivery-result matching and broader model/Web acceptance remain open.
 - **Independent growth** — personality additions are stored apart from facts and the core, with evidence and later reflection before they become stable.
 - **Adjustable stability** — `variable`, `normal`, `stubborn` and default `auto` control growth thresholds. Auto becomes steadier with eligible experiences; chat commands and repeated self-descriptions do not qualify.
 - **Owner management** — explicit local preview, export, migration and precise purge live outside ordinary persona tools. Direct file changes do not gain core authority.
@@ -46,6 +45,10 @@ dsh plugin --profile web add dsh-whale-soul
 
 Use `--profile desktop` instead of `web` if you use the desktop profile.
 
+These registry commands install the published release. To use this unreleased refactor, install its locally built archive instead: `dsh plugin --profile web add /absolute/dsh-whale-soul-preview.tgz`.
+
+Only the `whale-soul` preset is registered. Sessions that reference a retired preset must select the current preset in the host before resuming. This change does not rewrite session history or stored memories.
+
 After installation, start a new session and choose **Whale Chan** (shown as **鲸鱼娘** when DSH is in Chinese) in the Agent mode selector. Existing sessions keep the preset they started with.
 
 ## Use
@@ -55,13 +58,13 @@ After installation, start a new session and choose **Whale Chan** (shown as **�
 - Configure `stabilityMode` on the `dsh-whale-soul/persona` plugin row. [Stability rules](docs/stability.md) describe the four modes and persistent maturity.
 - Run `/whale-context en` to inspect Whale Soul's estimated share of the current retained context, split into persona core, growth, memory/recall, runtime hints and tools. Both whole-context and within-Whale percentages are shown. The local command makes no model call and does not add its output to model context or memory; counts use DSH's heuristic and are not billing tokens.
 - Read [self integrity and owner upgrades](docs/self-integrity.md) before moving an older memory root to API 1.3. Unanchored 1.1 growth remains opaque; a 1.2 source must retain its trusted self anchors, and missing anchors are rejected. See [lifecycle and deeper recall](docs/lifecycle.md) for the writer floor and cold-memory boundaries.
-- Use the [local management CLI](docs/management.md) for owner operations. V2 rejects integrity-breaking direct edits; external-change review and the full memory lifecycle are still under implementation.
+- Use the [local management CLI](docs/management.md) for owner operations. Direct edits need explicit [external-change review](docs/external-review-api.md); [V2 memory design](docs/MEMORY.md) explains storage, content purity and portability.
 
 ## Privacy and safety
 
 - Stored memory stays local under the configured root. Relevant memory is sent to the configured model provider when included in an Agent request.
 - The persona is all-ages and non-sexual. Harmful or sexualized requests are refused in character.
-- The Agent does not record passwords, tokens, bank details, or identity numbers. You can ask her to forget something.
+- The Agent does not record passwords, tokens, bank details, or identity numbers. Tell her not to retain new information; precise removal of stored records uses the local owner management workflow. Conversational removal of a detail is not implemented.
 - Images are saved only when you explicitly ask; nothing is captured automatically.
 - Owner operations can export, migrate and purge data. Persona tools cannot grant themselves management permission or bypass protected host paths.
 - She does not claim to be a real person, and she does not create exclusive dependency.

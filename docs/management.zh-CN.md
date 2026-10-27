@@ -12,10 +12,11 @@
 node /plugin/src/manage.js status --root /绝对路径/memory --space owner
 node /plugin/src/manage.js export --root /绝对路径/memory --space owner --out /绝对路径/export.json
 node /plugin/src/manage.js import --root /绝对路径/new-memory --space owner \
-  --archive /绝对路径/export.json --identity-mode preserve --accept-purge-state --accept-persona-state
+  --archive /绝对路径/export.json --identity-mode preserve --accept-purge-state --accept-persona-state \
+  --accept-integrity-state --accept-self-integrity
 ```
 
-导出直接写入明确指定的文件，已有文件不覆盖。导入保留身份，并要求明确接受包中携带的清除状态和人格状态。成熟度倒退仍由公开接口拒绝，只有另外显式使用 `--allow-maturity-reset` 才可能执行获准的管理重置。普通聊天不能授予这些能力。
+导出直接写入明确指定的文件，已有文件不覆盖。当前完整transfer v3导入保留身份，并要求明确接受包中携带的清除、人格、record完整性与self完整性状态；示例列出对应四个参数。旧transfer v1另外需要`--accept-legacy-baseline`，它不替代旧根升级。成熟度倒退仍由公开接口拒绝，只有另外显式使用 `--allow-maturity-reset` 才可能执行获准的管理重置。普通聊天不能授予这些能力。
 
 ```sh
 node /plugin/src/manage.js migrate-v1 --root /绝对路径/v2-memory --space owner \
@@ -28,6 +29,18 @@ node /plugin/src/manage.js migrate-v1 --root /绝对路径/v2-memory --space own
 V2运行时发现无manifest的旧根时返回`LEGACY_MIGRATION_REQUIRED`，不会在那里建立空白替代库。请选择独立的空目标根。如果无归属旧记录应接续某个人格，先在新目标根初始化该人格、停止其写入，再从`status`取得真实个体ID用于迁移；任意填写ID不会自动绑定人格anchor。上述参数不会重分配旧记录已有的归属。
 
 同时含旧版标志和V2根manifest的目录返回`MIXED_MEMORY_ROOT`。先停写并保全目录，不要删除manifest，也不要直接把混合目录交给`migrate-v1`。当前CLI不提供自动提取或混合根恢复。
+
+## 早期V2根升级
+
+API1.1/1.2根使用独立目标目录的升级入口：
+
+```sh
+node /plugin/src/manage.js upgrade-self --root /绝对路径/new-memory --space owner \
+  --source /绝对路径/已停止的旧v2-memory --source-quiescent \
+  --legacy-self-policy preserve-opaque
+```
+
+先核对预览，应用时在同一命令加`--snapshot HASH --apply`。可信1.2成长保留原锚；未锚定的1.1成长仅保全为历史。API1.0须先走[record基线API](external-review-api.md)，再执行此步骤，CLI尚未自动串联基线建立。详见[人格完整性与升级](self-integrity.zh-CN.md)。
 
 ```sh
 node /plugin/src/manage.js purge --root /绝对路径/memory --space owner --record 记录ID@预期修订号

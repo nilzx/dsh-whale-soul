@@ -23,6 +23,11 @@ export function createPersonaTools(runtime) {
     tool('soul_remember', '核对这一轮经过可信选择后实际留下的内容。不接受你编写的新事实、来源或重要性；闲聊、命令、敏感信息和明确不记的内容不能用此工具强行保存。', {
       type: 'object', additionalProperties: false, properties: {},
     }, (_args, agent) => runtime.rememberCurrent(agent)),
+    tool('soul_agreement_accept', '明确接受一项真实用户提出的未来约定。只传当前提议的ID和版本；先核对条款是否符合自身人格与能力。你的接受不代替用户的独立确认；双方都接受后才成立，不能用此工具声称已经履行。', {
+      type: 'object', additionalProperties: false, properties: {
+        record_id: { type: 'string', maxLength: 128 }, expected_revision: { type: 'integer', minimum: 1 },
+      }, required: ['record_id', 'expected_revision'],
+    }, (args, agent, exec) => runtime.acceptAgreement(agent, args, exec)),
     tool('soul_forget', '说明记忆管理边界。普通聊天不能授予永久删除或恢复权限；需要授权管理的操作应如实说明，不声称已经忘掉。', {
       type: 'object', additionalProperties: false, properties: {
         query: { type: 'string', maxLength: 2000 }, record_id: { type: 'string', maxLength: 128 },

@@ -46,12 +46,12 @@ const rejected = (reason, decision = 'reject') => branded({ batch_version: 1, de
 export const isBatchSelectionDecision = (value) => Boolean(value && decisions.has(value))
 
 /** Only trusted callers may construct a catalog from an authorized retrieval view. */
-export function createKnownSlotCatalog(view, identity) {
+export function createKnownSlotCatalog(view, identity, { includeCold = false } = {}) {
   if (!view || !Array.isArray(view.items) || typeof view.isCurrent !== 'function' || !view.isCurrent()) fail('BATCH_SLOT_VIEW_REQUIRED')
   const slots = []
   for (const item of view.items) {
     const meta = item?.meta
-    if (!meta || meta.status !== 'active' || scopeKeys.some((key) => meta[key] !== identity[key]) ||
+    if (!meta || meta.status !== 'active' && !(includeCold && meta.lifecycle?.tier === 'cold') || scopeKeys.some((key) => meta[key] !== identity[key]) ||
       meta.memory_space_id !== identity.memory_space_id || meta.visibility?.kind !== 'private' || !['fact', 'preference', 'episode', 'promise'].includes(meta.type)) continue
     if (meta.canonical_key !== null && (!keyPattern.test(meta.canonical_key) || meta.canonical_key.length > 128) || !Number.isSafeInteger(meta.revision) || meta.revision < 1 ||
       typeof item.gist !== 'string' || !item.gist.isWellFormed()) fail('BATCH_INVALID_SLOT_VIEW')

@@ -26,10 +26,11 @@ Status reports IDs and counts, without memory bodies. Export writes the explicit
 
 ```sh
 node /absolute/plugin/src/manage.js import --root /absolute/new-memory --space owner \
-  --archive /absolute/export.json --identity-mode preserve --accept-purge-state --accept-persona-state
+  --archive /absolute/export.json --identity-mode preserve --accept-purge-state --accept-persona-state \
+  --accept-integrity-state --accept-self-integrity
 ```
 
-Import preserves identities. The two acceptance flags acknowledge the corresponding archive states; they are required when that state is present. Maturity rollback remains refused unless an owner additionally supplies `--allow-maturity-reset` and the public API permits the exact reset. Add `--apply` only after reviewing the preview. A new destination root is not created by preview.
+Current full transfer-v3 imports preserve identities. The example explicitly accepts purge, persona, record-integrity and self-integrity states; each flag is required when its corresponding state is present. A legacy transfer-v1 archive additionally requires `--accept-legacy-baseline`; that flag does not replace an old-root upgrade. Maturity rollback remains refused unless an owner additionally supplies `--allow-maturity-reset` and the public API permits the exact reset. Add `--apply` only after reviewing the preview. A new destination root is not created by preview.
 
 ```sh
 node /absolute/plugin/src/manage.js migrate-v1 --root /absolute/v2-memory --space owner \
@@ -42,6 +43,18 @@ Stop v1 maintenance/watchers first. `--source-quiescent` is the owner's declarat
 The V2 runtime refuses an unmanifested legacy root with `LEGACY_MIGRATION_REQUIRED`; it does not create an empty replacement space there. Select a separate empty destination. If unattributed legacy records should belong to a particular continuing persona, first initialize that persona in the new destination, stop its writer, and obtain its real identity from `status`; then use that identity in the migration command. Supplying an arbitrary identity does not connect data to the persona anchor. Existing legacy attribution is preserved rather than reassigned by these flags.
 
 A directory containing both legacy markers and a V2 root manifest is refused as `MIXED_MEMORY_ROOT`. Preserve it and stop all writers. Do not delete its manifest or point `migrate-v1` directly at the mixed directory; automatic extraction and mixed-root recovery are not provided by this CLI.
+
+## Upgrade an early V2 root
+
+Use a separate destination for an API 1.1/1.2 root:
+
+```sh
+node /absolute/plugin/src/manage.js upgrade-self --root /absolute/new-memory --space owner \
+  --source /absolute/stopped-old-v2-memory --source-quiescent \
+  --legacy-self-policy preserve-opaque
+```
+
+Review the preview, then add `--snapshot HASH --apply` to the same command. Trusted 1.2 growth retains its anchors; unanchored 1.1 growth is preserved only as historical material. API 1.0 first needs the [record-baseline API](external-review-api.md), then this step; the CLI does not yet chain baseline establishment automatically. See [self integrity and upgrades](self-integrity.md).
 
 ```sh
 node /absolute/plugin/src/manage.js purge --root /absolute/memory --space owner \

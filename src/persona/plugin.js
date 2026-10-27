@@ -22,7 +22,7 @@ export const name = 'whale-soul-persona'
 export const inject = ['whaleMemory', 'systemPrompt', 'tools', 'llm', 'sandboxPolicy', 'fs', 'subprocess', 'sandbox', 'agents']
 const runtimes = new WeakMap()
 export const runtimeFor = (ctx) => runtimes.get(ctx)
-const serviceTools = ['soul_recall', 'soul_remember', 'soul_forget', 'soul_view_image', 'soul_meme_save', 'soul_meme_recall', 'soul_meme_use', 'soul_react',
+const serviceTools = ['soul_recall', 'soul_remember', 'soul_forget', 'soul_agreement_accept', 'soul_view_image', 'soul_meme_save', 'soul_meme_recall', 'soul_meme_use', 'soul_react',
   'ask_user_question', 'todo_write', 'web_search', 'web_fetch', 'job_list', 'job_output', 'job_kill']
 
 /** Explicit constructors make the host composition testable without global state. */

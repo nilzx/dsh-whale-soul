@@ -34,7 +34,8 @@ const activeAt = (meta, at, includeCold = false) => (meta.status === 'active' ||
   (!meta.valid_to || at < Date.parse(meta.valid_to)) && (!meta.expires_at || at < Date.parse(meta.expires_at)) &&
   (!meta.agreement || meta.agreement.state === 'open' && (!meta.agreement.due_at || at < Date.parse(meta.agreement.due_at)))
 function score(record, queryTerms) {
-  const fields = [[record.meta.title, 3], [(record.meta.tags ?? []).join(' '), 4], [record.meta.canonical_key ?? '', 2], [record.gist, 1]]
+  const fields = [[record.meta.title, 3], [(record.meta.tags ?? []).join(' '), 4], [record.meta.canonical_key ?? '', 2], [record.gist, 1],
+    [record.meta.agreement ? '约定 promise agreement 約束' : '', 1]]
   let total = 0
   for (const [value, weight] of fields) {
     const haystack = String(value).normalize('NFKC').toLowerCase()
@@ -192,6 +193,7 @@ export async function retrieveMemory(store, args = {}, context, hostOptions = {}
         observe(join(store.root, '.administration', 'record-heads', store.memorySpaceId, `${record.meta.record_id}.json`))
         for (const file of LAYERS) observe(store.engine.resolvePath(`${base}/${file}`))
         return { meta: structuredClone(record.meta), relevance,
+          ...(record.meta.external_revision?.source === 'admitted_user_correction' ? { display_title: record.gist.slice(0, 160).toWellFormed() } : {}),
           ...(depth !== 'index' ? { gist: record.gist } : {}),
           ...(['detail', 'raw'].includes(depth) ? { detail: record.detail } : {}),
           ...(depth === 'raw' ? { evidence: structuredClone(record.evidence) } : {}) }
@@ -235,7 +237,7 @@ export async function buildMemoryContext(store, args = {}, context, hostOptions 
     let body = ''
     for (const item of result.items) {
       if (![item.meta.title, item.gist ?? ''].every((value) => typeof value === 'string' && value.isWellFormed())) continue
-      const line = JSON.stringify({ id: item.meta.record_id, type: item.meta.type, subject: item.meta.subject_id, title: item.meta.title,
+      const line = JSON.stringify({ id: item.meta.record_id, type: item.meta.type, subject: item.meta.subject_id, title: item.display_title ?? item.meta.title,
         ...(item.gist === undefined ? {} : { gist: item.gist }), claim: item.meta.claim_kind,
         ...(item.meta.claim_kind === 'quotation' && item.meta.external_revision?.protected === true ? { source: 'owner_reviewed_quotation' } : {}),
         from: item.meta.valid_from, until: item.meta.valid_to ?? item.meta.expires_at,

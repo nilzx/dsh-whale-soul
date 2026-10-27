@@ -1,12 +1,12 @@
 # External record review API (experimental backend)
 
-This branch implements an owner-only backend and opt-in watcher/Web review host adapter for API **1.1.0**, record schema **2**, integrity state schema **1**, and portable transfer format **2**. Nothing is installed into a persona automatically. There is no Agent management tool or growth/core recovery adapter.
+The current backend uses memory API **1.3.0**, record schema **2**, record-integrity state schema **1**, and full portable transfer format **3**. This module provides owner record review and an opt-in watcher/Web host adapter. It does not install a management tool into ordinary persona chat or edit the persona core. Self-state recovery is a separate [owner API](self-integrity.md).
 
 The trust boundary is a local owner process outside the persona's restricted tools. It is not human authentication against every process running as the same OS user. Root metadata contains only identifiers and hashes; raw records and quarantined content remain private to the memory root. An owner who rewrites both root anchors and all source copies is outside the guarantee.
 
 ## Upgrade safely
 
-Prefer a **new absolute destination root**. Export the old 1.0 library with its original owner tooling, retain source snapshots before and after export/import, and explicitly accept that old archive as a baseline in the new store. `MemoryTransfer.importSpace()` requires `identity_mode:'preserve'`, the existing purge/persona acceptance flags where applicable, and `accept_legacy_baseline:true` for a version-1 archive. A running old process remains confined to its old path. Reopening the new 1.1 root with the old reader is rejected before writing.
+Prefer a **new absolute destination root**. Export the old 1.0 library with its original owner tooling, retain source snapshots before and after export/import, and explicitly accept that old archive as a baseline in the new store. `MemoryTransfer.importSpace()` requires `identity_mode:'preserve'`, the existing purge/persona acceptance flags where applicable, and `accept_legacy_baseline:true` for a version-1 archive. Current transfer-v3 archives also require `accept_integrity_state:true` and `accept_self_integrity:true`, with the corresponding CLI flags shown in [management](management.md). A running old process remains confined to its old path. Older readers must not write the current API1.3 destination.
 
 In-place baseline establishment is an explicit exception for an owner who has stopped the old writers. `source_quiescent:true` is an **owner declaration**, not proof that another process has stopped. An old process initialized before the upgrade cannot be remotely revoked by new JavaScript. A later old-process write is rejected as an external change by the new anchors; the new backend does not silently trust it.
 
@@ -28,11 +28,11 @@ const applied = await review.establishBaseline({
   operation_id: 'owner-baseline-001', source_quiescent: true, dry_run: false,
   expected_snapshot: preview.source_snapshot,
 }, context)
-// Check the structured result before initializing the upgraded store.
-await store.initialize()
+// Check the structured result. This creates an intermediate API 1.1 root.
+// Stop using this store here; continue with upgrade-self into a separate destination.
 ```
 
-The in-place helper currently supports a single-space 1.0 root. A multi-space source is explicitly refused; use isolated exports/imports per space. Missing, malformed, unsupported, or unanchored data is not repaired by recomputing its own `integrity.json`. Historical operation receipts are not rewritten.
+The in-place helper supports a single-space API 1.0 root and deliberately stops at API 1.1; it does not produce a directly usable API 1.3 root. Continue with the separate-root [self upgrade](self-integrity.md) before starting the current runtime. A multi-space source is explicitly refused; use isolated exports/imports per space. Missing, malformed, unsupported, or unanchored data is not repaired by recomputing its own `integrity.json`. Historical operation receipts are not rewritten.
 
 ## Scan, review, resolve
 
@@ -51,9 +51,9 @@ The original detached inode remains preserved, including late writes through an 
 
 ## Transfer and purge
 
-Version-2 archives require `integrity_state` and explicit `accept_integrity_state:true` at import. Removing that field and downgrading the version cannot bypass the separate old-baseline acceptance gate. Divergent existing heads are rejected, even when the imported revision number is higher. Quarantine stays quarantine across roots. Omitted pending payloads are listed and are not advertised as restored.
+Current full version-3 archives carry both `integrity_state` and `self_integrity_state`; imports explicitly accept them with `accept_integrity_state:true` and `accept_self_integrity:true`, plus applicable purge/persona acceptance. Version-2 archives carry record integrity without self integrity, and version-1 archives require explicit legacy-baseline acceptance. These older archive versions are compatibility inputs, not substitutes for a complete current backup. Removing fields and downgrading the version cannot bypass the separate old-baseline acceptance gate. Divergent existing heads are rejected, even when the imported revision number is higher. Quarantine stays quarantine across roots. Omitted pending payloads are listed and are not advertised as restored.
 
-The local CLI recognizes `--accept-integrity-state` and `--accept-legacy-baseline`, and its shadow snapshot includes the new record heads. External review is not yet exposed as CLI subcommands. Managed purge can target an unreadable quarantined record using the trusted scope/revision anchor, preserves siblings/shared references, and removes its managed forensic copies. Root purge tombstones remain without plaintext.
+The local CLI recognizes `--accept-integrity-state`, `--accept-self-integrity` and `--accept-legacy-baseline`; its shadow snapshot includes record and self heads. External review is not yet exposed as CLI subcommands. Managed purge can target an unreadable quarantined record using the trusted scope/revision anchor, preserves siblings/shared references, and removes its managed forensic copies. Root purge tombstones remain without plaintext.
 
 ## Optional host watcher and owner Web review
 
@@ -83,8 +83,10 @@ The public route methods are GET `/` and `/state`, and POST `/scan`, `/preview`,
 
 The Chinese page displays before/after values as plain text, its verified restore choices, and selected adoption fields. It uses a nonce CSP, no inline event attributes or untrusted HTML insertion. The standalone B1 owner profile explicitly states that it covers **records only** and does not contain a chat Agent. Routes, one-use previews, CSRF leases, requests and watch resources are released on disposal; duplicate installation for the same context/root/space is rejected. A future combined owner/persona UI must describe its actual read integration rather than reusing that standalone profile's chat limitation blindly.
 
-## Remaining integration
+## Integration and limits
 
-The [owner quotation read adapter](external-read-authority.md) now provides bounded root-anchored persona reads and a final main-request lease check. It deliberately rejects invalid retained owner snapshots; it does not perform complete Session-history cleanup or protected user corrections. This must not be advertised as a completed persona chat journey. Growth/core anchors, trusted backup selection, full multi-space in-place upgrade, actual old-service quiescence testing, and physical-cold watcher integration remain separate work. Native watch evidence is currently macOS only; unsupported-platform fallback is simulated and disclosed. HTTP/Cordis component evidence, browser owner review, and actual model behavior remain separate layers.
+The [owner quotation read adapter](external-read-authority.md) provides bounded root-anchored persona reads and a final main-request lease check. [Injected-context handling](injected-context-boundary.md) and [protected fact correction](protected-fact-correction.md) have their own runtime contracts; their implementation is not a general grant to overwrite owner-reviewed text. [Self integrity and upgrades](self-integrity.md) covers growth-state anchors and recovery separately. Core text remains versioned source.
 
-中文摘要：独立所有者可显式安装自动监测和中文审核页，先核验差异，再按指定字段采纳或恢复可信原件。接口沿官方本地Web所有者认证，普通聊天不获得管理能力。只读租约可将合法人工引用提供给人格，但旧快照失败闭合、历史清理及受保护事实更正仍有独立边界；成长/核心恢复、冷数据监听也未在本模块完成，不能据组件通过关闭完整RF验收。优先把旧库导入独立新根；原地建立基线需要所有者确实停写，参数本身不证明已停。
+This record-review module does not implement full multi-space in-place upgrade or physical-cold watcher coverage. Native watch evidence is currently macOS only; unsupported-platform fallback is simulated and disclosed. HTTP/Cordis checks, browser owner review and actual model journeys are separate evidence layers; none alone closes full release acceptance.
+
+中文摘要：当前为记忆API1.3、record schema 2、完整transfer v3。所有者可显式安装监测和中文审核页，核验差异后采纳指定字段或恢复可信原件；普通聊天不获得管理能力。完整导入需明确接受record与self完整性状态，另有适用的人格和清除状态。早期API1.0的record基线只产生1.1中间根，还需独立目标根的self升级。人格读取、受保护事实纠错与成长恢复分别见对应文档；多空间原地升级、冷藏目录监听与完整跨平台/发布验收仍未完成。

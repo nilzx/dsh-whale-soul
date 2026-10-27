@@ -1,78 +1,65 @@
-# Memory design
+# V2 memory design
 
-> Legacy V1 design, retained for compatibility and migration reference. The unreleased default persona uses V2: direct edits do not automatically become trusted corrections. See [local management](management.md) and [stability](stability.md); full V2 lifecycle and external-change review remain under implementation.
+[中文](MEMORY.zh-CN.md) · [Historical V1 design](MEMORY-V1.md)
 
-Whale Chan's memory is a file-backed, layered memory garden. It is designed to be **inspectable, editable, and rebuildable**, not to be an immutable database.
+The refactor separates a replaceable persona from a durable memory provider. Facts, personal experiences and personality growth have distinct storage and loading rules. Ordinary conversation can supply new evidence and corrections; it cannot rewrite the core or turn an instruction to act differently into a stable trait.
 
-## Source of truth
+## Versions and modules
 
-- `entries/<id>/meta.json` and the layer files are the source of truth.
-- `index.json`, `index.md`, and `topics/` are derived; delete them and the next scan rebuilds them.
-- There are no per-entry hashes. Legitimate user edits would invalidate hashes and add key-management ceremony without preventing the real risks: stale indexes, partial writes, and silent model overwrites.
-- Authority comes from one writer for the Agent, atomic writes, schema validation, provenance, versioning, and a rebuildable index.
+| Contract | Current version |
+|---|---|
+| Neutral memory API / writer floor | 1.3.0 |
+| Storage / record schema | 2 / 2 |
+| Full portable transfer archive | 3 |
+| Host memory-provider protocol | 1.0.0 |
 
-## Layers
+`dsh-whale-soul/memory` exports the neutral store and owner APIs. The host-level `memory-provider` supplies that store to `persona`; removing the persona does not delete the data. Both modules remain in one package. See [provider composition](memory-provider.md).
 
-| Layer | File | Loaded when | Purpose |
-|---|---|---|---|
-| L0 | index / L0 context | every session | title, tags, type, salience, one-line gist |
-| L1 | `gist.md` | retrieval / `soul_recall` | what the memory means |
-| L2 | `detail.md` | explicit `depth=detail` | structured detail, context, quotes |
-| L3 | `raw.jsonl` | explicit `depth=raw` | original snippets, cold evidence |
+The core is versioned source text. Each continuing individual has its own evidence, growth proposals, stable traits and maturity. `individualKey` selects an individual within a memory space; changing the displayed preset name is not an identity change. See [individuals](individuals.md).
 
-The split is inspired by fuzzy-trace theory: the gist outlives the verbatim details. It is an engineering analogy, not a claim to simulate a brain.
+## Storage and content
 
-## Entry schema
+Under the configured `memoryRoot`, a selected space uses:
 
-Each `meta.json` includes:
+| Location | Contents |
+|---|---|
+| `spaces/<space>/records/<record_id>/` | Current fact/episode bundle and anchored `revisions/` |
+| `spaces/<space>/cold/records/<record_id>/` | Complete physically cold bundles, including revision history |
+| `spaces/<space>/self/<agent_identity_id>/` | Original evidence, proposals, stable traits and growth history |
+| `.administration/` | Root identity, record/self integrity, purge and lifecycle authority |
 
-- `id`, `schema_version`, `type`, `title`, `summary`
-- `tags`, `entities`, `links`
-- `emotional_weight`, `salience` (emotional/identity/recurrence/novelty/unresolved)
-- `confidence`, `source`, `user_edited`, `pinned`
-- `created_at`, `updated_at`, `last_access`, `access_count`
-- `valid_from`, `valid_to`, `supersedes`, `superseded_by`
-- `layers`, `assets`, `canonical_key`
-- `status` and optional `archived_at`
+A record bundle contains `meta.json`, `gist.md`, `detail.md`, `evidence.jsonl` and `integrity.json`. Gist and detail express the memory itself. Provenance, attribution, timing, validity and revision metadata remain separate; original evidence is retained as evidence. Save commands, permission text, test markers, raw management patches and maintenance diagnostics do not belong in memory prose. Scope such as “this week” or “occasionally” remains part of the meaning.
 
-Tags are namespaced (`who:master`, `topic:food/rice`, `mood:warm`, `kind:preference`). A missing `kind:` or `topic:` is filled automatically.
+Indexes are projections, not substitutes for record history or root anchors. Recomputing a file hash after a direct edit does not make that edit trusted.
 
-## Writes and de-duplication
+## Selection and correction
 
-`soul_remember` builds a candidate and looks for a matching active entry:
+Before the main reply, the runtime selects durable facts, important experiences and continuing plans from actual user messages. It can keep several distinct facts from one message, with an outcome for each. Chatter, one-off task directions, quoted fiction and explicit non-retention requests do not become lasting facts merely because the model sees them. Sensitive credentials are excluded.
 
-1. same canonical key, or
-2. same type + meaningful tag overlap + similar title/gist.
+A save instruction is control information: “remember that I prefer white tea” retains the preference, not a second memory about the request to save it. The reply may confirm only the excerpts that actually committed. Ambiguous matches stay unresolved rather than silently replacing an unrelated record.
 
-If the match is safe, the candidate merges: tags are unioned, evidence is appended to `detail`/`raw`, salience is recomputed, and links are kept. If the canonical key matches but the content is materially different, a new version is created and the old entry is marked `superseded_by`. A user-edited entry is never silently overwritten; the new candidate is stored as a related entry.
+Corrections target a specific record/revision and preserve earlier versions and sources. An explicit natural correction can locate a cold fact and commit its restoration plus revision together; the admitted target and revision must still match. Protected title, tags, pinned and protection metadata remain intact, and the earlier body stays in history. Owner-reviewed text stays attributed as a quotation; it does not become an invented user statement or growth event. Direct external edits use the separate [review workflow](external-review-api.md), not automatic adoption by modification time.
 
-This is intentionally conservative. Uncertain matches should become links or separate entries, not silent merges.
+## Explicit agreements
 
-## Decay and dreams
+The [first conversation bridge](agreements.md) recognizes explicit Chinese/English future-agreement proposals. A proposal stays `proposed`; an independent user confirmation and the Agent’s actual `soul_agreement_accept` action are both required for `open`. Clear cancellation and deadlines are handled separately. Storage instructions do not become agreements, and these events do not qualify as growth or maturity. Delivery-result matching, broad semantic coverage and actual Web acceptance remain open.
 
-`retrievability` uses a type-specific half-life and is reinforced by access count and salience. The actual pass runs only when maintenance is due and the session has been idle:
+## Recall and lifecycle
 
-- `detail` moves to `cold/` first.
-- `raw` moves to `cold/` next.
-- A gist can be compressed to an index line.
-- Very old low-salience entries are archived.
-- `pinned` and `user_edited` entries are protected.
-- Permanent deletion is opt-in (`autoPurgeArchived`).
+Bounded automatic context loads selected current memories. `soul_recall` supports deliberate gist, detail and raw-evidence retrieval, with the current identity and visibility rules. `include_cold: true` explicitly includes older physically cold records; ordinary recall and automatic context exclude them. Reading a cold record alone does not restore or revise it.
 
-The pass writes `dreams/YYYY-MM-DD.md` and emits internal dream events for the optional body adapter. It never writes a chat status report.
+Physical lifecycle maintenance is opt-in: `autoMemoryMaintenance` and `automaticCold` default to false. It preserves cold records and history rather than treating age as a deletion request. See [lifecycle and deeper recall](lifecycle.md) for current behavior and limitations.
 
-## User edits
+## Independent growth
 
-- The user may edit any entry file.
-- On load, files are scanned; `mtime` and parsing are enough to detect external edits.
-- Valid edits are treated as `source: user`, marked `user_edited`, and indexed.
-- Invalid entries are moved to `quarantine/` and preserved.
-- The Agent must not silently overwrite a user-edited entry. Correcting a fact should create a version or a related entry.
+Actual choices, outcomes and later feedback may support a growth proposal. Reflection and the configured stability thresholds determine when a compatible proposal becomes a stable tendency. Candidates are not loaded as stable personality. One event split into several facts still counts as one event; repetition and requests to change personality do not manufacture maturity.
 
-## Assets
+`variable`, `normal`, `stubborn` and default `auto` affect later growth thresholds. Core identity and factual correction remain continuous across modes. Auto becomes steadier with qualifying experiences. See [stability](stability.md) and [self integrity](self-integrity.md); long-term model behavior remains a separate acceptance scope.
 
-Images live in `assets/` under their SHA-256 content hash, with a JSON sidecar describing tags, source, description, and usage. `soul_meme_save` is explicit: `recent_image: true` reads the latest image attachment of the current session through `ctx.attachments`; a local path or URL is also accepted. The body adapter can serve an asset through the local `/whale-soul-assets/` route and pass its URL to the optional body's `broadcast` route (see [BODY.md](BODY.md)). Nothing is captured automatically.
+## Portability and owner operations
 
-## Privacy
+Use the [local management CLI](management.md) for preview, export, import, legacy migration and precise removal. Full transfer v3 preserves record locations, provenance, revisions, individual identity, growth, maturity and the applicable integrity/purge states. Copying only a `self/` folder is not a complete identity-preserving transfer. The current host stability mode wins over an imported snapshot.
 
-Local only. No cloud upload. Sensitive credentials are excluded by persona policy. Images should be saved only with the user's consent.
+V1 data uses explicit migration into a separate root. Early V2 API1.0 data first needs the reviewed record-baseline API, then `upgrade-self`; API1.1/1.2 roots use the documented separate-root self upgrade. The source is preserved. See [upgrade boundaries](self-integrity.md).
+
+The implementation is an unreleased prototype. Core fact/correction/restart and focused growth journeys have been exercised; broad release acceptance, long-term growth and optional body journeys are not implied by component test counts. New V2 narrative dream diaries are not implemented; current reflection is distinct from the [V1 dream-journal behavior](MEMORY-V1.md).
