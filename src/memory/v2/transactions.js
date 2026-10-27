@@ -8,6 +8,8 @@ import { commitSessionDescriptor, validateSessionDescriptor } from './session-bi
 import { commitPurgeDescriptor, filterRecoveryChanges, getPurgeState, pathIsPurged, reconcilePurgeState, referencesPurged, validateManagedPurgeArtifacts } from './purge-ledger.js'
 import { commitRecordDescriptor, commitImportedRecordHead } from './record-integrity.js'
 import { descriptorsForChanges } from './integrity-transaction.js'
+import { commitSelfDescriptor, validateSelfDescriptor } from './self-integrity.js'
+import { prepareSelfTransaction } from './self-transaction.js'
 import { applyExternalCapture, applyExternalPublish, applyRootUpgrade } from './external-journal.js'
 
 function syncDir(path) {
@@ -209,6 +211,11 @@ export class TransactionEngine {
       this._checkpoint('after_persona_descriptor', { index, operation_id: transaction.operation_id })
     }
     if (personaDescriptors.length) this._checkpoint('after_persona_ledger', { operation_id: transaction.operation_id })
+    for (const descriptor of transaction.self_descriptors ?? []) {
+      commitSelfDescriptor(this.lockRoot, this.root, descriptor, atomicWrite)
+      this._checkpoint('after_self_descriptor', { agent_identity_id: descriptor.next.agent_identity_id, operation_id: transaction.operation_id })
+    }
+    if (transaction.self_descriptors?.length) this._checkpoint('after_self_ledger', { operation_id: transaction.operation_id })
     const state = getPurgeState(this.lockRoot, this.memorySpaceId)
     const changes = filterRecoveryChanges(transaction.changes, state, readJson(join(this.root, 'manifest.json'), null), { filterDerived: transaction.generation < state.generation && !transaction.purge_descriptor })
     for (let index = 0; index < changes.length; index++) {
@@ -284,8 +291,11 @@ export class TransactionEngine {
         }
         return { ...existing.result, replayed: true }
       }
-      const built = await build()
+      let built = await build()
       authorize()
+      if (!built || !Array.isArray(built.changes)) throw new MemoryError('INVALID_TRANSACTION')
+      built = { ...built, ...prepareSelfTransaction(this.lockRoot, this.memorySpaceId, built, operationId, getPurgeState(this.lockRoot, this.memorySpaceId)) }
+      for (const descriptor of built.self_descriptors) validateSelfDescriptor(descriptor)
       if (built?.session_descriptor) validateSessionDescriptor(built.session_descriptor)
       if (built?.purge_descriptor) validateManagedPurgeArtifacts(this.lockRoot, this.memorySpaceId)
       if (!built || !Array.isArray(built.changes)) throw new MemoryError('INVALID_TRANSACTION')
@@ -310,6 +320,7 @@ export class TransactionEngine {
         ...(built.session_descriptor ? { session_descriptor: built.session_descriptor } : {}),
         ...(built.persona_descriptor ? { persona_descriptor: built.persona_descriptor } : {}),
         ...(built.persona_descriptors ? { persona_descriptors: built.persona_descriptors } : {}),
+        ...(built.self_descriptors.length ? { self_descriptors: built.self_descriptors } : {}),
         record_descriptors: descriptorsForChanges(this.lockRoot, this.memorySpaceId, built.changes.filter((change) => !(built.record_imports ?? []).some((item) => change.path.startsWith(`records/${item.next.record_id}/`))), operationId, built.record_descriptors ?? [], built.purge_descriptor),
         ...(built.record_imports ? { record_imports: built.record_imports } : {}),
         ...(built.external_descriptor ? { external_descriptor: built.external_descriptor } : {}),
@@ -322,6 +333,7 @@ export class TransactionEngine {
       try {
         this._checkpoint('after_prepare', { operation_id: operationId })
         authorize()
+        built.authorizeSelf()
       } catch (error) {
         // A synchronous cancellation has a live owner that can remove its
         // uncommitted body now. Abrupt process death still uses startup redo.

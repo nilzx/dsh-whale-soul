@@ -468,6 +468,7 @@ export class MemoryTransfer {
     const operationId = args?.operation_id ?? randomUUID()
     try {
       this.#store._authorize(context, 'memory.manage')
+      if (args?.archive?.self_integrity_state === undefined && args?.archive?.files?.some((file) => /^self\/[^/]+\/(?:manifest\.json|(?:traits|proposals)\/|history\/)/.test(file.path))) throw new MemoryError('SELF_INTEGRITY_STATE_REQUIRED')
       assertOnly(args, ['operation_id', 'archive', 'identity_mode', 'accept_purge_state', 'accept_persona_state', 'accept_integrity_state', 'accept_legacy_baseline', 'allow_maturity_reset'])
       if (args.identity_mode !== 'preserve') throw new MemoryError('EXPLICIT_IDENTITY_MODE_REQUIRED')
       if (args.accept_purge_state !== undefined && typeof args.accept_purge_state !== 'boolean') throw new MemoryError('INVALID_PURGE_STATE_ACCEPTANCE')

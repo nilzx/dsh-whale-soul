@@ -1,3 +1,4 @@
+import { validateSelfDescriptor, decodeSelfSnapshot, filterSelfSnapshot } from './self-integrity.js'
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { MemoryError, assertId, assertOnly, digest } from './contracts.js'
@@ -118,7 +119,7 @@ function sanitizeSelfManifest(value, exists) {
     for (const key of Object.keys(next.maintenance)) {
       if (!Array.isArray(next.maintenance[key])) continue
       const before = next.maintenance[key]
-      const after = before.filter((item) => typeof item === 'string' ? Boolean(next.proposals?.[item]) : Boolean(next.proposals?.[item?.proposal_id]))
+      const after = before.filter((item) => typeof item === 'string' ? Boolean(next.proposals?.[item]) : Boolean(next.proposals?.[item?.proposal_id]) || String(item?.proposal_id).startsWith('trait:') && Boolean(next.traits?.[String(item.proposal_id).slice(6)]))
       if (before.length !== after.length) { next.maintenance[key] = after; changed = true }
     }
   }
@@ -165,7 +166,7 @@ function walkFiles(root, callback, prefix = '') {
 function managedJournal(name, spaceId) { return name.split('/').includes(spaceId) && /(?:^|\/)journal\/[^/]+\/prepared\.json$/.test(name) }
 function validateJournal(value) {
   try {
-    assertOnly(value, ['transaction_id','operation_id','receipt_key','generation','changes','purge_descriptor','persona_descriptor','persona_descriptors','session_descriptor','record_descriptors','record_imports','external_descriptor','root_upgrade','receipt'])
+    assertOnly(value, ['transaction_id','operation_id','receipt_key','generation','changes','purge_descriptor','persona_descriptor','persona_descriptors','session_descriptor','record_descriptors','record_imports','self_descriptors','external_descriptor','root_upgrade','receipt'])
     assertId(value.transaction_id);assertId(value.operation_id)
     if (!/^[a-f0-9]{64}$/.test(value.receipt_key) || !Number.isSafeInteger(value.generation) || value.generation < 0 || !Array.isArray(value.changes)) throw new Error()
     for (const change of value.changes) {
@@ -174,6 +175,7 @@ function validateJournal(value) {
       if (change.data !== null && (typeof change.data !== 'string' || Buffer.from(change.data,'base64').toString('base64') !== change.data)) throw new Error()
     }
     if (value.session_descriptor) validateSessionDescriptor(value.session_descriptor)
+    for (const descriptor of value.self_descriptors ?? []) validateSelfDescriptor(descriptor)
     for (const descriptor of value.persona_descriptors ?? (value.persona_descriptor ? [value.persona_descriptor] : [])) { assertOnly(descriptor,['expected_revision','anchor']);validatePersonaAnchor(descriptor.anchor) }
     for (const descriptor of value.record_descriptors ?? []) { assertOnly(descriptor,['expected_generation','next']);validateRecordHead(descriptor.next);if(!Number.isSafeInteger(descriptor.expected_generation)||descriptor.expected_generation<0)throw new Error() }
     for (const descriptor of value.record_imports ?? []) { assertOnly(descriptor,['expected_generation','next']);validateRecordHead(descriptor.next);if(descriptor.expected_generation!==0)throw new Error() }
@@ -191,6 +193,7 @@ export function validateManagedPurgeArtifacts(root, spaceId) {
     if (managedJournal(name, spaceId)) { validateJournal(optionalData(path)); return }
     if (!path.endsWith('.json')) return
     const archive = optionalData(path)
+    if (archive?.snapshot_format === 'dsh-persona-self') { decodeSelfSnapshot(archive);filterSelfSnapshot(root,spaceId,archive,[]);return }
     if (archive?.transfer_format !== 'dsh-memory-space' || archive.memory_space_id !== spaceId) return
     const { checksum, ...payload } = archive
     if (!Array.isArray(archive.files) || checksum !== digest(payload)) throw new MemoryError('MANAGED_ARCHIVE_REPAIR_REQUIRED')
@@ -303,6 +306,10 @@ export function reconcilePurgeState(root, spaceRoot, write) {
       if (scoped && /(?:^|\/)index\//.test(name)) { rmSync(path, { force: true }); removed.push(`${category}/${name}`); return }
       if (path.endsWith('.json')) {
         const archive = optionalData(path)
+        if (archive?.snapshot_format === 'dsh-persona-self') {
+          try { const next=filterSelfSnapshot(root,spaceId,archive,[...state.evidence_ids,...state.related_evidence_ids]);if(next){write(path,json(next));sanitized.push(`${category}/${name}`)} } catch { unresolved.push(`${category}/${name}`) }
+          return
+        }
         if (archive?.transfer_format === 'dsh-memory-space' && archive.memory_space_id === spaceId) {
           try { if (filterArchive(archive, state, write, path)) sanitized.push(`${category}/${name}`) } catch { unresolved.push(`${category}/${name}`) }
         }

@@ -1,3 +1,4 @@
+import { verifySelfIntegrity } from '../memory/v2/self-integrity.js'
 import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { MEMORY_TYPES, MemoryError, assertId, assertOnly, digest, timestamp } from '../memory/v2/contracts.js'
@@ -81,6 +82,7 @@ export class PersonaState {
       const id = previous?.agent_identity_id ?? provisional.agent_identity_id
       this.#identity = Object.freeze({ persona_id: this.#personaId, agent_identity_id: id, subject_id: this.#subjectId, memory_space_id: this.#store.memorySpaceId })
       if (previous) {
+        verifySelfIntegrity(this.#store.root, this.#store.memorySpaceId, id)
         this.#policy = await this.#restore(previous)
         if (previous.snapshot.mode === this.#mode && previous.core_version === this.#coreVersion) return { changes: [], result: { status: 'ready', agent_identity_id: id, anchor_revision: previous.revision } }
       }
