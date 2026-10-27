@@ -1,6 +1,7 @@
 import { createStructuredAssessor } from '../../shared/structured-assessor.js'
 import { MemoryError, assertId, assertOnly, digest, timestamp } from './contracts.js'
 import { retentionBlockReason } from './retention.js'
+import { explicitSelectionEnd } from './selection-time.js'
 
 const DAY = 86_400_000
 const KINDS = ['fact', 'preference', 'episode', 'boundary', 'temporary_state', 'growth_observation']
@@ -98,24 +99,6 @@ export function createMemorySelectionAssessor(options) {
     } })
 }
 
-function explicitEnd(content, event) {
-  const offset = event.timezone_offset_minutes * 60_000
-  const local = new Date(Date.parse(event.occurred_at) + offset)
-  const midnight = Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate())
-  const dated = /(?:直到|截至|到|until|through|before)\s*(\d{4}-\d{2}-\d{2})/i.exec(content)
-  if (dated) {
-    const parsed = Date.parse(`${dated[1]}T00:00:00.000Z`)
-    if (Number.isFinite(parsed) && new Date(parsed).toISOString().slice(0, 10) === dated[1]) return { end: parsed + DAY - 1 - offset, quote: dated[0] }
-  }
-  const duration = /(?:持续|接下来|未来|for|next)?\s*(\d{1,3})\s*(?:天(?!前)|days?\b(?!\s+ago))/i.exec(content)
-  if (duration && Number(duration[1]) > 0) return { end: Date.parse(event.occurred_at) + Number(duration[1]) * DAY, quote: duration[0].trim() }
-  for (const [pattern, days] of [[/明天|tomorrow/i, 2], [/今天|今日|today/i, 1], [/这周|本周|this week/i, 8 - (local.getUTCDay() || 7)]]) {
-    const match = pattern.exec(content)
-    if (match) return { end: midnight + days * DAY - 1 - offset, quote: match[0] }
-  }
-  return null
-}
-
 async function boundedAssess(assess, payload, signal, timeoutMs) {
   const controller = new AbortController()
   if (signal !== undefined && (!signal || typeof signal.addEventListener !== 'function' || typeof signal.aborted !== 'boolean')) throw new MemoryError('SELECTION_INVALID_SIGNAL')
@@ -166,11 +149,13 @@ export function createMemorySelector({ assess, clock = Date.now, timeoutMs = 15_
       const selected = verdict.decision !== 'ignore'
       const maturityEligible = quote !== null && verdict.maturity_relevant && verdict.confidence >= maturityConfidence && meaningful.has(verdict.kind) && (selected || ['episode', 'growth_observation'].includes(verdict.kind))
       if (!selected && !maturityEligible) return rejected('NO_PERSISTENT_VALUE', 'ignore')
-      const boundedPreference = verdict.kind === 'preference' && /这周|本周|接下来|持续|截至|直到|\b(?:this week|until|for \d+ days?)\b/i.test(event.content)
+      const end = verdict.decision === 'temporary' || selected && (verdict.kind === 'preference' || event.valid_to !== null) ? explicitSelectionEnd(event.content, event) : null
+      const boundedPreference = verdict.kind === 'preference' && (end?.explicit_date === true || /这周|本周|接下来|持续|截至|直到|\b(?:this week|until|for \d+ days?)\b/i.test(event.content))
       const temporary = verdict.decision === 'temporary' || selected && (event.valid_to !== null || boundedPreference)
-      const end = temporary ? explicitEnd(event.content, event) : null
       const validFrom = event.valid_from ?? event.occurred_at
-      const expiresAt = temporary ? event.valid_to ?? new Date(end?.end ?? Date.parse(event.occurred_at) + temporaryTtlDays * DAY).toISOString() : null
+      const deadline = end ? Math.min(end.end, event.valid_to ? Date.parse(event.valid_to) : Infinity) : event.valid_to ? Date.parse(event.valid_to) : Date.parse(event.occurred_at) + temporaryTtlDays * DAY
+      const expiresAt = temporary ? new Date(deadline).toISOString() : null
+      const temporalBasis = !temporary ? 'not_temporary' : event.valid_to && (!end || Date.parse(event.valid_to) <= end.end) ? 'host_explicit' : end ? 'source_expression' : 'default_ttl'
       if (expiresAt && validFrom > expiresAt) throw new MemoryError('INVALID_TIME_RANGE')
       if (expiresAt && Date.parse(expiresAt) <= now) return rejected('TEMPORARY_EXPIRED', 'ignore')
       const evidenceId = deriveSelectionEvidenceId(event)
@@ -186,7 +171,7 @@ export function createMemorySelector({ assess, clock = Date.now, timeoutMs = 15_
         ...(selected ? { proposal: { subject_id: event.subject_id, content: quote, gist: quote, title: quote.slice(0, 160).toWellFormed(), type,
           provenance_refs: [evidenceId], claim_kind: event.source === 'user' ? 'user_statement' : 'tool_observation', confidence: verdict.confidence,
           retention: temporary ? 'temporary' : 'long_term', valid_from: validFrom, valid_to: temporary ? expiresAt : event.valid_to,
-          expires_at: expiresAt, ...(!temporary && verdict.canonical_key !== null ? { canonical_key: verdict.canonical_key } : {}) }, temporal_basis: event.valid_to ? 'host_explicit' : end ? 'source_expression' : temporary ? 'default_ttl' : 'not_temporary' } : {}) })
+          expires_at: expiresAt, ...(!temporary && verdict.canonical_key !== null ? { canonical_key: verdict.canonical_key } : {}) }, temporal_basis: temporalBasis } : {}) })
     } catch (error) {
       return rejected(typeof error?.code === 'string' && /^[A-Z][A-Z0-9_]{0,99}$/.test(error.code) ? error.code : 'SELECTION_FAILED')
     }
