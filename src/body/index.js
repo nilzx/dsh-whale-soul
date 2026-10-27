@@ -173,6 +173,7 @@ export async function apply(ctx, config = {}) {
     surface: options.surface ?? 'any',
     routePrefix: options.routePrefix ?? '/dsh-pet-7340',
     timeoutMs: Number.isFinite(Number(options.timeoutMs)) ? Number(options.timeoutMs) : 1200,
+    playbackWaitMs: options.playbackWaitMs,
     maxBubbleChars: Number.isFinite(Number(options.maxBubbleChars)) ? Number(options.maxBubbleChars) : 100,
     memoryRoot: resolveMemoryAssetRoot(options),
   })
@@ -217,7 +218,7 @@ export async function apply(ctx, config = {}) {
       await sleepPromise
       if (active(token, 'waking') && wasSleeping) {
         const animation = body.pickAnimation(['打瞌睡被惊醒', '点击回应-开心跃动'])
-        if (animation) await body.play(animation)
+        if (animation) await body.play(animation, undefined, { waitForEnd: true })
         if (active(token, 'waking') && spoken) await body.say('唔…睡醒了，感觉脑子清爽多了。')
       }
       await body.release({ owner: dreamOwner })

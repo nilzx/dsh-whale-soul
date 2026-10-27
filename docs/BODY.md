@@ -29,6 +29,7 @@ The body row accepts:
 | `maxBubbleChars` | `100` | Maximum bubble text. |
 | `rateLimitMs` | `4000` | Minimum gap between explicit reactions. |
 | `minSleepMs` | `8000` | Minimum length of the sleep performance. |
+| `playbackWaitMs` | `15000` | Maximum asynchronous wake playback wait, capped at 15 seconds. Hosts without playback IDs retain the immediate fallback. |
 
 ## Failure behavior
 
@@ -39,3 +40,5 @@ If the probe fails, the adapter registers no body tools and logs nothing user-fa
 This is a one-way display integration. The soul can ask the body to react, but the body cannot write memories, change the persona, or send messages back into the conversation.
 
 After acquiring a lease, the adapter includes its current `lock` query parameter on animation, bubble and bubble-clear requests. It never uses forceful takeover. A lease coordinates one instance; it does not make testing against a user's main pet harmless. Use a dedicated instance in an isolated service and explicitly configure its `petId` and `surface`.
+
+Wake playback retains the lease until a terminal renderer receipt or the bounded timeout. This prevents the pet's unlock-to-idle transition from replacing a just-accepted wake animation. The event handler does not await the performance, so chat can proceed; disposal cancels receipt waits before bounded lease cleanup. Each official long poll is at most 10 seconds, with at most three requests within the total budget.

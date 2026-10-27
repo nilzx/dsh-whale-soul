@@ -52,6 +52,7 @@ export class DshPetBody {
     routePrefix = '/dsh-pet-7340',
     fetchImpl = globalThis.fetch,
     timeoutMs = 1200,
+    playbackWaitMs = 15000,
     maxBubbleChars = 100,
     memoryRoot,
   } = {}) {
@@ -63,6 +64,7 @@ export class DshPetBody {
     this.routePrefix = routePrefix
     this.fetchImpl = fetchImpl
     this.timeoutMs = timeoutMs
+    this.playbackWaitMs = Number.isFinite(Number(playbackWaitMs)) ? Math.min(15000, Math.max(1, Math.floor(Number(playbackWaitMs)))) : 15000
     this.maxBubbleChars = maxBubbleChars
     this.memoryRoot = memoryRoot
     this.available = false
@@ -74,6 +76,7 @@ export class DshPetBody {
     this.lockPromise = null
     this.releasePromise = null
     this.closePromise = null
+    this.playbackWaits = new Set()
     this.disposed = false
   }
 
@@ -86,7 +89,7 @@ export class DshPetBody {
     }
   }
 
-  async request(path, { method = 'GET', body, query } = {}) {
+  async request(path, { method = 'GET', body, query, signal, timeoutMs = this.timeoutMs } = {}) {
     if (this.disposed && path !== '/lock/release') return null
     if (!this.baseUrl || typeof this.fetchImpl !== 'function') return null
     const url = new URL(`${this.routePrefix}${path}`, `${this.baseUrl}/`)
@@ -98,7 +101,7 @@ export class DshPetBody {
         method,
         headers: body === undefined ? undefined : { 'content-type': 'application/json' },
         body: body === undefined ? undefined : JSON.stringify(body),
-        signal: typeof AbortSignal?.timeout === 'function' ? AbortSignal.timeout(this.timeoutMs) : undefined,
+        signal: typeof AbortSignal?.timeout === 'function' ? AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(signal ? [signal] : [])]) : signal,
       })
       if (!response?.ok) return null
       return await response.json()
@@ -160,14 +163,40 @@ export class DshPetBody {
     return result?.ok === true
   }
 
-  async play(name, facing) {
+  async play(name, facing, { waitForEnd = false } = {}) {
     if (!name) return false
     const result = await this.request('/anim', {
       method: 'POST',
       body: { name, ...(facing ? { facing } : {}) },
       query: { pet: this.petId, surface: this.surface, lock: this.lockId },
     })
-    return result?.ok === true
+    if (result?.ok !== true) return false
+    return waitForEnd && result.playbackId !== undefined ? this.waitForPlayback(result.playbackId) : true
+  }
+
+  async waitForPlayback(playbackId) {
+    if (this.disposed || typeof playbackId !== 'string' || !/^[A-Za-z0-9._-]{1,128}$/.test(playbackId)) return false
+    const controller = new AbortController(), deadline = performance.now() + this.playbackWaitMs
+    this.playbackWaits.add(controller)
+    let abort
+    const canceled = new Promise((resolve) => { abort = () => resolve(false); controller.signal.addEventListener('abort', abort, { once: true }) })
+    const timer = setTimeout(() => controller.abort(), this.playbackWaitMs)
+    const poll = (async () => {
+      // dsh-pet 0.3.8 caps each long poll at 10s. The total remains 15s,
+      // and an incompatible endpoint cannot turn this into an unbounded loop.
+      for (let attempt = 0; attempt < 3 && !this.disposed && !controller.signal.aborted; attempt++) {
+        const remaining = Math.floor(deadline - performance.now())
+        if (remaining <= 0) return false
+        const result = await this.request(`/playback/${playbackId}`, { signal: controller.signal, timeoutMs: remaining,
+          query: { wait: 'ended,failed,cancelled', timeout: Math.min(10000, remaining) } })
+        if (this.disposed || controller.signal.aborted || !result || result.playbackId !== playbackId || result.petId !== undefined && result.petId !== this.petId) return false
+        if (['ended', 'failed', 'cancelled'].includes(result.status)) return result.status === 'ended'
+        if (!['accepted', 'playing'].includes(result.status)) return false
+      }
+      return false
+    })().catch(() => false)
+    try { return await Promise.race([poll, canceled]) }
+    finally { clearTimeout(timer); controller.signal.removeEventListener('abort', abort); this.playbackWaits.delete(controller) }
   }
 
   async clearBubble() {
@@ -247,6 +276,7 @@ export class DshPetBody {
     if (this.closePromise) return this.closePromise
     this.disposed = true
     this.available = false
+    for (const controller of this.playbackWaits) controller.abort()
     this.closePromise = (async () => {
       // Bound cleanup to two HTTP attempts; failed IDs remain inspectable.
       if (await this.release()) return true
