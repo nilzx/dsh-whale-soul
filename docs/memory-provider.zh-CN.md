@@ -1,6 +1,6 @@
 # 记忆提供方组合
 
-整包在宿主层单独安装一次 `dsh-whale-soul/memory-provider`。两个预设使用 `whaleMemory` 服务；停用人格不删除记忆，也不销毁共享提供方。停用提供方后，它发出的所有存储实例拒绝读取和新提交，返回 `MEMORY_PROVIDER_UNAVAILABLE`，磁盘数据保留。
+整包在宿主层单独安装一次 `dsh-whale-soul/memory-provider`。当前人格预设使用 `whaleMemory` 服务；停用人格不删除记忆，也不销毁共享提供方。停用提供方后，它发出的所有存储实例拒绝读取和新提交，返回 `MEMORY_PROVIDER_UNAVAILABLE`，磁盘数据保留。
 
 宿主协议独立版本为 `1.0.0`，要求声明精确的中立API/格式版本，实现 `createStore(options)`、`assertAvailable()` 和 `dispose()`。当前协议包含V2文件布局和宿主事务/授权扩展，不是远程数据库协议。替换提供方仍须保持真实context、原子提交、证据归属、最终授权和撤销门阀；方法名称齐全不等于安全验收。
 

@@ -1,6 +1,6 @@
 # Memory provider composition
 
-The bundle installs `dsh-whale-soul/memory-provider` once at host level. Both persona presets consume the `whaleMemory` service. Removing a persona role leaves the provider and data intact. Removing the provider revokes all stores it issued; reads and new commits then fail with `MEMORY_PROVIDER_UNAVAILABLE`. Revocation does not delete memory files.
+The bundle installs `dsh-whale-soul/memory-provider` once at host level. The current persona preset consumes the `whaleMemory` service. Removing a persona role leaves the provider and data intact. Removing the provider revokes all stores it issued; reads and new commits then fail with `MEMORY_PROVIDER_UNAVAILABLE`. Revocation does not delete memory files.
 
 The trusted host port is versioned independently as `MEMORY_PROVIDER_PROTOCOL = 1.0.0`. A provider declares the exact neutral API and format versions and implements `createStore(options)`, `assertAvailable()`, and `dispose()`. The current port is file based: it includes the documented V2 directory layout and host transaction/authorization methods. It is not a remote database protocol. A replacement must preserve context authenticity, atomic commits, evidence bindings, final authorization, and revocation checks. Merely returning the required method names is not a security audit.
 
