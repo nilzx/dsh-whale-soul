@@ -3,6 +3,7 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { MemoryError, assertId, assertOnly, digest } from './contracts.js'
 import { validatePersonaAnchor, validatePortablePersonaShape } from './persona-ledger.js'
 import { validateSessionDescriptor } from './session-bindings.js'
+import { validateRecordHead } from './record-integrity.js'
 
 export const PURGE_LEDGER_PATH = '.administration/purge-ledger.json'
 const json = (value) => `${JSON.stringify(value, null, 2)}\n`
@@ -164,7 +165,7 @@ function walkFiles(root, callback, prefix = '') {
 function managedJournal(name, spaceId) { return name.split('/').includes(spaceId) && /(?:^|\/)journal\/[^/]+\/prepared\.json$/.test(name) }
 function validateJournal(value) {
   try {
-    assertOnly(value, ['transaction_id','operation_id','receipt_key','generation','changes','purge_descriptor','persona_descriptor','persona_descriptors','session_descriptor','receipt'])
+    assertOnly(value, ['transaction_id','operation_id','receipt_key','generation','changes','purge_descriptor','persona_descriptor','persona_descriptors','session_descriptor','record_descriptors','record_imports','external_descriptor','root_upgrade','receipt'])
     assertId(value.transaction_id);assertId(value.operation_id)
     if (!/^[a-f0-9]{64}$/.test(value.receipt_key) || !Number.isSafeInteger(value.generation) || value.generation < 0 || !Array.isArray(value.changes)) throw new Error()
     for (const change of value.changes) {
@@ -174,6 +175,8 @@ function validateJournal(value) {
     }
     if (value.session_descriptor) validateSessionDescriptor(value.session_descriptor)
     for (const descriptor of value.persona_descriptors ?? (value.persona_descriptor ? [value.persona_descriptor] : [])) { assertOnly(descriptor,['expected_revision','anchor']);validatePersonaAnchor(descriptor.anchor) }
+    for (const descriptor of value.record_descriptors ?? []) { assertOnly(descriptor,['expected_generation','next']);validateRecordHead(descriptor.next);if(!Number.isSafeInteger(descriptor.expected_generation)||descriptor.expected_generation<0)throw new Error() }
+    for (const descriptor of value.record_imports ?? []) { assertOnly(descriptor,['expected_generation','next']);validateRecordHead(descriptor.next);if(descriptor.expected_generation!==0)throw new Error() }
     if (value.operation_id.startsWith('persona-batch-')) {
       assertOnly(value.receipt,['operation_id','request_hash','result'])
       assertOnly(value.receipt.result,['status','event_evidence_id','item_ids'])
@@ -230,6 +233,9 @@ function filterArchive(archive, state, write, path) {
   })
   if (!metadataChanged && retained.length === archive.files.length && archive.purge_generation >= state.generation) return false
   const cleaned = { ...archive, revision_watermark: Math.max(archive.revision_watermark, state.revision_floor), purge_generation: state.generation, purge_state: portable(state), files: retained }
+  if (cleaned.integrity_state) cleaned.integrity_state = { ...cleaned.integrity_state,
+    heads: cleaned.integrity_state.heads.filter((head) => !state.record_ids.includes(head.record_id)),
+    omitted_pending_ids: cleaned.integrity_state.omitted_pending_ids.filter((id) => !state.record_ids.includes(id)) }
   delete cleaned.checksum
   cleaned.checksum = digest(cleaned)
   write(path, json(cleaned))

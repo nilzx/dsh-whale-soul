@@ -8,6 +8,7 @@ import { getPurgeState, pathIsPurged, preparePurgeImport, referencesPurged } fro
 import { validateTransferArchive } from './transfer.js'
 import { loadPersonaLedger, validatePersonaAnchor } from './persona-ledger.js'
 import { validateBoundItemPayload } from './batch-bindings.js'
+import { loadRecordHead } from './record-integrity.js'
 
 const json = (value) => `${JSON.stringify(value, null, 2)}\n`
 
@@ -37,6 +38,9 @@ function refs(value, key) {
 }
 
 function recordMetadata(store, id) {
+  const head = loadRecordHead(store.root, store.memorySpaceId, id)
+  if (head) return head.revisions.map((revision) => ({ record_id: id, revision: revision.revision, subject_id: head.subject_id,
+    persona_id: head.persona_id, agent_identity_id: head.agent_identity_id, provenance_refs: revision.evidence_ids, assets: revision.asset_files }))
   const base = store.engine.resolvePath(`records/${assertId(id)}`)
   return files(base).filter((file) => file.name.endsWith('meta.json')).map((file) => readJson(file.path))
 }
@@ -112,7 +116,8 @@ export class MemoryAdministration {
         const targetMetas = []
         for (const id of recordIds) {
           if (previous.record_ids.includes(id)) continue
-          const current = this.store._readRecord(id).meta
+          const head = loadRecordHead(this.store.root, this.store.memorySpaceId, id)
+          const current = head ? { subject_id: head.subject_id, persona_id: head.persona_id, agent_identity_id: head.agent_identity_id, revision: head.head_revision } : this.store._readRecord(id).meta
           if (!context.capabilities.includes('memory.manage') && (!context.allowed_subject_ids.includes(current.subject_id) || current.subject_id !== context.subject_id || current.agent_identity_id !== context.agent_identity_id || current.persona_id !== context.persona_id)) throw new MemoryError('SUBJECT_DENIED')
           if (args.expected_revisions[id] !== current.revision) throw new MemoryError('REVISION_CONFLICT')
           targetMetas.push(...recordMetadata(this.store, id))
@@ -120,7 +125,9 @@ export class MemoryAdministration {
         const relatedEvidence = [...new Set(targetMetas.flatMap((meta) => meta.provenance_refs ?? []))]
         const targetAssets = [...new Set(targetMetas.flatMap((meta) => meta.assets ?? []))]
         const remaining = records.filter((meta) => !recordIds.includes(meta.record_id))
-        const remainingMetas = remaining.flatMap((meta) => recordMetadata(this.store, meta.record_id))
+        const ledgerRoot = join(this.store.root, '.administration/record-heads', this.store.memorySpaceId)
+        const remainingIds = existsSync(ledgerRoot) ? readdirSync(ledgerRoot).filter((name) => name.endsWith('.json')).map((name) => name.slice(0, -5)).filter((id) => !recordIds.includes(id) && !previous.record_ids.includes(id)) : remaining.map((meta) => meta.record_id)
+        const remainingMetas = remainingIds.flatMap((id) => recordMetadata(this.store, id))
         const stillReferenced = new Set(remainingMetas.flatMap((meta) => meta.provenance_refs ?? []))
         const retainedAssets = new Set(remainingMetas.flatMap((meta) => meta.assets ?? []))
         const evidenceIds = relatedEvidence.filter((id) => !stillReferenced.has(id))

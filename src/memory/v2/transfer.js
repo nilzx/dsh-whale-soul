@@ -6,9 +6,10 @@ import { readJson } from './transactions.js'
 import { ASSET_METADATA_FIELDS, validateAssetMetadata } from './assets.js'
 import { assertPersonaFilesAllowed, exportPersonaState, preparePersonaImport, validatePortablePersonaShape, validatePortablePersonaState, personaIdentityProjection, projectedIdentityBinding } from './persona-ledger.js'
 import { exportPurgeState, getPurgeState, preparePurgeImport } from './purge-ledger.js'
+import { listRecordHeads, loadRecordHead, validateRecordHead, verifyRecordBundle } from './record-integrity.js'
 
 const TRANSFER_FORMAT = 'dsh-memory-space'
-const TRANSFER_VERSION = 1
+const TRANSFER_VERSION = 2
 const DATA_FILES = ['meta.json', 'gist.md', 'detail.md', 'evidence.jsonl', 'integrity.json']
 const ROOTS = ['records', 'evidence', 'candidates', 'self', 'assets', 'cold', 'quarantine', 'external-changes']
 const LEGACY_ROOTS = ['entries', 'cold', 'quarantine', 'assets', 'dreams', 'backups', 'external-changes']
@@ -133,20 +134,66 @@ export function validateTransferPurgeState(state, generation) {
   return state
 }
 
-function packageArchive(store, manifest, files, policy = exportPolicy('none'), purgeState, personaState) {
+function packageArchive(store, manifest, files, policy = exportPolicy('none'), purgeState, personaState, integrityState) {
   const archive = {
-    transfer_format: TRANSFER_FORMAT, transfer_version: TRANSFER_VERSION, storage_format_version: FORMAT_VERSION,
+    transfer_format: TRANSFER_FORMAT, transfer_version: integrityState ? TRANSFER_VERSION : 1, storage_format_version: FORMAT_VERSION,
     memory_space_id: store.memorySpaceId, revision_watermark: manifest.revision_watermark,
     purge_generation: manifest.purge_generation ?? 0,
     ...(purgeState ? { purge_state: copy(purgeState) } : {}),
     ...(personaState?.anchors.length ? { persona_state: copy(personaState) } : {}),
+    ...(integrityState ? { integrity_state: copy(integrityState) } : {}),
     manifest: { created_at: manifest.created_at, identities: copy(manifest.identities ?? {}), migrations: copy(manifest.migrations ?? []), export_policy: policy },
     files: packageFiles(files),
   }
   return { ...archive, checksum: digest(archive) }
 }
 
-function validateFiles(files, spaceId) {
+function pendingPayload(path, recordId) {
+  return path.startsWith(`records/${recordId}/`) || path.startsWith(`quarantine/${recordId}/`) || path.startsWith(`external-changes/${recordId}/`)
+}
+
+function validateIntegrityState(state, files, archive, maxBytes) {
+  if (state === undefined) return new Set()
+  assertOnly(state, ['schema_version', 'heads', 'omitted_pending_ids'])
+  if (state.schema_version !== 1 || !Array.isArray(state.heads) || !Array.isArray(state.omitted_pending_ids) ||
+    state.heads.length > 100_000 || state.omitted_pending_ids.length > 100_000 || Buffer.byteLength(stableStringify(state)) > maxBytes) throw new MemoryError('INVALID_TRANSFER_INTEGRITY_STATE')
+  const heads = new Map(), omitted = new Set()
+  for (const id of state.omitted_pending_ids) { assertId(id); if (omitted.has(id)) throw new MemoryError('INVALID_TRANSFER_INTEGRITY_STATE'); omitted.add(id) }
+  const map = new Map(files.map((file) => [file.path, file.data]))
+  const bundle = (base) => Object.fromEntries(DATA_FILES.map((name) => {
+    if (!map.has(`${base}/${name}`)) throw new MemoryError('TRANSFER_INTEGRITY_PAYLOAD_REQUIRED')
+    return [name, map.get(`${base}/${name}`)]
+  }))
+  for (const head of state.heads) {
+    validateRecordHead(head)
+    if (head.memory_space_id !== archive.memory_space_id || heads.has(head.record_id)) throw new MemoryError('TRANSFER_INTEGRITY_SCOPE_MISMATCH')
+    heads.set(head.record_id, head)
+    const purged = archive.purge_state?.record_ids.includes(head.record_id) === true
+    if (head.state === 'purged' ? !purged : purged) throw new MemoryError('TRANSFER_INTEGRITY_PURGE_CONFLICT')
+    if (head.state === 'clean') {
+      if (omitted.has(head.record_id)) throw new MemoryError('INVALID_TRANSFER_INTEGRITY_STATE')
+      verifyRecordBundle(head, bundle(`records/${head.record_id}`))
+      for (const revision of head.revisions) verifyRecordBundle(head, bundle(`records/${head.record_id}/revisions/${revision.revision_id}`), revision.revision_id)
+    } else if (head.state === 'purged') {
+      if (omitted.has(head.record_id) || files.some((file) => file.path.startsWith(`records/${head.record_id}/`))) throw new MemoryError('TRANSFER_INTEGRITY_PURGE_CONFLICT')
+    } else if (omitted.has(head.record_id)) {
+      if (files.some((file) => pendingPayload(file.path, head.record_id))) throw new MemoryError('TRANSFER_PENDING_OMISSION_CONFLICT')
+    } else {
+      const prefixes = [`quarantine/${head.record_id}/${head.change_id}/`, `external-changes/${head.record_id}/${head.change_id}/`]
+      if (!['reviewed', 'preserved_local'].includes(archive.manifest.export_policy?.opaque_handling) || prefixes.some((prefix) => !files.some((file) => file.path.startsWith(prefix)))) throw new MemoryError('TRANSFER_PENDING_PAYLOAD_REQUIRED')
+    }
+  }
+  for (const id of omitted) if (heads.get(id)?.state !== 'quarantined') throw new MemoryError('INVALID_TRANSFER_INTEGRITY_STATE')
+  for (const file of files) {
+    const match = recordPath.exec(file.path)
+    if (!match) continue
+    const head = heads.get(match[1])
+    if (!head || match[2] && !head.revisions.some((revision) => revision.revision_id === match[2])) throw new MemoryError('TRANSFER_UNANCHORED_RECORD')
+  }
+  return new Set([...heads.values()].filter((head) => head.state === 'quarantined').map((head) => head.record_id))
+}
+
+function validateFiles(files, spaceId, quarantinedIds = new Set()) {
   const map = new Map(files.map((file) => [file.path, file]))
   const records = [], recordViews = [], scopedAssets = new Map()
   for (const file of files) {
@@ -158,6 +205,8 @@ function validateFiles(files, spaceId) {
       if (!map.has(base + value.file)) throw new MemoryError('TRANSFER_MISSING_ASSET')
     } else if (assetMetadataPath.test(file.path) && file.path.startsWith('assets/')) throw new MemoryError('INVALID_TRANSFER_ASSET_METADATA')
     const match = recordPath.exec(file.path)
+    // Reviewed pending bytes remain opaque; they never become record views.
+    if (match && quarantinedIds.has(match[1])) continue
     if (match) {
       const base = file.path.slice(0, -match[3].length)
       if (!map.has(`${base}meta.json`) || !map.has(`records/${match[1]}/meta.json`)) throw new MemoryError('TRANSFER_ORPHAN_LAYER')
@@ -257,8 +306,10 @@ function validateScopedAssets(files, assets, currentRecords, recordViews, spaceI
 }
 
 export function validateTransferArchive(archive, { maxFiles = 10_000, maxBytes = 64 * 1024 * 1024, maxFileBytes = 8 * 1024 * 1024 } = {}) {
-  assertOnly(archive, ['transfer_format', 'transfer_version', 'storage_format_version', 'memory_space_id', 'revision_watermark', 'purge_generation', 'purge_state', 'persona_state', 'manifest', 'files', 'checksum'])
-  if (archive.transfer_format !== TRANSFER_FORMAT || archive.transfer_version !== TRANSFER_VERSION || archive.storage_format_version !== FORMAT_VERSION) throw new MemoryError('UNSUPPORTED_TRANSFER_FORMAT')
+  assertOnly(archive, ['transfer_format', 'transfer_version', 'storage_format_version', 'memory_space_id', 'revision_watermark', 'purge_generation', 'purge_state', 'persona_state', 'integrity_state', 'manifest', 'files', 'checksum'])
+  if (archive.transfer_format !== TRANSFER_FORMAT || ![1, TRANSFER_VERSION].includes(archive.transfer_version) || archive.storage_format_version !== FORMAT_VERSION) throw new MemoryError('UNSUPPORTED_TRANSFER_FORMAT')
+  if (archive.transfer_version === TRANSFER_VERSION && archive.integrity_state === undefined) throw new MemoryError('TRANSFER_INTEGRITY_STATE_REQUIRED')
+  if (archive.transfer_version === 1 && archive.integrity_state !== undefined) throw new MemoryError('TRANSFER_INTEGRITY_VERSION_MISMATCH')
   assertId(archive.memory_space_id, 'memory_space_id')
   if (!Number.isSafeInteger(archive.revision_watermark) || archive.revision_watermark < 0 || !Number.isSafeInteger(archive.purge_generation) || archive.purge_generation < 0) throw new MemoryError('INVALID_TRANSFER_WATERMARK')
   if (archive.purge_state !== undefined) {
@@ -292,7 +343,8 @@ export function validateTransferArchive(archive, { maxFiles = 10_000, maxBytes =
   }
   const { checksum, ...payload } = archive
   if (typeof checksum !== 'string' || digest(payload) !== checksum) throw new MemoryError('TRANSFER_CHECKSUM_MISMATCH')
-  const records = validateFiles(files, archive.memory_space_id)
+  const quarantinedIds = validateIntegrityState(archive.integrity_state, files, archive, maxBytes)
+  const records = validateFiles(files, archive.memory_space_id, quarantinedIds)
   if (archive.persona_state !== undefined && Buffer.byteLength(stableStringify(archive.persona_state)) > maxBytes) throw new MemoryError('TRANSFER_LIMIT_EXCEEDED')
   if (archive.persona_state !== undefined) validatePortablePersonaShape(archive.persona_state, archive.memory_space_id)
   for (const anchor of archive.persona_state?.anchors ?? []) {
@@ -339,23 +391,27 @@ export class MemoryTransfer {
       return await this.#store.managedRead(context, async ({ manifest }) => {
         const files = []
         for (const name of ROOTS) walk(this.#store.spaceRoot, name, this.#limits, files)
+        const heads = listRecordHeads(this.#store.root, this.#store.memorySpaceId)
+        const pending = heads.filter((head) => head.state === 'quarantined').map((head) => head.record_id)
         const sanitized = sanitizedMetadata(files)
-        const opaque = sanitized.files.filter(opaqueFile).map((file) => file.path)
-        if (opaque.length && args?.opaque_policy === undefined) return { api_version: API_VERSION, status: 'review_required', reason_code: 'OPAQUE_REVIEW_REQUIRED', opaque_files: opaque }
+        const opaque = sanitized.files.filter((file) => opaqueFile(file) || pending.some((id) => pendingPayload(file.path, id))).map((file) => file.path)
+        if ((opaque.length || pending.length) && args?.opaque_policy === undefined) return { api_version: API_VERSION, status: 'review_required', reason_code: 'OPAQUE_REVIEW_REQUIRED', opaque_files: opaque, pending_record_ids: pending }
         const selected = args?.opaque_policy === 'omit' ? sanitized.files.filter((file) => !opaque.includes(file.path)) : sanitized.files
-        const policy = exportPolicy(!opaque.length ? 'none' : args.opaque_policy === 'omit' ? 'omitted' : 'reviewed', args?.opaque_policy === 'omit' ? opaque : [], sanitized.redactions)
+        const policy = exportPolicy(!opaque.length && !pending.length ? 'none' : args.opaque_policy === 'omit' ? 'omitted' : 'reviewed', args?.opaque_policy === 'omit' ? opaque : [], sanitized.redactions)
         const state = exportPurgeState(this.#store.root, this.#store.memorySpaceId)
         const personaState = exportPersonaState(this.#store.root, this.#store.memorySpaceId)
         await validatePortablePersonaState(personaState, this.#store.memorySpaceId)
-        const archive = packageArchive(this.#store, manifest, selected, policy, state, personaState)
-        validateTransferArchive(archive, this.#limits)
-        return { api_version: API_VERSION, status: 'ok', archive, record_ids: [...new Set(files.map((file) => recordPath.exec(file.path)).filter((match) => match && !match[2] && match[3] === 'meta.json').map((match) => match[1]))] }
+        const integrityState = { schema_version: 1, heads, omitted_pending_ids: args?.opaque_policy === 'omit' ? pending : [] }
+        const archive = packageArchive(this.#store, manifest, selected, policy, state, personaState, integrityState)
+        const decoded = validateTransferArchive(archive, this.#limits)
+        return { api_version: API_VERSION, status: 'ok', archive, record_ids: decoded.records.map((meta) => meta.record_id), pending_record_ids: pending, omitted_pending_ids: integrityState.omitted_pending_ids }
       })
     } catch (error) { return failure(error) }
   }
 
   async #guard(manifest, archive, decoded, purgeState) {
-    const args = { store: this.#store, manifest, archive, files: decoded.files, record_ids: decoded.records.map((meta) => meta.record_id), purge_state: archive.purge_state === undefined ? null : purgeState }
+    const args = { store: this.#store, manifest, archive, files: decoded.files,
+      record_ids: [...new Set([...decoded.records.map((meta) => meta.record_id), ...(archive.integrity_state?.heads ?? []).filter((head) => head.state !== 'purged').map((head) => head.record_id)])], purge_state: archive.purge_state === undefined ? null : purgeState }
     if (this.#importGuard) {
       if (await this.#importGuard(args) === false) throw new MemoryError('IMPORT_GUARD_REJECTED')
       return
@@ -367,13 +423,19 @@ export class MemoryTransfer {
   async #import(archive, operationId, context, { recheckSource, allowMaturityReset = false } = {}) {
     const decoded = validateTransferArchive(archive, this.#limits)
     if (archive.memory_space_id !== this.#store.memorySpaceId) throw new MemoryError('TRANSFER_SPACE_MISMATCH')
-    return this.#store.managedTransaction(operationId, { action: 'importSpace', checksum: archive.checksum, identity_mode: 'preserve', ...(archive.persona_state ? { accept_persona_state: true, allow_maturity_reset: allowMaturityReset } : {}) }, async ({ manifest, records }) => {
+    return this.#store.managedTransaction(operationId, { action: 'importSpace', checksum: archive.checksum, identity_mode: 'preserve', ...(archive.persona_state ? { accept_persona_state: true, allow_maturity_reset: allowMaturityReset } : {}), ...(archive.integrity_state ? { accept_integrity_state: true } : { accept_legacy_baseline: true }) }, async ({ manifest, records }) => {
       const { state, descriptor } = archive.purge_state === undefined
         ? { state: getPurgeState(this.#store.root, this.#store.memorySpaceId), descriptor: null }
         : preparePurgeImport(this.#store.root, this.#store.memorySpaceId, operationId, archive.purge_state)
       await this.#guard(manifest, archive, decoded, state)
       const persona = archive.persona_state ? await preparePersonaImport(this.#store.root, this.#store.memorySpaceId, operationId, archive.persona_state, { allowMaturityReset }) : { anchors: [], descriptors: [] }
       assertPersonaFilesAllowed(decoded.files, persona.anchors)
+      const recordImports = []
+      for (const head of archive.integrity_state?.heads ?? []) {
+        const old = loadRecordHead(this.#store.root, this.#store.memorySpaceId, head.record_id)
+        if (old && digest(old) !== digest(head)) throw new MemoryError('RECORD_IMPORT_CONFLICT')
+        if (!old) recordImports.push({ expected_generation: 0, next: copy(head) })
+      }
       const changes = []
       for (const file of decoded.files) {
         if (/^self\/[^/]+\/stability\.json$/.test(file.path) && persona.anchors.some((anchor) => file.path === `self/${anchor.agent_identity_id}/stability.json`)) continue
@@ -386,10 +448,10 @@ export class MemoryTransfer {
         assertId(id, 'identity')
         if (manifest.identities?.[id] !== undefined && stableStringify(manifest.identities[id]) !== stableStringify(value)) throw new MemoryError('IMPORT_IDENTITY_CONFLICT')
       }
-      const watermark = changes.length || descriptor || persona.descriptors.length ? Math.max(manifest.revision_watermark, archive.revision_watermark, state.revision_floor) + 1 : manifest.revision_watermark
+      const watermark = changes.length || descriptor || persona.descriptors.length || recordImports.length ? Math.max(manifest.revision_watermark, archive.revision_watermark, state.revision_floor) + 1 : manifest.revision_watermark
       const merged = [...records.filter((meta) => !state.record_ids.includes(meta.record_id) && !decoded.records.some((item) => item.record_id === meta.record_id)), ...decoded.records]
       const importedBefore = (manifest.transfers ?? []).some((item) => item.checksum === archive.checksum)
-      if (changes.length || !importedBefore || descriptor || persona.descriptors.length) {
+      if (changes.length || !importedBefore || descriptor || persona.descriptors.length || recordImports.length) {
         changes.push({ path: 'manifest.json', data: json({ ...manifest, revision_watermark: watermark, purge_generation: state.generation,
           identities: { ...manifest.identities, ...archive.manifest.identities },
           migrations: [...(manifest.migrations ?? []), ...archive.manifest.migrations.filter((entry) => !(manifest.migrations ?? []).some((old) => digest(old) === digest(entry)))],
@@ -398,7 +460,7 @@ export class MemoryTransfer {
         changes.push({ path: 'index/records.json', data: json(this.#store._index(merged, watermark)) })
       }
       if (recheckSource) await recheckSource()
-      return { changes, ...(descriptor ? { purge_descriptor: descriptor } : {}), ...(persona.descriptors.length ? { persona_descriptors: persona.descriptors } : {}), result: { api_version: API_VERSION, operation_id: operationId, status: changes.length ? 'committed' : 'unchanged', reason_code: 'OK', imported_files: decoded.files.length, record_ids: decoded.records.map((meta) => meta.record_id), checksum: archive.checksum, revision_watermark: watermark, purge_generation: state.generation, pending: false } }
+      return { changes, ...(descriptor ? { purge_descriptor: descriptor } : {}), ...(persona.descriptors.length ? { persona_descriptors: persona.descriptors } : {}), ...(recordImports.length ? { record_imports: recordImports } : {}), result: { api_version: API_VERSION, operation_id: operationId, status: changes.length ? 'committed' : 'unchanged', reason_code: 'OK', imported_files: decoded.files.length, record_ids: decoded.records.map((meta) => meta.record_id), pending_record_ids: (archive.integrity_state?.heads ?? []).filter((head) => head.state === 'quarantined').map((head) => head.record_id), omitted_pending_ids: archive.integrity_state?.omitted_pending_ids ?? [], checksum: archive.checksum, revision_watermark: watermark, purge_generation: state.generation, pending: false } }
     }, context)
   }
 
@@ -406,13 +468,17 @@ export class MemoryTransfer {
     const operationId = args?.operation_id ?? randomUUID()
     try {
       this.#store._authorize(context, 'memory.manage')
-      assertOnly(args, ['operation_id', 'archive', 'identity_mode', 'accept_purge_state', 'accept_persona_state', 'allow_maturity_reset'])
+      assertOnly(args, ['operation_id', 'archive', 'identity_mode', 'accept_purge_state', 'accept_persona_state', 'accept_integrity_state', 'accept_legacy_baseline', 'allow_maturity_reset'])
       if (args.identity_mode !== 'preserve') throw new MemoryError('EXPLICIT_IDENTITY_MODE_REQUIRED')
       if (args.accept_purge_state !== undefined && typeof args.accept_purge_state !== 'boolean') throw new MemoryError('INVALID_PURGE_STATE_ACCEPTANCE')
       if (args.archive?.purge_state !== undefined && args.accept_purge_state !== true) throw new MemoryError('PURGE_STATE_ACCEPTANCE_REQUIRED')
       if (args.accept_persona_state !== undefined && typeof args.accept_persona_state !== 'boolean' || args.allow_maturity_reset !== undefined && typeof args.allow_maturity_reset !== 'boolean') throw new MemoryError('INVALID_PERSONA_STATE_ACCEPTANCE')
       if (args.archive?.persona_state !== undefined && args.accept_persona_state !== true) throw new MemoryError('PERSONA_STATE_ACCEPTANCE_REQUIRED')
       if (args.allow_maturity_reset === true && (args.accept_persona_state !== true || args.archive?.persona_state === undefined)) throw new MemoryError('PERSONA_STATE_ACCEPTANCE_REQUIRED')
+      if (args.accept_integrity_state !== undefined && typeof args.accept_integrity_state !== 'boolean') throw new MemoryError('INVALID_INTEGRITY_STATE_ACCEPTANCE')
+      if (args.archive?.integrity_state !== undefined && args.accept_integrity_state !== true) throw new MemoryError('INTEGRITY_STATE_ACCEPTANCE_REQUIRED')
+      if (args.accept_legacy_baseline !== undefined && typeof args.accept_legacy_baseline !== 'boolean') throw new MemoryError('INVALID_LEGACY_BASELINE_ACCEPTANCE')
+      if (args.archive?.transfer_version === 1 && args.accept_legacy_baseline !== true) throw new MemoryError('LEGACY_BASELINE_ACCEPTANCE_REQUIRED')
       return await this.#import(args.archive, operationId, context, { allowMaturityReset: args.allow_maturity_reset === true })
     } catch (error) { return failure(error, operationId) }
   }

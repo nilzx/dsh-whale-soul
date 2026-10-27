@@ -1,6 +1,7 @@
 import { lstatSync, readFileSync, readdirSync } from 'node:fs'
 import { dirname, join, parse, resolve } from 'node:path'
-import { FORMAT_VERSION, RECORD_SCHEMA_VERSION, API_VERSION, MemoryError, assertId } from './contracts.js'
+import { FORMAT_VERSION, RECORD_SCHEMA_VERSION, API_VERSION, MemoryError, assertId, digest } from './contracts.js'
+import { loadRecordHead } from './record-integrity.js'
 
 const legacyMarkers = new Set(['entries', 'topics', 'dreams', 'assets', 'cold', 'quarantine', 'external-changes', 'index.json', 'index.md', 'state.json', 'write-observations.json'])
 const ambiguousLegacy = new Set(['assets', 'cold', 'quarantine', 'backups', 'external-changes'])
@@ -67,11 +68,11 @@ function administrationCoordination(root) {
   if (owner.acquired_at !== undefined && (typeof owner.acquired_at !== 'string' || !Number.isFinite(Date.parse(owner.acquired_at)))) throw new MemoryError('MEMORY_ROOT_RECOVERY_REQUIRED')
   return true
 }
-function checkRecordSchemas(spaceRoot) {
+function checkRecordSchemas(spaceRoot, root, spaceId) {
   const records = join(spaceRoot, 'records'), folder = safeStat(records)
   if (!folder) return
   if (!folder.isDirectory()) throw new MemoryError('MEMORY_SPACE_RECOVERY_REQUIRED')
-  const check = (path) => {
+  const check = (path, recordId, revisionId = null) => {
     const file = safeStat(path)
     if (!file) return
     if (!file.isFile()) throw new MemoryError('MEMORY_SPACE_RECOVERY_REQUIRED')
@@ -81,16 +82,21 @@ function checkRecordSchemas(spaceRoot) {
       if (['EACCES', 'EPERM'].includes(error.code)) throw new MemoryError('STORAGE_ACCESS_DENIED')
       throw error
     }
-    if (plain(meta) && meta.schema_version !== undefined && meta.schema_version !== RECORD_SCHEMA_VERSION) throw new MemoryError('UNSUPPORTED_RECORD_SCHEMA')
+    if (plain(meta) && meta.schema_version !== undefined && meta.schema_version !== RECORD_SCHEMA_VERSION) {
+      const head = loadRecordHead(root, spaceId, recordId)
+      const revision = head?.revisions.find((entry) => entry.revision_id === (revisionId ?? head.head_revision_id))
+      if (revision && revision.files['meta.json'] !== digest(readFileSync(path))) return
+      throw new MemoryError('UNSUPPORTED_RECORD_SCHEMA')
+    }
   }
   for (const entry of readdirSync(records, { withFileTypes: true })) {
     const base = join(records, entry.name), value = safeStat(base)
     if (!value?.isDirectory()) continue
-    check(join(base, 'meta.json'))
+    check(join(base, 'meta.json'), entry.name)
     const revisions = join(base, 'revisions'), history = safeStat(revisions)
     if (!history) continue
     if (!history.isDirectory()) throw new MemoryError('MEMORY_SPACE_RECOVERY_REQUIRED')
-    for (const revision of readdirSync(revisions)) check(join(revisions, revision, 'meta.json'))
+    for (const revision of readdirSync(revisions)) check(join(revisions, revision, 'meta.json'), entry.name, revision)
   }
 }
 
@@ -117,7 +123,8 @@ export function inspectMemoryRoot(root, memorySpaceId) {
   if (!plain(manifest)) throw new MemoryError('INVALID_ROOT_MANIFEST')
   if (manifest.format_version !== FORMAT_VERSION) throw new MemoryError('UNSUPPORTED_FORMAT_VERSION')
   if (!validIds(manifest.spaces)) throw new MemoryError('INVALID_ROOT_MANIFEST')
-  if (manifest.api_version !== undefined && manifest.api_version !== API_VERSION) throw new MemoryError('UNSUPPORTED_API_VERSION')
+  if (manifest.api_version === undefined || manifest.api_version === '1.0.0') throw new MemoryError('INTEGRITY_BASELINE_REQUIRED')
+  if (manifest.api_version !== API_VERSION) throw new MemoryError('UNSUPPORTED_API_VERSION')
   if (manifest.record_schema_versions !== undefined && (!Array.isArray(manifest.record_schema_versions) || !manifest.record_schema_versions.length || manifest.record_schema_versions.some((version) => version !== RECORD_SCHEMA_VERSION))) throw new MemoryError('UNSUPPORTED_RECORD_SCHEMA')
   if (names.some((name) => legacyMarkers.has(name))) throw new MemoryError('MIXED_MEMORY_ROOT', 'Mixed legacy and v2 memory found. Preserve this root and use an explicit owner recovery workflow; do not delete manifests.')
   const spaceRoot = join(root, 'spaces', memorySpaceId), spaceStat = safeStat(spaceRoot), listed = manifest.spaces.includes(memorySpaceId)
@@ -132,6 +139,6 @@ export function inspectMemoryRoot(root, memorySpaceId) {
   if (!plain(space)) throw new MemoryError('INVALID_SPACE_MANIFEST')
   if (space.format_version !== FORMAT_VERSION || space.memory_space_id !== memorySpaceId) throw new MemoryError('UNSUPPORTED_SPACE_FORMAT')
   if (!Number.isSafeInteger(space.revision_watermark) || space.revision_watermark < 0 || !Number.isSafeInteger(space.purge_generation ?? 0) || (space.purge_generation ?? 0) < 0) throw new MemoryError('INVALID_SPACE_MANIFEST')
-  checkRecordSchemas(spaceRoot)
+  checkRecordSchemas(spaceRoot, root, memorySpaceId)
   return { kind: 'v2', rootManifest: manifest, spaceManifest: space }
 }

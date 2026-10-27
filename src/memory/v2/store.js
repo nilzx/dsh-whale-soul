@@ -6,6 +6,7 @@ import { TransactionEngine, atomicWrite, readJson } from './transactions.js'
 import { getPurgeState, reconcilePurgeState } from './purge-ledger.js'
 import { normalizeMemorySlotKey } from './slot-policy.js'
 import { inspectMemoryRoot } from './root-format.js'
+import { loadRecordHead, verifyRecordBundle } from './record-integrity.js'
 
 const DATA_FILES = ['meta.json', 'gist.md', 'detail.md', 'evidence.jsonl']
 const PROPOSAL_FIELDS = ['operation_id', 'subject_id', 'content', 'gist', 'title', 'type', 'tags', 'canonical_key', 'provenance_refs', 'claim_kind', 'confidence', 'visibility', 'valid_from', 'valid_to', 'expires_at', 'retention', 'pinned']
@@ -101,14 +102,14 @@ export class MemoryStoreV2 {
   }
 
   _readRecord(id, revisionId = null) {
+    const head = loadRecordHead(this.root, this.memorySpaceId, id)
+    if (!head) throw new MemoryError('INTEGRITY_BASELINE_REQUIRED')
+    if (!revisionId && head.state !== 'clean') throw new MemoryError(head.state === 'purged' ? 'RECORD_PURGED' : 'RECORD_QUARANTINED')
     const base = `records/${assertId(id, 'record_id')}${revisionId ? `/revisions/${assertId(revisionId, 'revision_id')}` : ''}`
     const dir = this.engine.resolvePath(base)
-    const integrity = readJson(join(dir, 'integrity.json'))
-    const files = Object.fromEntries(DATA_FILES.map((file) => [file, readFileSync(join(dir, file), 'utf8')]))
-    if (DATA_FILES.some((file) => integrity.files?.[file] !== digest(files[file]))) throw new MemoryError('EXTERNAL_CHANGE')
-    const meta = validateRecord(JSON.parse(files['meta.json']))
-    if (meta.record_id !== id || meta.memory_space_id !== this.memorySpaceId || integrity.revision_id !== meta.revision_id) throw new MemoryError('RECORD_SCOPE_MISMATCH')
-    return { meta, gist: files['gist.md'], detail: files['detail.md'], evidence: files['evidence.jsonl'].split('\n').filter(Boolean).map((line) => JSON.parse(line)) }
+    const files = Object.fromEntries([...DATA_FILES, 'integrity.json'].map((file) => [file, readFileSync(join(dir, file))]))
+    try { return verifyRecordBundle(head, files, revisionId ?? head.head_revision_id) }
+    catch (error) { if (error.code === 'RECORD_HASH_MISMATCH') throw new MemoryError('EXTERNAL_CHANGE'); throw error }
   }
 
   _records() {
@@ -227,6 +228,18 @@ export class MemoryStoreV2 {
     const manifest = this._manifest()
     const watermark = manifest.revision_watermark + 1
     const existing = this._records().records.filter((item) => item.record_id !== record.meta.record_id)
+    // A quarantined slot remains occupied until an owner resolves or purges it.
+    if (record.meta.status === 'active' && record.meta.canonical_key !== null) {
+      const folder = join(this.root, '.administration/record-heads', this.memorySpaceId)
+      if (existsSync(folder)) for (const entry of readdirSync(folder)) {
+        if (!entry.endsWith('.json')) continue
+        const head = loadRecordHead(this.root, this.memorySpaceId, entry.slice(0, -5))
+        if (head.record_id !== record.meta.record_id && head.state === 'quarantined' &&
+          head.subject_id === record.meta.subject_id && head.persona_id === record.meta.persona_id &&
+          head.agent_identity_id === record.meta.agent_identity_id && head.record_type === record.meta.type &&
+          head.canonical_key_hash === digest(normalizeMemorySlotKey(record.meta.canonical_key))) throw new MemoryError('QUARANTINED_SLOT_CONFLICT')
+      }
+    }
     if (record.meta.status === 'active' && record.meta.canonical_key !== null) {
       const slot = normalizeMemorySlotKey(record.meta.canonical_key)
       const conflict = existing.find((meta) => meta.status === 'active' && meta.canonical_key !== null &&
