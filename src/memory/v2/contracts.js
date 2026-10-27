@@ -5,6 +5,7 @@ export const RECORD_SCHEMA_VERSION = 2
 export const API_VERSION = '1.3.0'
 export const CLAIM_KINDS = ['user_statement', 'tool_observation', 'inference', 'hypothesis', 'quotation', 'role_fiction', 'legacy']
 export const MEMORY_TYPES = ['identity', 'preference', 'episode', 'promise', 'emotion', 'procedure', 'fact', 'meme']
+export const MEMORY_REVISION_REASON = 'New independently sourced statement about the same fact'
 export const CAPABILITIES = ['memory.read', 'memory.write', 'memory.raw', 'memory.list', 'memory.share', 'memory.manage', 'memory.import', 'memory.export', 'memory.purge', 'self.write', 'self.evaluate']
 
 export class MemoryError extends Error {

@@ -40,6 +40,8 @@ function quotationProof(store, record, head, seen = new Set()) {
     evidence.evidence_id !== `external-${digest({ change: external.change_id, operationId: revision.operation_id, patch }).slice(0, 40)}`) return null
   return { evidence_id: evidence.evidence_id, origin_revision_id: meta.revision_id }
 }
+// Internal file-provider proof reuse; this is not an interaction-authority grant.
+export { quotationProof as verifyAnchoredOwnerQuotation }
 
 /**
  * Trusted file-provider extension. Discovery uses a neutral authorized view

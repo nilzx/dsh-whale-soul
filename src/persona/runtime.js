@@ -5,6 +5,8 @@ import { assertMemoryProvider, assertProviderStore, createLocalMemoryProvider } 
 import { buildMemoryContext, retrieveMemory } from '../memory/v2/retrieval.js'
 import { recordRetentionAllowed } from '../memory/v2/read-policy.js'
 import { createExternalReadAuthority } from '../memory/v2/external-read-authority.js'
+import { createProtectedCorrectionAuthority } from '../memory/v2/protected-correction.js'
+import { retentionBlockReason } from '../memory/v2/retention.js'
 import { createKnownSlotCatalog, createMemoryBatchSelector, createMemoryBatchSelectionAssessor, isBatchSelectionDecision, normalizeMemorySlotKey } from '../memory/v2/selection-batch.js'
 import { MemoryError, digest } from '../memory/v2/contracts.js'
 import { PersonaState } from './state.js'
@@ -37,6 +39,7 @@ export class PersonaRuntime {
   #attaching = new WeakMap()
   #captures = new WeakMap()
   #externalReads
+  #protectedCorrections
   #individualKey
   constructor(options = {}) {
     this.#individualKey = normalizeIndividualKey(options.individualKey)
@@ -53,6 +56,8 @@ export class PersonaRuntime {
     this.#externalReads = createExternalReadAuthority({ store: this.store })
     this.state = new PersonaState({ store: this.store, persona_id: this.core.persona_id,
       core_version: this.core.version, mode: options.stabilityMode ?? 'auto', subject_id: options.subjectId ?? 'owner', individual_key: this.#individualKey })
+    this.#protectedCorrections = createProtectedCorrectionAuthority({ store: this.store,
+      resolveAdmittedItem: (id) => this.state.resolveEvidence(id), checkBoundary: (input) => this.#correctionBoundary(input) })
     this.#ready = this.#initialize()
   }
   async #initialize() {
@@ -89,6 +94,41 @@ export class PersonaRuntime {
   #evidenceAllowed(id, _context, meta) {
     if (meta?.claim_kind === 'legacy' && meta.legacy && typeof id === 'string' && id.startsWith('legacy-')) return true
     return this.state.resolveMemoryEvidence(id) !== null || this.#options.additionalEvidenceAllowed?.(id, _context, meta) === true
+  }
+  #correctionBoundary({ item, context }) {
+    this.#assertLive(); check(this.#lifetime.signal); check(this.#operation.getStore())
+    const state = this.#sessions.get(item.session_id)
+    if (!state || state.sessionId !== context.session_id) return false
+    check(state.controller.signal); state.fence.checkSync()
+    const session = state.agent.session
+    if (session.id !== item.session_id || item.event_id !== `message-${digest({ session: item.session_id, message: item.message_id }).slice(0, 40)}`) return false
+    const textOf = (message) => message?.role === 'user' && message.source?.kind === 'user' && message.id === item.message_id && Array.isArray(message.content)
+      ? message.content.filter((part) => part?.type === 'text' && typeof part.text === 'string').map((part) => part.text).join('\n') : null
+    let content = null
+    const staged = state.inboxSources.get(item.message_id)
+    if (staged) {
+      if (!staged.accepted || staged.controller.signal.aborted || staged.hash !== digest(staged.message) || new Date(staged.time).toISOString() !== item.occurred_at) return false
+      content = textOf(staged.message)
+    } else {
+      // Recovery uses the public append-only log, not model arguments or a
+      // seeded arbitrary message. The existing identity fence rejects forks.
+      if (session.seq > 16384 || typeof session.eventAt !== 'function') return false
+      const admitted = [], sources = []
+      for (let seq = 0; seq < session.seq; seq++) {
+        const event = session.eventAt(seq)
+        if (event?.type === 'user/message' && textOf(event.data) !== null) {
+          admitted.push(event.data)
+          if (new Date(event.time).toISOString() === item.occurred_at) sources.push(event.data)
+        }
+        if (event?.type === 'agent/inbox/spliced' && new Date(event.time).toISOString() === item.occurred_at) {
+          for (const message of event.data?.inserted ?? []) if (textOf(message) !== null) sources.push(message)
+        }
+      }
+      if (admitted.length !== 1 || sources.length !== 1 || digest(admitted[0]) !== digest(sources[0])) return false
+      content = textOf(sources[0])
+    }
+    return typeof content === 'string' && content.length <= 8000 && content.isWellFormed() && !retentionBlockReason(content) &&
+      Number.isSafeInteger(item.span_start) && Number.isSafeInteger(item.span_end) && content.slice(item.span_start, item.span_end) === item.content
   }
   async #readFilters(state, args, context, signal) {
     const query = Object.fromEntries(['query', 'at', 'subject_id', 'limit', 'include_cold'].filter((key) => args[key] !== undefined).map((key) => [key, args[key]]))
@@ -178,8 +218,21 @@ export class PersonaRuntime {
     }
     if (!binding && relation) return this.state.recordItemOutcome(evidence.evidence_id, {
       status: 'terminal_conflict', reason_code: 'SLOT_ALREADY_EXISTS', observed_revision: relation.revision }, ctx)
-    const result = binding ? await this.store.reviseMemory({ ...args, record_id: binding.record_id,
-      expected_revision: binding.expected_revision, reason: REASON }, ctx) : await this.store.proposeMemory(args, ctx)
+    let hostOptions
+    const revisionArgs = binding ? { ...args, record_id: binding.record_id, expected_revision: binding.expected_revision, reason: REASON } : null
+    if (binding && relation?.external_revision?.protected === true) {
+      if (!this.#sessions.has(evidence.session_id)) return { status: 'deferred', reason_code: 'PROTECTED_CORRECTION_FENCE_REQUIRED' }
+      let permit
+      try { permit = await this.#protectedCorrections.authorize({ evidence_id: evidence.evidence_id,
+        proposal_hash: digest(evidence.memory_proposal), args: revisionArgs }, ctx,
+      { signal: this.#operation.getStore() ?? this.#sessions.get(evidence.session_id).controller.signal }) }
+      catch (error) {
+        if (error.code === 'PROTECTED_CORRECTION_FENCE_REQUIRED') return { status: 'deferred', reason_code: error.code }
+        throw error
+      }
+      hostOptions = { protectedCorrectionPermit: permit }
+    }
+    const result = binding ? await this.store.reviseMemory(revisionArgs, ctx, hostOptions) : await this.store.proposeMemory(args, ctx)
     if (result.reason_code === 'OPERATION_CONFLICT') {
       const replay = await this.#receipt(args, ctx, binding)
       if (replay) return replay
@@ -235,13 +288,21 @@ export class PersonaRuntime {
     return outcome
   }
 
-  async recoverPendingMemories() {
+  async recoverPendingMemories({ sessionId = null, protectedOnly = false } = {}) {
     let cursor = null
     do {
       this.#assertLive()
       const page = await this.state.listPendingMemories({ limit: 64, cursor })
       for (const evidence of page.items) {
+        if (sessionId !== null && evidence.session_id !== sessionId) continue
+        if (protectedOnly) {
+          const target = evidence.target_binding?.record_id
+          if (!target) continue
+          const record = await this.store.engine.read(() => this.store._readRecord(target))
+          if (record.meta.external_revision?.protected !== true) continue
+        }
         const result = await this.#commitFact(evidence)
+        if (result.status === 'deferred' && result.reason_code === 'PROTECTED_CORRECTION_FENCE_REQUIRED') continue
         if (!['committed', 'temporary', 'purged', 'terminal_conflict', 'ignored'].includes(result.status)) throw new MemoryError(result.reason_code ?? 'MEMORY_OUTBOX_PENDING')
       }
       cursor = page.cursor
@@ -306,6 +367,7 @@ export class PersonaRuntime {
         check(job.controller.signal); job.verdicts.set(key, verdict); return verdict
       } })
     this.#agents.set(agent, state); this.#sessions.set(sessionId, state)
+    await this.recoverPendingMemories({ sessionId, protectedOnly: true })
     return state
   }
   #enqueue(state, operation, signal = state.controller.signal) {

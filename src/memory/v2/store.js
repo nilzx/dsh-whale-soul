@@ -10,6 +10,7 @@ import { reconcileMaintenanceState } from './lifecycle-ledger.js'
 import { normalizeMemorySlotKey } from './slot-policy.js'
 import { inspectMemoryRoot } from './root-format.js'
 import { listRecordHeads, loadRecordHead, locateRecordBundle, recordBundlePath, verifyRecordBundle } from './record-integrity.js'
+import { reserveProtectedCorrectionPermit, assertProtectedCorrectionAttempt, applyProtectedCorrectionMetadata, finishProtectedCorrectionAttempt } from './protected-correction.js'
 
 const DATA_FILES = ['meta.json', 'gist.md', 'detail.md', 'evidence.jsonl']
 const PROPOSAL_FIELDS = ['operation_id', 'subject_id', 'content', 'gist', 'title', 'type', 'tags', 'canonical_key', 'provenance_refs', 'claim_kind', 'confidence', 'visibility', 'valid_from', 'valid_to', 'expires_at', 'retention', 'pinned']
@@ -297,27 +298,46 @@ export class MemoryStoreV2 {
     } catch (error) { return failure(error, operationId) }
   }
 
-  async reviseMemory(args, context) {
-    const operationId = args?.operation_id ?? randomUUID()
+  async reviseMemory(args, context, hostOptions = {}) {
+    let operationId = args?.operation_id ?? randomUUID()
+    let attempt = null, previousForCheck, preparedRecord
     try {
       this._authorize(context, 'memory.write')
+      assertOnly(hostOptions, ['protectedCorrectionPermit'])
       assertOnly(args, [...PROPOSAL_FIELDS, 'record_id', 'expected_revision', 'reason'])
       assertId(args.record_id, 'record_id')
       text(args.reason, 'revision reason', { max: 500 })
       if (!Number.isSafeInteger(args.expected_revision)) throw new MemoryError('EXPECTED_REVISION_REQUIRED')
-      return await this.engine.run(operationId, { action: 'reviseMemory', args, actor: context.agent_identity_id, subject: context.subject_id, persona: context.persona_id, space: context.memory_space_id }, async () => {
+      if (Object.hasOwn(hostOptions, 'protectedCorrectionPermit')) {
+        args = structuredClone(args)
+        operationId = args.operation_id
+        attempt = await this.engine.read(() => reserveProtectedCorrectionPermit(hostOptions.protectedCorrectionPermit, { store: this, args, context }))
+      }
+      const result = await this.engine.run(operationId, { action: 'reviseMemory', args, actor: context.agent_identity_id, subject: context.subject_id, persona: context.persona_id, space: context.memory_space_id }, async () => {
         this._authorize(context, 'memory.write')
         const previous = this._readRecord(args.record_id)
         if (!this._visible(previous.meta, context) || (previous.meta.agent_identity_id !== context.agent_identity_id && !context.capabilities.includes('memory.manage'))) throw new MemoryError('RECORD_DENIED')
-        if ((previous.meta.external_revision?.protected === true || previous.meta.legacy?.user_edited === true) && !context.capabilities.includes('memory.manage')) throw new MemoryError('PROTECTED_REVISION')
+        if ((previous.meta.external_revision?.protected === true || previous.meta.legacy?.user_edited === true) && !context.capabilities.includes('memory.manage') && !attempt) throw new MemoryError('PROTECTED_REVISION')
+        if (attempt) assertProtectedCorrectionAttempt(attempt, { store: this, args, context, previous })
         if (previous.meta.agreement !== undefined) throw new MemoryError('AGREEMENT_MANAGEMENT_REQUIRED')
         if (previous.meta.lifecycle?.tier === 'cold') throw new MemoryError('LIFECYCLE_MANAGEMENT_REQUIRED')
         if (previous.meta.revision !== args.expected_revision) throw new MemoryError('REVISION_CONFLICT')
         const record = await this._proposal(args, context, previous)
+        if (attempt) applyProtectedCorrectionMetadata(attempt, { store: this, args, context, previous, record })
         this._authorize(context, 'memory.write')
+        previousForCheck = previous; preparedRecord = record
         return { changes: this._commitChanges(record), result: success(operationId, record.meta) }
-      }, { authorize: () => this._authorize(context, 'memory.write') })
+      }, { authorize: () => {
+        this._authorize(context, 'memory.write')
+        if (attempt) assertProtectedCorrectionAttempt(attempt, { store: this, args, context, previous: previousForCheck, record: preparedRecord })
+      } })
+      // A valid prior protected commit already advances the anchored target
+      // and cannot pass this permit's original CAS. A cached receipt with the
+      // unchanged target therefore cannot stand in for an actual producer.
+      if (attempt && !preparedRecord) throw new MemoryError('MEMORY_RECEIPT_REPAIR_REQUIRED')
+      return result
     } catch (error) { return failure(error, operationId) }
+    finally { if (attempt) finishProtectedCorrectionAttempt(attempt) }
   }
 
   async queryMemory(args, context) {

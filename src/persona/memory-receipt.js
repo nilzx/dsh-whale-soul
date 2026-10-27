@@ -1,6 +1,6 @@
-import { API_VERSION, MemoryError, assertId, digest } from '../memory/v2/contracts.js'
+import { API_VERSION, MEMORY_REVISION_REASON, MemoryError, assertId, digest } from '../memory/v2/contracts.js'
 
-export const MEMORY_REVISION_REASON = 'New independently sourced statement about the same fact'
+export { MEMORY_REVISION_REASON } from '../memory/v2/contracts.js'
 const invalid = () => { throw new MemoryError('MEMORY_RECEIPT_REPAIR_REQUIRED') }
 const plain = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
 const sameIds = (left, right) => Array.isArray(left) && Array.isArray(right) &&
