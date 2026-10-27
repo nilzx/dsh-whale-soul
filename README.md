@@ -8,7 +8,7 @@ An in-character **Whale Chan (鲸鱼娘)** Agent mode for [DeepSeek Harness](htt
 
 [中文文档](README.zh-CN.md)
 
-> 0.2.0 release preparation — not yet published. The default persona uses V2 memory API 1.3 and full transfer format 3, with independent personality growth and portable local data. Read the [0.2.0 changes and upgrade guide](docs/release-0.2.0.md) before updating from 0.1.x. Focused real-session journeys have passed; final upgrade and desktop checks, long-term growth and optional body journeys remain separate validation scopes.
+> 0.2.0 release preparation — not yet published. The default persona uses V2 memory API 1.3 and full transfer format 3, with independent personality growth and portable local data. Read the [0.2.0 changes and upgrade guide](docs/release-0.2.0.md) before updating from 0.1.x. The 0.1.5 migration and Electron desktop smoke checks have passed. Long-term growth and optional body journeys remain separate validation scopes.
 
 ## What it is
 

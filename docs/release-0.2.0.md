@@ -10,7 +10,7 @@ Status: release preparation; this version has not been published to npm.
 
 - Persona and memory are separate modules in the same package. Each individual has independent identity, growth and maturity; full export/import can preserve that individual across roots or machines.
 - Personality growth has `variable`, `normal`, `stubborn` and `auto` stability modes. The default auto mode gradually becomes steadier with qualifying experiences. Ordinary chat does not directly rewrite the core.
-- V2 memory supports several facts per message, sourced corrections with history, explicit non-retention and deeper recall. Recall questions cannot replace a fact with its topic name.
+- V2 memory supports several facts per message, sourced corrections with history, explicit non-retention and deeper recall. Recall questions cannot replace a fact with its topic name. Corrections resolve an existing fact before updating it; ambiguous targets require clarification. Stored prose excludes update commands, and recall distinguishes the user’s experiences from the Agent’s.
 - Explicit agreements distinguish a proposal from mutual acceptance. A successful update to a bound todo can verify that todo-state agreement; it does not prove the underlying work was delivered.
 - The local management CLI provides preview, migration, export/import and precise removal. Memory prose stays separate from provenance and operational metadata.
 - `/whale-context` shows estimated context shares for the core, growth, memory, runtime hints and tools. It is a local command and does not call the model or add its result to memory.
