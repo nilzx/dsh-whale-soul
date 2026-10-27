@@ -4,7 +4,7 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { API_VERSION, CLAIM_KINDS, FORMAT_VERSION, MEMORY_TYPES, MemoryError, assertId, assertOnly, digest, failure, stableStringify, timestamp, validateRecord } from './contracts.js'
 import { readJson } from './transactions.js'
 import { ASSET_METADATA_FIELDS, validateAssetMetadata } from './assets.js'
-import { assertPersonaFilesAllowed, exportPersonaState, preparePersonaImport, validatePortablePersonaShape, validatePortablePersonaState } from './persona-ledger.js'
+import { assertPersonaFilesAllowed, exportPersonaState, preparePersonaImport, validatePortablePersonaShape, validatePortablePersonaState, personaIdentityProjection, projectedIdentityBinding } from './persona-ledger.js'
 import { exportPurgeState, getPurgeState, preparePurgeImport } from './purge-ledger.js'
 import { listRecordHeads, loadRecordHead, validateRecordHead, verifyRecordBundle } from './record-integrity.js'
 
@@ -346,9 +346,9 @@ export function validateTransferArchive(archive, { maxFiles = 10_000, maxBytes =
   if (archive.persona_state !== undefined && Buffer.byteLength(stableStringify(archive.persona_state)) > maxBytes) throw new MemoryError('TRANSFER_LIMIT_EXCEEDED')
   if (archive.persona_state !== undefined) validatePortablePersonaShape(archive.persona_state, archive.memory_space_id)
   for (const anchor of archive.persona_state?.anchors ?? []) {
-    const expected = { persona_id: anchor.persona_id, subject_id: anchor.subject_id, agent_identity_id: anchor.agent_identity_id, created_at: anchor.created_at }
+    const expected = personaIdentityProjection(anchor)
     if (!Object.hasOwn(archive.manifest.identities, anchor.agent_identity_id) || digest(archive.manifest.identities[anchor.agent_identity_id]) !== digest(expected)) throw new MemoryError('TRANSFER_PERSONA_IDENTITY_MISMATCH')
-    for (const [id, identity] of Object.entries(archive.manifest.identities)) if (identity?.persona_id === anchor.persona_id && identity?.subject_id === anchor.subject_id && id !== anchor.agent_identity_id) throw new MemoryError('TRANSFER_PERSONA_IDENTITY_MISMATCH')
+    for (const [id, identity] of Object.entries(archive.manifest.identities)) if (identity?.persona_id === anchor.persona_id && identity?.subject_id === anchor.subject_id && id !== anchor.agent_identity_id && projectedIdentityBinding(identity) === anchor.binding_id) throw new MemoryError('TRANSFER_PERSONA_IDENTITY_MISMATCH')
   }
   assertPersonaFilesAllowed(files, archive.persona_state?.anchors ?? [], { validateSnapshot: true })
   if (files.some(opaqueFile) && !['reviewed', 'preserved_local'].includes(policy?.opaque_handling)) throw new MemoryError('OPAQUE_REVIEW_REQUIRED')

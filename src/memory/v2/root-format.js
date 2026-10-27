@@ -52,6 +52,22 @@ function validateCoordination(root, name) {
     if (name.startsWith('.lock-candidate-') && name !== `.lock-candidate-${owner.token}`) throw new MemoryError('LOCK_RECOVERY_REQUIRED')
   }
 }
+function administrationCoordination(root) {
+  const base = join(root, '.administration'), directory = safeStat(base)
+  if (!directory?.isDirectory()) throw new MemoryError('MEMORY_ROOT_RECOVERY_REQUIRED')
+  const names = readdirSync(base)
+  if (!names.length) return true
+  if (names.length !== 1 || names[0] !== 'repair.lock') throw new MemoryError('MEMORY_ROOT_RECOVERY_REQUIRED')
+  const gate = join(base, 'repair.lock')
+  if (!safeStat(gate)?.isDirectory()) throw new MemoryError('MEMORY_ROOT_RECOVERY_REQUIRED')
+  const files = readdirSync(gate)
+  if (files.length !== 1 || files[0] !== 'owner.json') throw new MemoryError('MEMORY_ROOT_RECOVERY_REQUIRED')
+  const owner = readManifest(join(gate, 'owner.json'), 'MEMORY_ROOT_RECOVERY_REQUIRED')?.value
+  if (!plain(owner) || Object.keys(owner).some((key) => !['pid', 'hostname', 'token', 'acquired_at'].includes(key)) || !Number.isSafeInteger(owner.pid) || owner.pid < 1 || typeof owner.hostname !== 'string' || !owner.hostname || owner.hostname.length > 255 || /[\0\r\n]/.test(owner.hostname)) throw new MemoryError('MEMORY_ROOT_RECOVERY_REQUIRED')
+  try { assertId(owner.token, 'management token') } catch { throw new MemoryError('MEMORY_ROOT_RECOVERY_REQUIRED') }
+  if (owner.acquired_at !== undefined && (typeof owner.acquired_at !== 'string' || !Number.isFinite(Date.parse(owner.acquired_at)))) throw new MemoryError('MEMORY_ROOT_RECOVERY_REQUIRED')
+  return true
+}
 function checkRecordSchemas(spaceRoot, root, spaceId) {
   const records = join(spaceRoot, 'records'), folder = safeStat(records)
   if (!folder) return
@@ -97,9 +113,10 @@ export function inspectMemoryRoot(root, memorySpaceId) {
   if (!rootFile) {
     if (names.some((name) => legacyMarkers.has(name) && !ambiguousLegacy.has(name))) throw new MemoryError('LEGACY_MIGRATION_REQUIRED', 'Legacy memory found. Stop legacy writers and use the local owner migration CLI with a separate destination root.')
     if (names.some((name) => ambiguousLegacy.has(name))) throw new MemoryError('MEMORY_ROOT_FORMAT_REQUIRED')
-    const dataNames = names.filter((name) => !coordination.test(name))
+    const adminOnly = names.includes('.administration') && administrationCoordination(root)
+    const dataNames = names.filter((name) => !coordination.test(name) && !(adminOnly && name === '.administration'))
     if (dataNames.length) throw new MemoryError(dataNames.some((name) => ['spaces', '.administration'].includes(name)) ? 'MEMORY_ROOT_RECOVERY_REQUIRED' : 'MEMORY_ROOT_NOT_EMPTY')
-    names.forEach((name) => validateCoordination(root, name))
+    names.filter((name) => coordination.test(name)).forEach((name) => validateCoordination(root, name))
     return { kind: 'new', rootManifest: null, spaceManifest: null }
   }
   const manifest = rootFile.value

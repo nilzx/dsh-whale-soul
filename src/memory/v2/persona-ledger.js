@@ -17,7 +17,24 @@ function safe(root, path) {
 function read(path, fallback) {
   try { return JSON.parse(readFileSync(path, 'utf8')) } catch (error) { if (error.code === 'ENOENT') return fallback; throw new MemoryError('PERSONA_STATE_REPAIR_REQUIRED') }
 }
-export function personaBinding(personaId, subjectId) { return `binding-${digest({ persona_id: assertId(personaId), subject_id: assertId(subjectId) }).slice(0, 40)}` }
+export function normalizeIndividualKey(value = 'default') {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value)) throw new MemoryError('INVALID_INDIVIDUAL_KEY')
+  return value
+}
+export function personaBinding(personaId, subjectId, individualKey = 'default') {
+  const identity = { persona_id: assertId(personaId), subject_id: assertId(subjectId) }, key = normalizeIndividualKey(individualKey)
+  return `binding-${digest(key === 'default' ? identity : { binding_scheme: 2, ...identity, individual_key: key }).slice(0, 40)}`
+}
+export function personaIdentityProjection(anchor) {
+  return { persona_id: anchor.persona_id, subject_id: anchor.subject_id, agent_identity_id: anchor.agent_identity_id, created_at: anchor.created_at,
+    ...(anchor.schema_version === 3 ? { binding_id: anchor.binding_id, individual_key: anchor.individual_key } : {}) }
+}
+export function projectedIdentityBinding(identity) {
+  const key = normalizeIndividualKey(identity?.individual_key)
+  const binding = personaBinding(identity?.persona_id, identity?.subject_id, key)
+  if (key !== 'default' && identity.binding_id !== binding || key === 'default' && identity.binding_id !== undefined && identity.binding_id !== binding) throw new MemoryError('PERSONA_IDENTITY_CONFLICT')
+  return binding
+}
 export function loadPersonaLedger(root) {
   const ledger = read(safe(root, PERSONA_LEDGER_PATH), { schema_version: 1, spaces: {} })
   if (ledger?.schema_version !== 1 || !ledger.spaces || Array.isArray(ledger.spaces) || typeof ledger.spaces !== 'object') throw new MemoryError('PERSONA_STATE_REPAIR_REQUIRED')
@@ -31,12 +48,15 @@ export function getPersonaAnchor(root, spaceId, binding) {
   return anchor ? clone(anchor) : null
 }
 export function validatePersonaAnchor(anchor) {
-  assertOnly(anchor, ['schema_version', 'memory_space_id', 'binding_id', 'persona_id', 'agent_identity_id', 'subject_id', 'core_version', 'created_at', 'revision', 'credentials', 'revoked_ids', 'snapshot', 'management_resets', 'items'])
-  if (!anchor || ![1, 2].includes(anchor.schema_version) || !Number.isSafeInteger(anchor.revision) || anchor.revision < 1) throw new MemoryError('PERSONA_STATE_REPAIR_REQUIRED')
+  assertOnly(anchor, ['schema_version', 'memory_space_id', 'binding_id', 'persona_id', 'agent_identity_id', 'subject_id', 'core_version', 'created_at', 'revision', 'credentials', 'revoked_ids', 'snapshot', 'management_resets', 'items', 'individual_key', 'binding_scheme'])
+  if (!anchor || ![1, 2, 3].includes(anchor.schema_version) || !Number.isSafeInteger(anchor.revision) || anchor.revision < 1) throw new MemoryError('PERSONA_STATE_REPAIR_REQUIRED')
   timestamp(anchor.created_at, 'persona created_at', false)
   if (typeof anchor.core_version !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/.test(anchor.core_version)) throw new MemoryError('PERSONA_STATE_REPAIR_REQUIRED')
   for (const key of ['memory_space_id', 'binding_id', 'persona_id', 'agent_identity_id', 'subject_id']) assertId(anchor[key])
-  if (anchor.binding_id !== personaBinding(anchor.persona_id, anchor.subject_id)) throw new MemoryError('PERSONA_STATE_REPAIR_REQUIRED')
+  if (anchor.schema_version === 3) {
+    if (anchor.binding_scheme !== 2 || normalizeIndividualKey(anchor.individual_key) === 'default') throw new MemoryError('PERSONA_STATE_REPAIR_REQUIRED')
+  } else if (anchor.individual_key !== undefined || anchor.binding_scheme !== undefined) throw new MemoryError('PERSONA_STATE_REPAIR_REQUIRED')
+  if (anchor.binding_id !== personaBinding(anchor.persona_id, anchor.subject_id, anchor.individual_key)) throw new MemoryError('PERSONA_STATE_REPAIR_REQUIRED')
   if (!Array.isArray(anchor.credentials) || !Array.isArray(anchor.revoked_ids) || new Set(anchor.credentials.map((v) => v.evidence_id)).size !== anchor.credentials.length) throw new MemoryError('PERSONA_STATE_REPAIR_REQUIRED')
   anchor.revoked_ids.forEach((id) => assertId(id))
   const credentialKeys = new Set(['evidence_id', 'type', 'persona_id', 'agent_identity_id', 'independence_key', 'session_id', 'occurred_at', 'source', 'claim_kind', 'allow_persist', 'growth_eligible', 'maturity_eligible', 'source_hash', 'payload_hash', 'completed', 'plan_version', 'item_ids', 'plan_hash', 'normalized_content_hash', 'duplicate_content', 'plan_decision', 'reason_code', 'message_id', 'content_units'])
@@ -53,7 +73,7 @@ export function validatePersonaAnchor(anchor) {
     if (credential.payload_hash !== undefined && !/^[a-f0-9]{64}$/.test(credential.payload_hash)) throw new MemoryError('PERSONA_STATE_REPAIR_REQUIRED')
     if (credential.persona_id !== anchor.persona_id || credential.agent_identity_id !== anchor.agent_identity_id) throw new MemoryError('PERSONA_STATE_REPAIR_REQUIRED')
   }
-  if (anchor.schema_version === 1 && anchor.items !== undefined || anchor.schema_version === 2 && !Array.isArray(anchor.items)) throw new MemoryError('PERSONA_STATE_REPAIR_REQUIRED')
+  if (anchor.schema_version === 1 && anchor.items !== undefined || anchor.schema_version >= 2 && !Array.isArray(anchor.items)) throw new MemoryError('PERSONA_STATE_REPAIR_REQUIRED')
   const items = anchor.items ?? []
   if (new Set(items.map((item) => item.evidence_id)).size !== items.length) throw new MemoryError('INVALID_BATCH_BINDING')
   items.forEach(validateItemBinding)
@@ -68,7 +88,7 @@ export function validatePersonaAnchor(anchor) {
     if (credential.duplicate_content !== undefined && (typeof credential.duplicate_content !== 'boolean' || credential.duplicate_content && (credential.maturity_eligible || credential.growth_eligible))) throw new MemoryError('INVALID_BATCH_BINDING')
     if (anchor.schema_version === 1 && ['normalized_content_hash','duplicate_content','plan_version','item_ids','plan_hash'].some((key) => credential[key] !== undefined)) throw new MemoryError('INVALID_BATCH_BINDING')
     if (credential.plan_version !== undefined) {
-      if (anchor.schema_version !== 2 || credential.plan_version !== 2 || credential.allow_persist !== false || credential.growth_eligible !== false || !Array.isArray(credential.item_ids) || credential.item_ids.length > 4 || new Set(credential.item_ids).size !== credential.item_ids.length || !/^[a-f0-9]{64}$/.test(credential.plan_hash) || !/^[a-f0-9]{64}$/.test(credential.normalized_content_hash) || typeof credential.duplicate_content !== 'boolean' || credential.duplicate_content && credential.maturity_eligible || !['selected', 'ignore'].includes(credential.plan_decision) || !['SELECTED_ITEMS','NO_PERSISTENT_VALUE'].includes(credential.reason_code) || !Number.isSafeInteger(credential.content_units) || credential.content_units < 1 || credential.content_units > 8000) throw new MemoryError('INVALID_BATCH_BINDING')
+      if (anchor.schema_version < 2 || credential.plan_version !== 2 || credential.allow_persist !== false || credential.growth_eligible !== false || !Array.isArray(credential.item_ids) || credential.item_ids.length > 4 || new Set(credential.item_ids).size !== credential.item_ids.length || !/^[a-f0-9]{64}$/.test(credential.plan_hash) || !/^[a-f0-9]{64}$/.test(credential.normalized_content_hash) || typeof credential.duplicate_content !== 'boolean' || credential.duplicate_content && credential.maturity_eligible || !['selected', 'ignore'].includes(credential.plan_decision) || !['SELECTED_ITEMS','NO_PERSISTENT_VALUE'].includes(credential.reason_code) || !Number.isSafeInteger(credential.content_units) || credential.content_units < 1 || credential.content_units > 8000) throw new MemoryError('INVALID_BATCH_BINDING')
       assertId(credential.message_id)
       const bound = items.filter((item) => item.event_evidence_id === credential.evidence_id)
       if (digest([...credential.item_ids].sort()) !== digest(bound.map((item) => item.evidence_id).sort()) || bound.reduce((sum, item) => sum + item.span_end - item.span_start, 0) > 1600) throw new MemoryError('INVALID_BATCH_BINDING')
@@ -109,6 +129,7 @@ export function commitPersonaDescriptor(root, spaceRoot, descriptor, write) {
     return
   }
   if ((previous?.revision ?? 0) !== descriptor.expected_revision || anchor.revision !== descriptor.expected_revision + 1) throw new MemoryError('PERSONA_REVISION_CONFLICT')
+  if (previous && anchor.schema_version < previous.schema_version) throw new MemoryError('PERSONA_SCHEMA_DOWNGRADE')
   if (previous && (previous.agent_identity_id !== anchor.agent_identity_id || previous.persona_id !== anchor.persona_id || previous.subject_id !== anchor.subject_id)) throw new MemoryError('PERSONA_IDENTITY_CONFLICT')
   if (previous && previous.revoked_ids.some((id) => !anchor.revoked_ids.includes(id))) throw new MemoryError('PERSONA_REVOCATION_ROLLBACK')
   const ledger = loadPersonaLedger(root)
@@ -129,7 +150,7 @@ export function reconcilePersonaState(root, spaceRoot, write) {
   const identities = { ...(manifest.identities ?? {}) }
   for (const anchor of Object.values(anchors)) {
     validatePersonaAnchor(anchor)
-    const identity = { persona_id: anchor.persona_id, subject_id: anchor.subject_id, agent_identity_id: anchor.agent_identity_id, created_at: anchor.created_at }
+    const identity = personaIdentityProjection(anchor)
     if (identities[anchor.agent_identity_id] && digest(identities[anchor.agent_identity_id]) !== digest(identity)) throw new MemoryError('PERSONA_IDENTITY_CONFLICT')
     if (!identities[anchor.agent_identity_id]) { identities[anchor.agent_identity_id] = identity; changed = true }
     const base = `self/${anchor.agent_identity_id}`
@@ -197,11 +218,11 @@ async function policyFromCredentials(anchor, mode, generation) {
 
 export function validatePortablePersonaShape(value, spaceId) {
   assertOnly(value, ['schema_version', 'anchors'])
-  if (![1, 2].includes(value.schema_version) || !Array.isArray(value.anchors) || value.anchors.length > 1000) throw new MemoryError('INVALID_TRANSFER_PERSONA_STATE')
+  if (![1, 2, 3].includes(value.schema_version) || !Array.isArray(value.anchors) || value.anchors.length > 1000) throw new MemoryError('INVALID_TRANSFER_PERSONA_STATE')
   const bindings = new Set(), identities = new Set()
   for (const anchor of value.anchors) {
     validatePersonaAnchor(anchor)
-    if (value.schema_version === 1 && anchor.schema_version !== 1 || anchor.management_resets !== undefined || anchor.memory_space_id !== spaceId || bindings.has(anchor.binding_id) || identities.has(anchor.agent_identity_id)) throw new MemoryError('INVALID_TRANSFER_PERSONA_STATE')
+    if (anchor.schema_version > value.schema_version || anchor.management_resets !== undefined || anchor.memory_space_id !== spaceId || bindings.has(anchor.binding_id) || identities.has(anchor.agent_identity_id)) throw new MemoryError('INVALID_TRANSFER_PERSONA_STATE')
     if (anchor.credentials.length > 100_000 || anchor.revoked_ids.length > 100_000 || !STABILITY_MODES.includes(anchor.snapshot.mode)) throw new MemoryError('INVALID_TRANSFER_PERSONA_STATE')
     bindings.add(anchor.binding_id); identities.add(anchor.agent_identity_id)
   }
@@ -228,7 +249,7 @@ export async function validatePortablePersonaState(value, spaceId) {
 export function exportPersonaState(root, spaceId) {
   const ledger = loadPersonaLedger(root)
   const anchors = Object.hasOwn(ledger.spaces, spaceId) ? Object.values(ledger.spaces[spaceId]) : []
-  return { schema_version: anchors.some((anchor) => anchor.schema_version === 2) ? 2 : 1, anchors: anchors.map((anchor) => {
+  return { schema_version: Math.max(1, ...anchors.map((anchor) => anchor.schema_version)), anchors: anchors.map((anchor) => {
     validatePersonaAnchor(anchor)
     const portable = clone(anchor)
     delete portable.management_resets
@@ -264,7 +285,8 @@ export async function preparePersonaImport(root, spaceId, operationId, incoming,
     const revoked = [...new Set([...(previous?.revoked_ids ?? []), ...source.revoked_ids])].sort()
     const unchanged = previous && digest(previous.credentials.map((entry) => [entry.evidence_id, entry]).sort()) === digest([...credentials.entries()].sort()) && digest([...previous.revoked_ids].sort()) === digest(revoked) && digest((previous.items ?? []).map((item) => [item.evidence_id,item]).sort()) === digest([...itemMap.entries()].sort())
     if (unchanged) { anchors.push(previous); continue }
-    const anchor = { ...source, ...((previous?.schema_version === 2 || source.schema_version === 2) ? { schema_version: 2, items: [...itemMap.values()] } : {}), revision: (previous?.revision ?? 0) + 1,
+    const schema = Math.max(previous?.schema_version ?? 1, source.schema_version)
+    const anchor = { ...source, ...(schema >= 2 ? { schema_version: schema, items: [...itemMap.values()] } : {}), revision: (previous?.revision ?? 0) + 1,
       core_version: previous?.core_version ?? source.core_version, credentials: [...credentials.values()], revoked_ids: revoked,
       ...(previous?.management_resets ? { management_resets: clone(previous.management_resets) } : {}) }
     const mode = previous?.snapshot.mode ?? source.snapshot.mode
