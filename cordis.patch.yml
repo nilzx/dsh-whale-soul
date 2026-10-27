@@ -9,6 +9,9 @@
 # The body row is a one-way, optional bridge. It silently degrades when no
 # compatible local companion is present, so the preset works without one.
 - insert:
+    # Shared storage lifetime is independent from either persona preset.
+    - id: whale-memory-provider
+      name: 'dsh-whale-soul/memory-provider'
     # Host-side display localization: the roster shows 鲸鱼娘 for zh and
     # Whale Chan for other locales.
     - id: whale-soul-locale

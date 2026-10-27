@@ -22,21 +22,25 @@ function strings(value, label, { max = 32, size = 128 } = {}) {
 }
 
 export class MemoryStoreV2 {
-  constructor({ root, memory_space_id = 'default', evidenceResolver, faultInjector, lockWaitMs = 2000, generationProvider, recoveryGuard } = {}) {
+  constructor({ root, memory_space_id = 'default', evidenceResolver, faultInjector, lockWaitMs = 2000, generationProvider, recoveryGuard, providerGuard } = {}) {
     if (typeof root !== 'string' || !root) throw new MemoryError('INVALID_STORAGE_ROOT')
     this.root = resolve(root)
     this.memorySpaceId = assertId(memory_space_id, 'memory_space_id')
     this.spaceRoot = join(this.root, 'spaces', this.memorySpaceId)
     this.paths = Object.freeze(Object.fromEntries(['records', 'evidence', 'candidates', 'self', 'assets', 'cold', 'quarantine', 'external-changes', 'journal', 'index', 'operations'].map((key) => [key, join(this.spaceRoot, key)])))
     this.evidenceResolver = evidenceResolver
+    if (providerGuard !== undefined && typeof providerGuard !== 'function') throw new MemoryError('INVALID_MEMORY_PROVIDER')
+    this.providerGuard = providerGuard
     this.contexts = new WeakSet()
     this.engine = new TransactionEngine({ root: this.spaceRoot, lockRoot: this.root, memorySpaceId: this.memorySpaceId, faultInjector, lockWaitMs, generationProvider, recoveryGuard })
     this.initialized = false
   }
 
   async initialize() {
+    this.providerGuard?.()
     inspectMemoryRoot(this.root, this.memorySpaceId)
     await this.engine.locked(() => {
+      this.providerGuard?.()
       const { rootManifest, spaceManifest: manifest } = inspectMemoryRoot(this.root, this.memorySpaceId)
       const rootManifestPath = join(this.root, 'manifest.json')
       this.engine.resolvePath('manifest.json')
@@ -55,6 +59,7 @@ export class MemoryStoreV2 {
   }
 
   issueContext({ agent_identity_id, persona_id, subject_id, allowed_subject_ids, capabilities = ['memory.read', 'memory.write'], session_id = null, expires_at = null } = {}) {
+    this.providerGuard?.()
     const expiry = timestamp(expires_at ?? new Date(Date.now() + 5 * 60_000).toISOString(), 'context expiry', false)
     if (Date.parse(expiry) > Date.now() + 60 * 60_000) throw new MemoryError('CONTEXT_EXPIRY_TOO_LONG')
     const context = Object.freeze({
@@ -72,6 +77,7 @@ export class MemoryStoreV2 {
   }
 
   _authorize(context, capability) {
+    this.providerGuard?.()
     if (!this.initialized) throw new MemoryError('NOT_INITIALIZED')
     if (!context || !this.contexts.has(context)) throw new MemoryError('UNTRUSTED_CONTEXT')
     if (context.expires_at && Date.parse(context.expires_at) <= Date.now()) throw new MemoryError('CONTEXT_EXPIRED')

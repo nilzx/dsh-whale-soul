@@ -10,9 +10,10 @@ import { getWhaleCorePrompt } from './core.js'
 import { PersonaImages, createPersonaImageTools } from './images.js'
 import { registerAssetRoutes } from '../memory/asset-route.js'
 import { assetUrl } from '../memory/assets.js'
+import { assertMemoryProvider } from '../memory/v2/provider.js'
 
 export const name = 'whale-soul-persona'
-export const inject = ['systemPrompt', 'tools', 'llm', 'sandboxPolicy', 'fs', 'subprocess', 'sandbox', 'agents']
+export const inject = ['whaleMemory', 'systemPrompt', 'tools', 'llm', 'sandboxPolicy', 'fs', 'subprocess', 'sandbox', 'agents']
 const runtimes = new WeakMap()
 export const runtimeFor = (ctx) => runtimes.get(ctx)
 const serviceTools = ['soul_recall', 'soul_remember', 'soul_forget', 'soul_view_image', 'soul_meme_save', 'soul_meme_recall', 'soul_meme_use', 'soul_react',
@@ -20,6 +21,7 @@ const serviceTools = ['soul_recall', 'soul_remember', 'soul_forget', 'soul_view_
 
 /** Explicit constructors make the host composition testable without global state. */
 export async function installPersonaPlugin(ctx, config = {}, host) {
+  const memoryProvider = assertMemoryProvider(ctx.get('whaleMemory'))
   if (typeof host.scopeOf !== 'function' || typeof host.scopeChainOf !== 'function' || !host.scopeOf(ctx)) throw new Error('whale-soul: trusted persona scope required')
   const root = resolveMemoryRoot(config)
   mkdirSync(root, { recursive: true, mode: 0o700 })
@@ -44,7 +46,7 @@ export async function installPersonaPlugin(ctx, config = {}, host) {
     },
   }).await()
   let images
-  const runtime = new PersonaRuntime({ ...config, root, llm: ctx.llm, createAssembler: () => new host.BlockAssembler(),
+  const runtime = new PersonaRuntime({ ...config, root, memoryProvider, llm: ctx.llm, createAssembler: () => new host.BlockAssembler(),
     additionalEvidenceAllowed: (id, context, meta) => images?.evidenceAllowed(id, context, meta) ?? false,
     onDream: (phase, payload) => ctx.emit(`whale-soul/dream-${phase}`, payload) })
   runtimes.set(ctx, runtime)
