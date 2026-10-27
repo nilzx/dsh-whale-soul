@@ -23,9 +23,13 @@ function initialPermissionMetadata(event) {
   if (keys.some((entry) => entry !== key && entry !== 'source') || !Object.hasOwn(data, key) || Object.hasOwn(data, 'source') && data.source !== 'delegation') return false
   return (key === 'mode' ? ['read-only', 'workspace-write', 'danger-full-access'] : ['ask', 'never']).includes(data[key])
 }
+function emptyRestoreMarker(event) { return event.type === 'session/end-seed' && plain(event.data) && Object.keys(event.data).length === 0 }
+function explicitPresetSelection(event) {
+  return event.type === 'agent-preset/selected' && plain(event.data) && Object.keys(event.data).length === 1 && typeof event.data.agentPreset === 'string' && /^[A-Za-z0-9_.:-]{1,200}$/.test(event.data.agentPreset)
+}
 // The Web host pins these payload-free knobs before publishing a fresh Session.
 // Unknown events and metadata carrying extra content remain material history.
-function material(event) { return !metadataTypes.has(event.type) && !initialPermissionMetadata(event) }
+function material(event) { return !metadataTypes.has(event.type) && !initialPermissionMetadata(event) && !emptyRestoreMarker(event) }
 function metadata(event) {
   return { seq: event.seq, time: event.time, type: event.type }
 }
@@ -38,7 +42,7 @@ function validateProjection(value) {
   }
   return value
 }
-const projection = (z) => Object.freeze({ key: PROJECTION_KEY, stateVersion: 1,
+const projection = (z) => Object.freeze({ key: PROJECTION_KEY, stateVersion: 2,
   stateSchema: z.object({ schema_version: z.literal(1), inherited: z.boolean(), last_seq: z.number().int().min(-1), material_count: z.number().int().nonnegative(),
     first_material: z.object({ seq: z.number().int().nonnegative(), time: z.number().finite(), type: z.string().max(200) }).strict().nullable() }).strict(),
   init: (header, inherited) => ({ schema_version: 1, inherited: header.isSeeded === true || inherited > 0, last_seq: -1, material_count: 0, first_material: null }),
@@ -52,13 +56,26 @@ export function observeSessionIdentityBoundary(ctx, ownsAgent, z) {
   const eventContext = ctx.root
   const original = (value) => value?.[Symbol.for('cordis.original')] ?? value
   if (!eventContext?.on || original(eventContext.get('sessions')) !== original(sessions) || original(eventContext.get('agents')) !== original(agents)) fail('TRUSTED_SESSION_BINDINGS_REQUIRED')
-  const disposeProjection = registry.register(projection(z)), seen = new WeakMap(), coverage = new WeakMap()
+  const disposeProjection = registry.register(projection(z)), seen = new WeakMap(), coverage = new WeakMap(), restoredEmpty = new WeakSet()
+  // A one-read projection has no prior checkpoint: the public registry folds the
+  // actual in-memory log, independently of the persisted boundary cache.
+  const replayEmptyDraft = (session) => {
+    const key = `whaleSoulEmptyDraft-${randomUUID()}`
+    const dispose = registry.register({ ...projection(z), key })
+    try { const state = validateProjection(registry.stateOf(session, key)); return !state.inherited && state.last_seq === session.seq - 1 && state.material_count === 0 }
+    finally { dispose() }
+  }
   for (const session of sessions.list()) coverage.set(session, { next: session.seq, complete: session.seq === 0, first: null })
   const disposeEvents = eventContext.on('session/event', (session, event) => {
     let history = coverage.get(session)
     if (!history) coverage.set(session, history = { next: 0, complete: event.seq === 0, first: null })
     if (event.seq !== history.next) history.complete = false
     history.next = event.seq + 1
+    if (explicitPresetSelection(event) && event.seq >= session.firstLiveSeq && session.firstLiveSeq > 0 && session.inheritedEventCount === 0 && session.header.isSeeded !== true && replayEmptyDraft(session)) {
+      restoredEmpty.add(session)
+      history.complete = true
+      history.first = null
+    }
     if (material(event) && history.first === null) history.first = metadata(event)
     const agent = agents.get(session.id)
     if (!agent || agent.session !== session || ownsAgent(agent) !== true || !material(event)) return
@@ -66,6 +83,7 @@ export function observeSessionIdentityBoundary(ctx, ownsAgent, z) {
   })
   let disposed = false
   return Object.freeze({ registry,
+    isRestoredEmptyDraft(session) { return !disposed && restoredEmpty.has(session) },
     ownsFirst(session, first) { const observed = seen.get(session); return !disposed && observed?.seq === first?.seq && observed?.time === first?.time && observed?.type === first?.type },
     coversPrefix(session, first) {
       let history = coverage.get(session)
@@ -98,7 +116,7 @@ export function createSessionBoundary({ agent, observer, scopeChainOf, ownsAgent
       const state = validateProjection(observer.registry.stateOf(session, PROJECTION_KEY))
       if (state.last_seq !== session.seq - 1) fail('SESSION_PROJECTION_STALE')
       const fresh = session.firstLiveSeq === 0 && session.firstLifecycleSeq === 0 && session.inheritedEventCount === 0
-      const claimable = fresh && !state.inherited && observer.coversPrefix(session, state.first_material) && (state.first_material === null || observer.ownsFirst(session, state.first_material))
+      const claimable = (fresh || observer.isRestoredEmptyDraft(session)) && !state.inherited && observer.coversPrefix(session, state.first_material) && (state.first_material === null || observer.ownsFirst(session, state.first_material))
       const proof = Object.freeze({ session_id: session.id, session_key: `session-${digest(session.id).slice(0, 40)}`, header_hash: headerHash,
         bound_seq: session.seq, claimable, material_count: state.material_count, checkLive: live })
       proofs.add(proof); return proof
