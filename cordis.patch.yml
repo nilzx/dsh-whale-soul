@@ -83,6 +83,7 @@
             config:
               coreInPreset: true
               stabilityMode: auto
+              individualKey: default
               memorySpaceId: owner
               subjectId: owner
               maxContextChars: 2400
@@ -218,6 +219,7 @@
             config:
               coreInPreset: true
               stabilityMode: auto
+              individualKey: default
               memorySpaceId: owner
               subjectId: owner
               maxContextChars: 2400

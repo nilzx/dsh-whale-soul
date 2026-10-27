@@ -14,7 +14,7 @@ import { createGrowthReflector } from './reflection.js'
 import { getWhaleCore, getWhaleCorePrompt } from './core.js'
 import { MEMORY_REVISION_REASON as REASON, verifyMemoryReceipt } from './memory-receipt.js'
 import { getPurgeState } from '../memory/v2/purge-ledger.js'
-import { personaBinding } from '../memory/v2/persona-ledger.js'
+import { personaBinding, normalizeIndividualKey } from '../memory/v2/persona-ledger.js'
 import { SessionIdentityFence, createSessionBoundary, observeSessionIdentityBoundary } from './session-fence.js'
 import { canonicalProtectionPath } from './protection.js'
 import { verifySelfIntegrity } from '../memory/v2/self-integrity.js'
@@ -35,7 +35,9 @@ export class PersonaRuntime {
   #attaching = new WeakMap()
   #captures = new WeakMap()
   #externalReads
+  #individualKey
   constructor(options = {}) {
+    this.#individualKey = normalizeIndividualKey(options.individualKey)
     this.#options = options
     this.core = options.core ?? getWhaleCore()
     this.coreInstructions = options.coreInstructions ?? getWhaleCorePrompt()
@@ -48,7 +50,7 @@ export class PersonaRuntime {
     this.store = assertProviderStore(this.memoryProvider.createStore(storageOptions), storageOptions)
     this.#externalReads = createExternalReadAuthority({ store: this.store })
     this.state = new PersonaState({ store: this.store, persona_id: this.core.persona_id,
-      core_version: this.core.version, mode: options.stabilityMode ?? 'auto', subject_id: options.subjectId ?? 'owner' })
+      core_version: this.core.version, mode: options.stabilityMode ?? 'auto', subject_id: options.subjectId ?? 'owner', individual_key: this.#individualKey })
     this.#ready = this.#initialize()
   }
   async #initialize() {
@@ -261,7 +263,7 @@ export class PersonaRuntime {
     const observer = host.observer ?? observeSessionIdentityBoundary(agent.ctx, ownsAgent, host.z)
     const boundary = createSessionBoundary({ agent, observer, scopeChainOf: host.scopeChainOf, ownsAgent })
     const fence = new SessionIdentityFence({ store: this.store,
-      owner: { ...this.state.identity, binding_id: personaBinding(this.core.persona_id, this.state.identity.subject_id) }, boundary, home,
+      owner: { ...this.state.identity, binding_id: personaBinding(this.core.persona_id, this.state.identity.subject_id, this.#individualKey) }, boundary, home,
       isCurrent: () => !this.#disposed && agent.ctx.get('profileContext') === profile && profile?.home === profileHome && canonicalProtectionPath(host.resolveDshHome(profileHome)) === home && ownsAgent(agent) === true,
       faultInjector: this.#options.sessionFaultInjector })
     try { await fence.authorize({ seal: false }) } catch (error) { if (!host.observer) observer.dispose(); throw error }

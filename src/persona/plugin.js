@@ -1,3 +1,4 @@
+import { normalizeIndividualKey } from '../memory/v2/persona-ledger.js'
 import { protectMigrationSources } from './source-protection.js'
 import { fileURLToPath } from 'node:url'
 import { mkdirSync } from 'node:fs'
@@ -25,6 +26,7 @@ const serviceTools = ['soul_recall', 'soul_remember', 'soul_forget', 'soul_view_
 
 /** Explicit constructors make the host composition testable without global state. */
 export async function installPersonaPlugin(ctx, config = {}, host) {
+  const individualKey = normalizeIndividualKey(config.individualKey)
   const memoryProvider = assertMemoryProvider(ctx.get('whaleMemory'))
   const original = Symbol.for('cordis.original'), providerIdentity = memoryProvider[original] ?? memoryProvider
   if (typeof host.scopeOf !== 'function' || typeof host.scopeChainOf !== 'function' || !host.scopeOf(ctx)) throw new Error('whale-soul: trusted persona scope required')
@@ -59,7 +61,7 @@ export async function installPersonaPlugin(ctx, config = {}, host) {
     },
   }).await()
   let images
-  runtime = new PersonaRuntime({ ...config, root, memoryProvider, llm: { prepareCall: (...args) => ctx.get('llm').prepareCall(...args) }, createAssembler: () => new host.BlockAssembler(),
+  runtime = new PersonaRuntime({ ...config, individualKey, root, memoryProvider, llm: { prepareCall: (...args) => ctx.get('llm').prepareCall(...args) }, createAssembler: () => new host.BlockAssembler(),
     isMemoryProviderCurrent: () => { const current = ctx.get('whaleMemory'); return (current?.[original] ?? current) === providerIdentity },
     sessionHost: { scopeChainOf: host.scopeChainOf, resolveDshHome: host.privateRootBindings.resolveDshHome, observer, z: host.z, ownsAgent, isAgentLoopRequest: host.isAgentLoopRequest },
     additionalEvidenceAllowed: (id, context, meta) => images?.evidenceAllowed(id, context, meta) ?? false,

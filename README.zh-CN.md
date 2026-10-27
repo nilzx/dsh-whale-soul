@@ -49,6 +49,7 @@ dsh plugin --profile web add dsh-whale-soul
 ## 使用
 
 - 选择 **鲸鱼娘**（英文界面显示 Whale Chan），正常聊天即可。文件、shell、网页、定时、skills 这些 Agent 能力都还在。
+- 在人格插件行配置`individualKey`可在同一记忆空间保留多个独立个体；省略或设置`default`继续原个体。会话切换与恢复见[个体身份](docs/individuals.zh-CN.md)。
 - 在`dsh-whale-soul/persona`插件行配置`stabilityMode`，四档及持久成熟度见[稳定性规则](docs/stability.zh-CN.md)。
 - 旧记忆根升级至API1.2前，请阅读[人格完整性与所有者升级](docs/self-integrity.zh-CN.md)；未锚定的旧成长保全为不可自动加载的历史。
 - 管理操作使用[本地管理CLI](docs/management.zh-CN.md)。V2会拒绝破坏完整性的直接编辑；外改审查和完整记忆生命周期仍在实施。
