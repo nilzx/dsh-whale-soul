@@ -9,7 +9,7 @@ import { exportPurgeState, getPurgeState, preparePurgeImport } from './purge-led
 import { listRecordHeads, loadRecordHead, validateRecordHead, verifyRecordBundle } from './record-integrity.js'
 
 const TRANSFER_FORMAT = 'dsh-memory-space'
-const TRANSFER_VERSION = 1
+const TRANSFER_VERSION = 2
 const DATA_FILES = ['meta.json', 'gist.md', 'detail.md', 'evidence.jsonl', 'integrity.json']
 const ROOTS = ['records', 'evidence', 'candidates', 'self', 'assets', 'cold', 'quarantine', 'external-changes']
 const LEGACY_ROOTS = ['entries', 'cold', 'quarantine', 'assets', 'dreams', 'backups', 'external-changes']
@@ -136,7 +136,7 @@ export function validateTransferPurgeState(state, generation) {
 
 function packageArchive(store, manifest, files, policy = exportPolicy('none'), purgeState, personaState, integrityState) {
   const archive = {
-    transfer_format: TRANSFER_FORMAT, transfer_version: TRANSFER_VERSION, storage_format_version: FORMAT_VERSION,
+    transfer_format: TRANSFER_FORMAT, transfer_version: integrityState ? TRANSFER_VERSION : 1, storage_format_version: FORMAT_VERSION,
     memory_space_id: store.memorySpaceId, revision_watermark: manifest.revision_watermark,
     purge_generation: manifest.purge_generation ?? 0,
     ...(purgeState ? { purge_state: copy(purgeState) } : {}),
@@ -307,7 +307,9 @@ function validateScopedAssets(files, assets, currentRecords, recordViews, spaceI
 
 export function validateTransferArchive(archive, { maxFiles = 10_000, maxBytes = 64 * 1024 * 1024, maxFileBytes = 8 * 1024 * 1024 } = {}) {
   assertOnly(archive, ['transfer_format', 'transfer_version', 'storage_format_version', 'memory_space_id', 'revision_watermark', 'purge_generation', 'purge_state', 'persona_state', 'integrity_state', 'manifest', 'files', 'checksum'])
-  if (archive.transfer_format !== TRANSFER_FORMAT || archive.transfer_version !== TRANSFER_VERSION || archive.storage_format_version !== FORMAT_VERSION) throw new MemoryError('UNSUPPORTED_TRANSFER_FORMAT')
+  if (archive.transfer_format !== TRANSFER_FORMAT || ![1, TRANSFER_VERSION].includes(archive.transfer_version) || archive.storage_format_version !== FORMAT_VERSION) throw new MemoryError('UNSUPPORTED_TRANSFER_FORMAT')
+  if (archive.transfer_version === TRANSFER_VERSION && archive.integrity_state === undefined) throw new MemoryError('TRANSFER_INTEGRITY_STATE_REQUIRED')
+  if (archive.transfer_version === 1 && archive.integrity_state !== undefined) throw new MemoryError('TRANSFER_INTEGRITY_VERSION_MISMATCH')
   assertId(archive.memory_space_id, 'memory_space_id')
   if (!Number.isSafeInteger(archive.revision_watermark) || archive.revision_watermark < 0 || !Number.isSafeInteger(archive.purge_generation) || archive.purge_generation < 0) throw new MemoryError('INVALID_TRANSFER_WATERMARK')
   if (archive.purge_state !== undefined) {
@@ -421,7 +423,7 @@ export class MemoryTransfer {
   async #import(archive, operationId, context, { recheckSource, allowMaturityReset = false } = {}) {
     const decoded = validateTransferArchive(archive, this.#limits)
     if (archive.memory_space_id !== this.#store.memorySpaceId) throw new MemoryError('TRANSFER_SPACE_MISMATCH')
-    return this.#store.managedTransaction(operationId, { action: 'importSpace', checksum: archive.checksum, identity_mode: 'preserve', ...(archive.persona_state ? { accept_persona_state: true, allow_maturity_reset: allowMaturityReset } : {}), ...(archive.integrity_state ? { accept_integrity_state: true } : {}) }, async ({ manifest, records }) => {
+    return this.#store.managedTransaction(operationId, { action: 'importSpace', checksum: archive.checksum, identity_mode: 'preserve', ...(archive.persona_state ? { accept_persona_state: true, allow_maturity_reset: allowMaturityReset } : {}), ...(archive.integrity_state ? { accept_integrity_state: true } : { accept_legacy_baseline: true }) }, async ({ manifest, records }) => {
       const { state, descriptor } = archive.purge_state === undefined
         ? { state: getPurgeState(this.#store.root, this.#store.memorySpaceId), descriptor: null }
         : preparePurgeImport(this.#store.root, this.#store.memorySpaceId, operationId, archive.purge_state)
@@ -466,7 +468,7 @@ export class MemoryTransfer {
     const operationId = args?.operation_id ?? randomUUID()
     try {
       this.#store._authorize(context, 'memory.manage')
-      assertOnly(args, ['operation_id', 'archive', 'identity_mode', 'accept_purge_state', 'accept_persona_state', 'accept_integrity_state', 'allow_maturity_reset'])
+      assertOnly(args, ['operation_id', 'archive', 'identity_mode', 'accept_purge_state', 'accept_persona_state', 'accept_integrity_state', 'accept_legacy_baseline', 'allow_maturity_reset'])
       if (args.identity_mode !== 'preserve') throw new MemoryError('EXPLICIT_IDENTITY_MODE_REQUIRED')
       if (args.accept_purge_state !== undefined && typeof args.accept_purge_state !== 'boolean') throw new MemoryError('INVALID_PURGE_STATE_ACCEPTANCE')
       if (args.archive?.purge_state !== undefined && args.accept_purge_state !== true) throw new MemoryError('PURGE_STATE_ACCEPTANCE_REQUIRED')
@@ -475,6 +477,8 @@ export class MemoryTransfer {
       if (args.allow_maturity_reset === true && (args.accept_persona_state !== true || args.archive?.persona_state === undefined)) throw new MemoryError('PERSONA_STATE_ACCEPTANCE_REQUIRED')
       if (args.accept_integrity_state !== undefined && typeof args.accept_integrity_state !== 'boolean') throw new MemoryError('INVALID_INTEGRITY_STATE_ACCEPTANCE')
       if (args.archive?.integrity_state !== undefined && args.accept_integrity_state !== true) throw new MemoryError('INTEGRITY_STATE_ACCEPTANCE_REQUIRED')
+      if (args.accept_legacy_baseline !== undefined && typeof args.accept_legacy_baseline !== 'boolean') throw new MemoryError('INVALID_LEGACY_BASELINE_ACCEPTANCE')
+      if (args.archive?.transfer_version === 1 && args.accept_legacy_baseline !== true) throw new MemoryError('LEGACY_BASELINE_ACCEPTANCE_REQUIRED')
       return await this.#import(args.archive, operationId, context, { allowMaturityReset: args.allow_maturity_reset === true })
     } catch (error) { return failure(error, operationId) }
   }

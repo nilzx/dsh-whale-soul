@@ -231,6 +231,9 @@ function filterArchive(archive, state, write, path) {
   })
   if (!metadataChanged && retained.length === archive.files.length && archive.purge_generation >= state.generation) return false
   const cleaned = { ...archive, revision_watermark: Math.max(archive.revision_watermark, state.revision_floor), purge_generation: state.generation, purge_state: portable(state), files: retained }
+  if (cleaned.integrity_state) cleaned.integrity_state = { ...cleaned.integrity_state,
+    heads: cleaned.integrity_state.heads.filter((head) => !state.record_ids.includes(head.record_id)),
+    omitted_pending_ids: cleaned.integrity_state.omitted_pending_ids.filter((id) => !state.record_ids.includes(id)) }
   delete cleaned.checksum
   cleaned.checksum = digest(cleaned)
   write(path, json(cleaned))

@@ -16,10 +16,26 @@ const metadataFields = new Set(['schema_version', 'record_id', 'revision_id', 'r
 const bytes = (value) => Buffer.isBuffer(value) ? value : Buffer.from(value)
 const decode = (value) => { try { return new TextDecoder('utf-8', { fatal: true }).decode(value) } catch { fail('INVALID_EXTERNAL_UNICODE') } }
 const safeStat = (path) => { try { return lstatSync(path) } catch (error) { if (error.code === 'ENOENT') return null; throw error } }
+function unsafeStructured(value, depth = 0, budget = { nodes: 0 }) {
+  if (++budget.nodes > 20000 || depth > 32) return true
+  if (typeof value === 'string') return !value.isWellFormed() || retentionBlockReason(value) !== null
+  if (Array.isArray(value)) return value.some((item) => unsafeStructured(item, depth + 1, budget))
+  if (value && typeof value === 'object') return Object.entries(value).some(([key, item]) => unsafeStructured(key, depth + 1, budget) || unsafeStructured(item, depth + 1, budget))
+  return false
+}
+function externalFileAllowed(name, data) {
+  try {
+    const text = decode(data)
+    if (retentionBlockReason(text)) return false
+    if (name.endsWith('.json')) { try { if (unsafeStructured(JSON.parse(text))) return false } catch {} }
+    if (name.endsWith('.jsonl')) for (const line of text.split('\n').filter(Boolean)) { try { if (unsafeStructured(JSON.parse(line))) return false } catch {} }
+    return true
+  } catch { return false }
+}
 
 /** Owner-only review backend. No method is registered as an Agent tool. */
 export class MemoryExternalChanges {
-  constructor({ store, maxFileBytes = 256 * 1024, maxSnapshotBytes = 1024 * 1024 } = {}) {
+  constructor({ store, maxFileBytes = 8 * 1024 * 1024, maxSnapshotBytes = 16 * 1024 * 1024 } = {}) {
     if (!store?.engine || typeof store.issueContext !== 'function') fail('MANAGED_MEMORY_REQUIRED')
     this.store = store
     let ancestor = parse(store.root).root
@@ -28,6 +44,7 @@ export class MemoryExternalChanges {
       const stat = safeStat(ancestor)
       if (stat && (!stat.isDirectory() || stat.isSymbolicLink())) fail('UNSAFE_STORAGE_PATH')
     }
+    if (![maxFileBytes, maxSnapshotBytes].every((value) => Number.isSafeInteger(value) && value > 0)) fail('INVALID_EXTERNAL_BUDGET')
     this.maxFileBytes = Math.min(maxFileBytes, 8 * 1024 * 1024)
     this.maxSnapshotBytes = Math.min(maxSnapshotBytes, 16 * 1024 * 1024)
   }
@@ -71,7 +88,7 @@ export class MemoryExternalChanges {
     }
     const first = read(), second = read(), after = safeStat(this.#path(base))
     if (!after || after.dev !== stat.dev || after.ino !== stat.ino || first.observed_hash !== second.observed_hash) fail('EXTERNAL_SOURCE_UNSTABLE')
-    const safe = Object.values(second.files).every((data) => { try { return !retentionBlockReason(decode(data)) } catch { return false } })
+    const safe = Object.entries(second.files).every(([name, data]) => externalFileAllowed(name, data))
     return { ...second, identity: { dev: stat.dev, ino: stat.ino }, missing: false, snapshot_safe: safe }
   }
 
@@ -155,6 +172,14 @@ export class MemoryExternalChanges {
       assertOnly(args, ['operation_id', 'dry_run', 'source_quiescent', 'expected_snapshot'])
       if (args.source_quiescent !== true) fail('SOURCE_QUIESCENCE_REQUIRED')
       const rootBytes = this.#rootFile('manifest.json'), manifest = JSON.parse(decode(rootBytes))
+      if (manifest.api_version === API_VERSION && args.dry_run === false && args.expected_snapshot) {
+        const path = this.#path(`operations/${digest(operationId)}.json`)
+        if (existsSync(path)) {
+          const receipt = JSON.parse(decode(this.#read(`operations/${digest(operationId)}.json`)))
+          if (receipt.operation_id !== operationId || receipt.request_hash !== digest({ action: 'establishIntegrityBaseline', source_snapshot: args.expected_snapshot }) || receipt.result?.reason_code !== 'BASELINE_ESTABLISHED') fail('OPERATION_CONFLICT')
+          return { ...receipt.result, replayed: true }
+        }
+      }
       if (manifest.format_version !== 2 || manifest.api_version !== '1.0.0') fail('BASELINE_REQUIRES_LEGACY_V2_API')
       if (!Array.isArray(manifest.spaces) || manifest.spaces.length !== 1 || manifest.spaces[0] !== this.store.memorySpaceId) fail('MULTISPACE_BASELINE_REQUIRED')
       if (existsSync(join(this.store.root, '.writer.lock')) || existsSync(join(this.store.root, '.writer-recovery.lock'))) fail('WRITER_BUSY')
@@ -186,7 +211,7 @@ export class MemoryExternalChanges {
       }
       const snapshot = digest(source)
       this.#authorize(ctx, true)
-      if (args.dry_run !== false) return { api_version: API_VERSION, status: 'preview', source_snapshot: snapshot, record_ids: ids, record_count: ids.length, writes: false }
+      if (args.dry_run !== false) return { api_version: API_VERSION, status: 'preview', source_snapshot: snapshot, record_ids: ids, record_count: ids.length, writes: false, source_quiescence: 'owner_declared' }
       if (args.expected_snapshot !== snapshot) fail('BASELINE_SNAPSHOT_CONFLICT')
       const check = () => {
         this.#authorize(ctx, true, signal)
@@ -202,7 +227,7 @@ export class MemoryExternalChanges {
       return await this.store.engine.run(operationId, { action: 'establishIntegrityBaseline', source_snapshot: snapshot }, () => {
         check()
         return { changes: [], record_descriptors: descriptors, root_upgrade: { expected_hash: source['root-manifest'], manifest: { ...manifest, api_version: API_VERSION } },
-          result: { api_version: API_VERSION, operation_id: operationId, status: 'committed', reason_code: 'BASELINE_ESTABLISHED', record_ids: ids, affected_ids: ids, source_snapshot: snapshot, pending: false } }
+          result: { api_version: API_VERSION, operation_id: operationId, status: 'committed', reason_code: 'BASELINE_ESTABLISHED', record_ids: ids, affected_ids: ids, source_snapshot: snapshot, source_quiescence: 'owner_declared', pending: false } }
       }, { authorize: check })
     } catch (error) { return failure(error, operationId) }
   }
@@ -216,7 +241,10 @@ export class MemoryExternalChanges {
       const limit = args.limit ?? 100, offset = args.cursor === undefined ? 0 : Number(args.cursor)
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100 || !Number.isSafeInteger(offset) || offset < 0) fail('INVALID_SCAN_BUDGET')
       const ledger = join(this.store.root, '.administration/record-heads', this.store.memorySpaceId)
-      const all = args.record_ids ?? (existsSync(ledger) ? readdirSync(ledger).filter((name) => name.endsWith('.json')).map((name) => name.slice(0, -5)) : [])
+      const all = args.record_ids ?? [...new Set([
+        ...(existsSync(ledger) ? readdirSync(ledger).filter((name) => name.endsWith('.json')).map((name) => name.slice(0, -5)) : []),
+        ...readdirSync(this.#path('records'), { withFileTypes: true }).filter((entry) => entry.isDirectory() || entry.isSymbolicLink()).map((entry) => entry.name),
+      ])]
       if (!Array.isArray(all) || all.length > 10000 || new Set(all).size !== all.length) fail('INVALID_RECORD_IDS')
       all.forEach((id) => assertId(id))
       const items = []
@@ -230,8 +258,9 @@ export class MemoryExternalChanges {
         try { observed = this.#observe(base) } catch (error) { items.push({ record_id: id, status: 'unsafe', reason_code: error.code }); continue }
         try { if (head.state === 'clean') { verifyRecordBundle(head, observed.files); items.push({ record_id: id, status: 'clean' }); continue } } catch {}
         if (head.change_id) {
-          const previous = this.#change(head.change_id)
-          if (previous.observed_hash === observed.observed_hash || observed.missing) { items.push(this.#summary(previous)); continue }
+          let previous = null
+          try { previous = this.#change(head.change_id) } catch {}
+          if (previous && (previous.observed_hash === observed.observed_hash || observed.missing)) { items.push(this.#summary(previous)); continue }
         }
         const item = { record_id: id, status: 'observed', reason_code: observed.missing ? 'RECORD_MISSING' : 'EXTERNAL_CHANGE', observed_hash: observed.observed_hash }
         if (!args.capture) { items.push(item); continue }
@@ -277,8 +306,11 @@ export class MemoryExternalChanges {
         if (purge.record_ids.includes(record.name)) continue
         for (const change of readdirSync(this.#path(`external-changes/${record.name}`), { withFileTypes: true })) {
           if (!change.isDirectory() || change.isSymbolicLink()) continue
-          const item = this.#summary(this.#change(change.name))
-          if (args.include_resolved || !['adopted', 'restored', 'superseded'].includes(item.status)) rows.push(item)
+          if (!/^change-[a-f0-9]{40}$/.test(change.name)) continue
+          try {
+            const item = this.#summary(this.#change(change.name))
+            if (args.include_resolved || !['adopted', 'restored', 'superseded'].includes(item.status)) rows.push(item)
+          } catch (error) { rows.push({ change_id: change.name, record_id: record.name, status: 'invalid', reason_code: error instanceof MemoryError ? error.code : 'EXTERNAL_CHANGE_INVALID' }) }
         }
       }
       rows.sort((a, b) => a.change_id.localeCompare(b.change_id)); this.#authorize(ctx)
@@ -298,7 +330,7 @@ export class MemoryExternalChanges {
         if (digest(files[name]) !== hash) fail('EXTERNAL_SNAPSHOT_CHANGED')
       }
       if (digest(Object.fromEntries(RECORD_FILES.map((name) => [name, files[name] ? digest(files[name]) : null]))) !== entry.observed_hash) fail('EXTERNAL_SNAPSHOT_CHANGED')
-      if (Object.values(files).some((data) => retentionBlockReason(decode(data)))) fail('UNSAFE_EXTERNAL_PAYLOAD')
+      if (!Object.entries(files).every(([name, data]) => externalFileAllowed(name, data))) fail('UNSAFE_EXTERNAL_PAYLOAD')
       let meta
       try { meta = JSON.parse(decode(files['meta.json'])) } catch { rejected.push('INVALID_EXTERNAL_META') }
       if (meta) {
@@ -375,6 +407,8 @@ export class MemoryExternalChanges {
         const patch = Object.fromEntries(args.fields.map((field) => [field, data.diff[field].after]))
         const patchText = stableStringify(patch)
         if (patchText.length > 8000 || !patchText.isWellFormed() || retentionBlockReason(patchText)) fail('EXTERNAL_PATCH_NOT_ALLOWED')
+        const textValues = Object.values(patch).flatMap((value) => Array.isArray(value) ? value : [value])
+        if (textValues.some((value) => typeof value !== 'string' || !value.isWellFormed() || retentionBlockReason(value)) || patch.tags && new Set(patch.tags).size !== patch.tags.length) fail('EXTERNAL_PATCH_NOT_ALLOWED')
         if ('title' in patch && (typeof patch.title !== 'string' || !patch.title.trim() || patch.title.length > 200) || 'tags' in patch && (!Array.isArray(patch.tags) || patch.tags.length > 24 || patch.tags.some((tag) => typeof tag !== 'string' || !tag.trim() || tag.length > 64)) || 'gist' in patch && (typeof patch.gist !== 'string' || !patch.gist.trim() || patch.gist.length > 2000) || 'detail' in patch && (typeof patch.detail !== 'string' || !patch.detail.trim())) fail('EXTERNAL_PATCH_NOT_ALLOWED')
         record = clone(data.base.candidate.record); mode = 'adopt'
         for (const field of args.fields) if (['gist', 'detail'].includes(field)) record[field] = patch[field]; else record.meta[field] = patch[field]

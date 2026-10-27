@@ -106,6 +106,8 @@ export function applyRootUpgrade(root, upgrade, write) {
   if (!stat.isFile() || stat.isSymbolicLink()) throw new MemoryError('UNSAFE_STORAGE_PATH')
   const data = readFileSync(path), previous = JSON.parse(data)
   if (stableStringify(previous) === stableStringify(upgrade.manifest)) return
+  if (previous.api_version === '1.1.0' && Array.isArray(previous.spaces) && upgrade.manifest.spaces.every((id) => previous.spaces.includes(id)) &&
+    stableStringify({ ...previous, spaces: [] }) === stableStringify({ ...upgrade.manifest, spaces: [] })) return
   if (digest(data) !== upgrade.expected_hash || previous.api_version !== '1.0.0') throw new MemoryError('ROOT_UPGRADE_CONFLICT')
   write(path, json(upgrade.manifest))
 }
