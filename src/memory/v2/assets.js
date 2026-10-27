@@ -65,7 +65,7 @@ export function validateAssetMetadata(value, { assetId = value?.id, recordMetas,
   if (recordMetas !== undefined) {
     if (!Array.isArray(recordMetas) || recordMetas.length !== 1) throw new MemoryError('ASSET_RECORD_SCOPE_CONFLICT')
     const meta = recordMetas[0]
-    if (IDENTITY.some((key) => meta[key] !== value[key]) || meta.type !== 'meme' || meta.claim_kind !== 'user_statement' ||
+    if (IDENTITY.some((key) => meta[key] !== value[key]) || meta.type !== 'meme' || !['user_statement', 'inference'].includes(meta.claim_kind) ||
       meta.record_id !== ids.record_id || meta.visibility?.kind !== 'private' || meta.asset_metadata_hash !== digest(value) ||
       !Array.isArray(meta.assets) || meta.assets.length !== 2 || !meta.assets.includes(ids.asset_id) || !meta.assets.includes(value.file) ||
       !Array.isArray(meta.actor_ids) || meta.actor_ids.length !== 1 || meta.actor_ids[0] !== value.subject_id ||
@@ -125,7 +125,7 @@ export class MemoryAssetsV2 {
     this.store._authorize(context, 'memory.read')
     assertOnly(args, ['consent_id', 'description', 'tags'])
     assertId(args.consent_id)
-    const description = text(args.description ?? '主人明确同意保存的图片', 'image description', { max: 240 })
+    const description = text(args.description ?? '图片', 'image description', { max: 240 })
     if (!description.isWellFormed()) throw new MemoryError('INVALID_ASSET_DESCRIPTION')
     blocked(description)
     const labels = tags(args.tags)
@@ -165,11 +165,11 @@ export class MemoryAssetsV2 {
           image_attachment_id: prepared.ref.attachmentId, consent_id: grant.consent_id, ...identity }
         const record = { meta: { schema_version: 2, record_id: recordId, revision_id: revisionId, revision: 1, ...identity,
           actor_ids: [context.subject_id], created_at: now, updated_at: now, observed_at: grant.observed_at,
-          valid_from: grant.observed_at, valid_to: null, expires_at: null, retention: 'long_term', claim_kind: 'user_statement',
-          confidence: 1, title: '明确同意保存的图片', type: 'meme', tags: labels, canonical_key: null,
+          valid_from: grant.observed_at, valid_to: null, expires_at: null, retention: 'long_term', claim_kind: 'inference',
+          confidence: 1, title: '图片', type: 'meme', tags: labels, canonical_key: null,
           provenance_refs: [evidenceId], visibility: { kind: 'private' }, pinned: false, status: 'active', supersedes: null,
           revision_history: [], layers: { gist: true, detail: true, raw: true }, assets: [assetId, prepared.file], asset_metadata_hash: digest(metadata) },
-        gist: grant.content, detail: grant.content, evidence: [evidence] }
+        gist: description, detail: description, evidence: [evidence] }
         validateAssetMetadata(metadata, { recordMetas: [record.meta], evidence: [evidence] })
         const file = this.store.engine.resolvePath(`assets/${prepared.file}`)
         if (existsSync(file) && digest(readFileSync(file)) !== digest(prepared.bytes)) throw new MemoryError('EXTERNAL_ASSET_CHANGE')

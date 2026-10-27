@@ -544,12 +544,22 @@ export class MemoryTransfer {
           const gist = (map.get(`entries/${id}/gist.md`)?.toString('utf8') ?? meta.summary ?? meta.title ?? id)
           const detail = map.get(`entries/${id}/detail.md`)?.toString('utf8') ?? ''
           const raw = map.get(`entries/${id}/raw.jsonl`)?.toString('utf8') ?? ''
-          if (raw) try { raw.split('\n').filter(Boolean).forEach((line) => JSON.parse(line)) } catch { warnings.push({ record_id: id, reason_code: 'INVALID_LEGACY_RAW_RETAINED' }) }
           const sourceHash = digest(snapshot.files.filter((file) => file.path.startsWith(`entries/${id}/`)).map(({ path, sha256 }) => ({ path, sha256 })))
           const evidenceId = `legacy-evidence-${sourceHash.slice(0, 32)}`
-          const evidence = { evidence_id: evidenceId, claim_kind: 'legacy', source: 'legacy', observed_at: created, subject_ids: [recordIdentity.subject_id], actor_ids: [], session_id: null, message_id: null,
-            content: raw || 'Legacy entry without active raw; original files remain in cold/legacy-v1.',
+          const legacySource = { claim_kind: 'legacy', source: 'legacy', observed_at: created, subject_ids: [recordIdentity.subject_id], actor_ids: [], session_id: null, message_id: null,
             legacy_source: `cold/legacy-v1/entries/${id}`, legacy_format: raw ? 'raw-jsonl' : 'metadata-only' }
+          const evidence = []
+          let invalidRaw = false
+          for (const [index, line] of raw.split('\n').entries()) {
+            if (!line.trim()) continue
+            let entry
+            try { entry = JSON.parse(line) } catch { invalidRaw = true; continue }
+            if (!entry || typeof entry.content !== 'string') { invalidRaw = true; continue }
+            evidence.push({ ...legacySource, evidence_id: evidence.length ? `${evidenceId}-${index + 1}` : evidenceId,
+              content: entry.content, legacy_line: index + 1, legacy_content_status: 'available' })
+          }
+          if (invalidRaw) warnings.push({ record_id: id, reason_code: 'INVALID_LEGACY_RAW_RETAINED' })
+          if (!evidence.length) evidence.push({ ...legacySource, evidence_id: evidenceId, content: '', legacy_content_status: raw ? 'unavailable' : 'missing' })
           const record = { meta: {
             schema_version: 2, record_id: id, revision_id: `legacy-${sourceHash.slice(0, 40)}`, revision: 1,
             memory_space_id: this.#store.memorySpaceId, ...recordIdentity, actor_ids: [], created_at: created, observed_at: created, updated_at: updated,
@@ -557,7 +567,7 @@ export class MemoryTransfer {
             claim_kind: 'legacy', confidence: typeof meta.confidence === 'number' && meta.confidence >= 0 && meta.confidence <= 1 ? meta.confidence : 0,
             title: typeof meta.title === 'string' ? meta.title.slice(0, 200) : id, type: MEMORY_TYPES.includes(meta.type) ? meta.type : 'fact',
             tags: Array.isArray(meta.tags) ? meta.tags.filter((tag) => typeof tag === 'string') : [], canonical_key: typeof meta.canonical_key === 'string' ? meta.canonical_key : null,
-            provenance_refs: [evidenceId], visibility: { kind: 'private' }, pinned: meta.pinned === true,
+            provenance_refs: evidence.map((entry) => entry.evidence_id), visibility: { kind: 'private' }, pinned: meta.pinned === true,
             status: ['archived', 'superseded'].includes(meta.status) ? meta.status : meta.superseded_by ? 'superseded' : 'active', supersedes: null, revision_history: [],
             layers: { gist: map.has(`entries/${id}/gist.md`), detail: map.has(`entries/${id}/detail.md`), raw: map.has(`entries/${id}/raw.jsonl`) },
             ...(meta.user_edited === true ? { external_revision: { protected: true, source: 'legacy_user_edit' } } : {}),
@@ -565,10 +575,10 @@ export class MemoryTransfer {
               links: Array.isArray(meta.links) ? copy(meta.links) : [], assets: Array.isArray(meta.assets) ? copy(meta.assets) : [], entities: Array.isArray(meta.entities) ? copy(meta.entities) : [],
               salience: meta.salience && typeof meta.salience === 'object' ? copy(meta.salience) : null, emotional_weight: meta.emotional_weight ?? null, access_count: meta.access_count ?? null, last_access: meta.last_access ?? null, archived_at: meta.archived_at ?? null,
               observed_time_basis: 'entry_created_at', identity_assignment: Object.fromEntries(Object.keys(identity).map((key) => [key, typeof meta[key] === 'string' ? 'preserved' : args.identity ? 'host_declared' : 'unknown_placeholder'])) },
-          }, gist, detail, evidence: [evidence] }
+          }, gist, detail, evidence }
           validateRecord(record.meta)
           files.push(...this.#store._recordChanges(record).map((change) => ({ path: change.path, data: Buffer.from(change.data) })))
-          files.push({ path: `evidence/${evidenceId}.json`, data: Buffer.from(json(evidence)) })
+          for (const entry of evidence) files.push({ path: `evidence/${entry.evidence_id}.json`, data: Buffer.from(json(entry)) })
           recordIds.push(id)
         } catch (error) {
           if (error.code === 'UNSUPPORTED_LEGACY_SCHEMA') throw error
