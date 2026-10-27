@@ -11,3 +11,5 @@ V2 文件服务支持管理层物理冷藏和单进程宿主维护。`autoMemory
 已完成事务重做仅补齐与当前根锚及位置相符的缺失记录字节，不回放 self、回退 head、覆盖不同字节或给冷藏记录再造热副本。便携包 v3 分别保全 self 和记录位置的完整性权威。约定已有确定性 CAS 管理基础，本次没有接入对话语义约定解析器。
 
 最低 writer API 为 1.3.0。旧 1.2 writer 不理解物理冷藏契约，不得打开此根；`physical-cold-v1` 能力标记不能代替版本门槛。新 reader 默认以 `LIFECYCLE_INTEGRITY_UPGRADE_REQUIRED` 拒绝 1.2 根，显式跨根 `upgrade-self` 接受 1.1/1.2 源。1.2 已锚 self 原件和稳定特征保留，1.1 未锚成长仍冷存为 opaque。存储格式 2、便携包格式 3、provider 协议 1.0.0 分别独立版本化。
+
+可信 `PersonaRuntime.recall` 宿主 API 将显式 `include_cold: true` 传给管理层确认引文的读取授权。授权绑定布尔读取意图、原 context、层级、当前 head、字节和时间窗，取消或晚期变化立即失效。默认自动上下文和普通召回仍排除冷藏，模型工具 schema 不变；引文读取不授予成长或成熟度资格。

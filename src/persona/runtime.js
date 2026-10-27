@@ -88,7 +88,7 @@ export class PersonaRuntime {
     return this.state.resolveMemoryEvidence(id) !== null || this.#options.additionalEvidenceAllowed?.(id, _context, meta) === true
   }
   async #readFilters(state, args, context, signal) {
-    const query = Object.fromEntries(['query', 'at', 'subject_id', 'limit'].filter((key) => args[key] !== undefined).map((key) => [key, args[key]]))
+    const query = Object.fromEntries(['query', 'at', 'subject_id', 'limit', 'include_cold'].filter((key) => args[key] !== undefined).map((key) => [key, args[key]]))
     const lease = await this.#externalReads.prepare(query, context, { signal, authorize: () => {
       this.#assertLive(); check(state.controller.signal); state.fence.checkSync(); return true
     } })
