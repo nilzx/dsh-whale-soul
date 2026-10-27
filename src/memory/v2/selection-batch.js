@@ -131,6 +131,35 @@ async function boundedAssess(assess, payload, signal, timeoutMs) {
   finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); remove?.() }
 }
 
+/** Keep one complete interaction quote when its contained boundary adds no source text. */
+async function coalesceGrowthBoundary(items, event, { clock, timeoutMs, signal }) {
+  const omitted = new Set()
+  const local = (candidate) => {
+    const { target_ref, ...verdict } = candidate
+    return createMemorySelector({ clock, timeoutMs, assess: () => verdict }).select({ ...event, content: candidate.evidence_quote }, { signal })
+  }
+  const span = (quote) => {
+    const start = event.content.indexOf(quote)
+    return start < 0 || event.content.indexOf(quote, start + 1) >= 0 ? null : [start, start + quote.length]
+  }
+  for (const growth of items) {
+    if (growth.kind !== 'growth_observation' || growth.subject_scope !== 'interaction' || growth.target_ref !== null || growth.canonical_key !== null) continue
+    const outer = span(growth.evidence_quote)
+    if (!outer) continue
+    const admitted = await local(growth)
+    if (!admitted.allow_persist || !admitted.growth_eligible || admitted.proposal?.type !== 'episode') continue
+    for (let index = 0; index < items.length; index++) {
+      const boundary = items[index]
+      if (boundary.kind !== 'boundary' || boundary.decision !== 'long_term' || boundary.target_ref !== null || boundary.canonical_key !== null) continue
+      const inner = span(boundary.evidence_quote)
+      if (!inner || inner[0] < outer[0] || inner[1] > outer[1]) continue
+      const selected = await local(boundary)
+      if (selected.allow_persist && !selected.growth_eligible && selected.proposal?.type === 'promise') omitted.add(index)
+    }
+  }
+  return items.filter((_item, index) => !omitted.has(index))
+}
+
 /** One bounded assessment produces branded host-derived items; no writes occur here. */
 export function createMemoryBatchSelector({ assess, clock = Date.now, timeoutMs = 15_000 } = {}) {
   if (assess !== undefined && typeof assess !== 'function' || typeof clock !== 'function' || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000) fail('BATCH_INVALID_FACTORY')
@@ -148,7 +177,7 @@ export function createMemoryBatchSelector({ assess, clock = Date.now, timeoutMs 
       projectCatalog(knownSlots, event)
       const items = [], usedTargets = new Set(), usedKeys = new Set(), spans = []
       let maturity = false
-      for (const candidate of verdict.items) {
+      for (const candidate of await coalesceGrowthBoundary(verdict.items, event, { clock, timeoutMs, signal })) {
         let quote = candidate.evidence_quote, start = event.content.indexOf(quote)
         const end = start + quote.length
         if (start < 0 || event.content.indexOf(quote, start + 1) >= 0 || spans.some(([left, right]) => start < right && end > left)) fail('BATCH_INVALID_EXACT_SPAN')
