@@ -2,7 +2,7 @@
 
 [中文](release-0.2.0.zh-CN.md)
 
-Status: release preparation; this version has not been published to npm.
+Version: `0.2.0`.
 
 0.2.0 is a substantial change to persona continuity and memory storage. It keeps the Whale Chan Agent mode while separating the replaceable core, evidence-based personality growth and durable memories.
 

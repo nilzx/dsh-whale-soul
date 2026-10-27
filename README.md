@@ -8,7 +8,7 @@ An in-character **Whale Chan (鲸鱼娘)** Agent mode for [DeepSeek Harness](htt
 
 [中文文档](README.zh-CN.md)
 
-> 0.2.0 release preparation — not yet published. The default persona uses V2 memory API 1.3 and full transfer format 3, with independent personality growth and portable local data. Read the [0.2.0 changes and upgrade guide](docs/release-0.2.0.md) before updating from 0.1.x. The 0.1.5 migration and Electron desktop smoke checks have passed. Long-term growth and optional body journeys remain separate validation scopes.
+> 0.2.0. The default persona uses V2 memory API 1.3 and full transfer format 3, with independent personality growth and portable local data. Read the [0.2.0 changes and upgrade guide](docs/release-0.2.0.md) before updating from 0.1.x. The 0.1.5 migration and Electron desktop smoke checks have passed. Long-term growth and optional body journeys remain separate validation scopes.
 
 ## What it is
 
@@ -45,7 +45,7 @@ dsh plugin --profile web add dsh-whale-soul
 
 The command above manages the web profile. For desktop, install the plugin from **Plugins** in the DSH desktop app; the standard CLI cannot manage the reserved desktop profile.
 
-These registry commands install the published release. To try the 0.2.0 candidate before publication, install its locally built archive instead: `dsh plugin --profile web add /absolute/dsh-whale-soul-0.2.0.tgz`.
+These registry commands install the published release. To install a local archive instead, use: `dsh plugin --profile web add /absolute/dsh-whale-soul-0.2.0.tgz`.
 
 Only the `whale-soul` preset is registered. Sessions that reference a retired preset must select the current preset in the host before resuming. This change does not rewrite session history or stored memories.
 
