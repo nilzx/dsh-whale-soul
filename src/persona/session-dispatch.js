@@ -90,7 +90,7 @@ export function installSessionDispatch(ctx, { runtime, ownsAgent, scopeChainOf, 
             if (original(host.get('llm')) !== service) fail('SESSION_LLM_SERVICE_CHANGED')
             if (agent) check(agent)
             const registration = agent ? owner(agent) : null
-            if (registration?.isAgentLoopRequest(options) === true) registration.runtime.assertMemoryRequestCurrent(agent, options)
+            if (registration?.isAgentLoopRequest(options) === true) registration.runtime.assertInjectedContextCurrent(agent, options)
           }
           if (agent && (candidates(agent).length || confirmedSessions.has(agent.session.id) || bound(agent))) { prepared.claim(options); await ensure(agent) }
           const stream = await next(); finalCheck()

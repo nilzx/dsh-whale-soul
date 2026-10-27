@@ -23,6 +23,7 @@ const capabilities = ['memory.read', 'memory.write', 'memory.list', 'memory.raw'
 const code = (error) => typeof error?.code === 'string' && /^[A-Z][A-Z0-9_]{0,99}$/.test(error.code) ? error.code : 'PERSONA_RUNTIME_FAILURE'
 const check = (signal) => { if (signal?.aborted) throw new MemoryError('PERSONA_CANCELLED') }
 const union = (...lists) => [...new Set(lists.flat().filter(Boolean))]
+const injectedContextNames = new Set(['whale-soul:memory', 'whale-soul:owner-reviewed-memory', 'whale-soul:growth'])
 function bounded(value, fallback, maximum) { return Number.isSafeInteger(value) && value >= 0 && value <= maximum ? value : fallback }
 
 /** Shared preset controller. Every Agent gets its own route, queue and cache. */
@@ -270,7 +271,7 @@ export class PersonaRuntime {
       timeoutMs: this.#options.assessmentTimeoutMs ?? 15000 }
     const state = { agent, sessionId, controller, queue: Promise.resolve(), lastQuery: '', latest: null,
       lastActivity: Date.now(), timer: null, job: null, cache: null, writes: 0, lastMaintenance: 0, status: agent.status ?? 'idle', inboxSources: new Map(), fence, ownedObserver: host.observer ? null : observer,
-      externalSnapshots: new Map(), requestSnapshots: new WeakMap() }
+      injectedSnapshots: new Map(), requestSnapshots: new WeakMap() }
     state.selector = this.#options.selectorFactory?.(agent) ?? createMemoryBatchSelector({
       assess: createMemoryBatchSelectionAssessor(route), timeoutMs: route.timeoutMs })
     state.assess = this.#options.assessorFactory?.(agent) ?? createGrowthAssessor({ ...route, coreInstructions: this.coreInstructions })
@@ -461,38 +462,48 @@ export class PersonaRuntime {
     const external = filters.lease.recordIds.some((id) => memory.record_ids?.includes(id))
     state.cache = { memory: memory.context ?? '', growth: growth.traits?.length ? growth.context ?? '' : '', external, isCurrent: fingerprint,
       authorityCurrent: () => { try { return digest(readFileSync(selfHead)) === selfHeadHash } catch { return false } } }
-    if (external && state.cache.memory) {
-      state.externalSnapshots.set(digest(state.cache.memory), { text: state.cache.memory, isCurrent: () => filters.lease.isCurrent() })
-      while (state.externalSnapshots.size > 32) state.externalSnapshots.delete(state.externalSnapshots.keys().next().value)
+    for (const [name, text] of [[external ? 'whale-soul:owner-reviewed-memory' : 'whale-soul:memory', state.cache.memory], ['whale-soul:growth', state.cache.growth]]) {
+      if (!text) continue
+      state.injectedSnapshots.set(digest({ name, text }), { name, text,
+        isCurrent: () => state.cache?.authorityCurrent?.() === true && fingerprint() })
+      while (state.injectedSnapshots.size > 64) state.injectedSnapshots.delete(state.injectedSnapshots.keys().next().value)
     }
     return this.contextFor(agent)
   }
   memoryContextNameFor(agent) {
     return this.#agents.get(agent)?.cache?.external ? 'whale-soul:owner-reviewed-memory' : 'whale-soul:memory'
   }
-  /** Called only for an official branded main request at the final dispatch boundary. */
-  assertMemoryRequestCurrent(agent, request) {
+  /** Covers all plugin-injected data, including native facts and stable growth. */
+  assertInjectedContextCurrent(agent, request) {
     if (this.#options.sessionHost?.isAgentLoopRequest?.(request) !== true || !Object.isFrozen(request) ||
-      !Array.isArray(request.messages) || !Object.isFrozen(request.messages)) throw new MemoryError('EXTERNAL_MAIN_REQUEST_REQUIRED')
+      !Array.isArray(request.messages) || !Object.isFrozen(request.messages)) throw new MemoryError('INJECTED_MAIN_REQUEST_REQUIRED')
     const state = this.#agents.get(agent)
-    if (!state || this.#disposed) throw new MemoryError('EXTERNAL_CONTEXT_UNAVAILABLE')
+    if (!state || this.#disposed) throw new MemoryError('INJECTED_CONTEXT_UNAVAILABLE')
     state.fence.checkSync(); check(state.controller.signal); this.#assertLive()
     if (!state.requestSnapshots.has(request)) {
       const snapshots = []
       for (const message of request.messages ?? []) {
         if (message.source?.kind !== 'runtime-context' || !Array.isArray(message.source.sections)) continue
-        for (const section of message.source.sections) if (section.name === 'whale-soul:owner-reviewed-memory') {
-          if (!Object.isFrozen(message) || !Object.isFrozen(message.source) || !Object.isFrozen(message.source.sections) || !Object.isFrozen(section)) throw new MemoryError('EXTERNAL_MAIN_REQUEST_REQUIRED')
-          const issued = typeof section.text === 'string' ? state.externalSnapshots.get(digest(section.text)) : null
-          if (!issued || issued.text !== section.text) throw new MemoryError('EXTERNAL_CONTEXT_UNBOUND')
+        for (const section of message.source.sections) if (injectedContextNames.has(section.name)) {
+          if (!Object.isFrozen(message) || !Object.isFrozen(message.source) || !Object.isFrozen(message.source.sections) || !Object.isFrozen(section)) throw new MemoryError('INJECTED_MAIN_REQUEST_REQUIRED')
+          const issued = typeof section.text === 'string' ? state.injectedSnapshots.get(digest({ name: section.name, text: section.text })) : null
+          if (!issued || issued.text !== section.text) throw new MemoryError('INJECTED_CONTEXT_UNBOUND')
           snapshots.push({ message, section, issued })
         }
       }
       state.requestSnapshots.set(request, snapshots)
     }
     if (!state.requestSnapshots.get(request).every(({ message, section, issued }) =>
-      message.source.sections.includes(section) && section.text === issued.text && issued.isCurrent())) throw new MemoryError('EXTERNAL_CONTEXT_REVOKED')
+      message.source.sections.includes(section) && section.name === issued.name && section.text === issued.text && issued.isCurrent())) throw new MemoryError('INJECTED_CONTEXT_REVOKED')
     return true
+  }
+  /** Compatibility alias for the earlier owner-quotation host extension. */
+  assertMemoryRequestCurrent(agent, request) {
+    try { return this.assertInjectedContextCurrent(agent, request) }
+    catch (error) {
+      if (error instanceof MemoryError && error.code.startsWith('INJECTED_')) throw new MemoryError(error.code.replace('INJECTED_', 'EXTERNAL_'))
+      throw error
+    }
   }
   contextFor(agent) {
     const state = this.#agents.get(agent), cache = state?.cache
