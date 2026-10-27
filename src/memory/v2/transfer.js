@@ -6,7 +6,7 @@ import { readJson } from './transactions.js'
 import { ASSET_METADATA_FIELDS, validateAssetMetadata } from './assets.js'
 import { assertPersonaFilesAllowed, exportPersonaState, preparePersonaImport, validatePortablePersonaShape, validatePortablePersonaState, personaIdentityProjection, projectedIdentityBinding } from './persona-ledger.js'
 import { exportPurgeState, getPurgeState, preparePurgeImport } from './purge-ledger.js'
-import { listRecordHeads, loadRecordHead, validateRecordHead, verifyRecordBundle } from './record-integrity.js'
+import { buildRecordStateDescriptor, listRecordHeads, loadRecordHead, validateRecordHead, verifyRecordBundle } from './record-integrity.js'
 
 const TRANSFER_FORMAT = 'dsh-memory-space'
 const TRANSFER_VERSION = 2
@@ -430,10 +430,19 @@ export class MemoryTransfer {
       await this.#guard(manifest, archive, decoded, state)
       const persona = archive.persona_state ? await preparePersonaImport(this.#store.root, this.#store.memorySpaceId, operationId, archive.persona_state, { allowMaturityReset }) : { anchors: [], descriptors: [] }
       assertPersonaFilesAllowed(decoded.files, persona.anchors)
-      const recordImports = []
+      const recordImports = [], purgeHeadTransitions = []
       for (const head of archive.integrity_state?.heads ?? []) {
         const old = loadRecordHead(this.#store.root, this.#store.memorySpaceId, head.record_id)
-        if (old && digest(old) !== digest(head)) throw new MemoryError('RECORD_IMPORT_CONFLICT')
+        if (old && digest(old) !== digest(head)) {
+          // Explicit purge acceptance may retire exactly the same committed
+          // chain. It does not choose a newer/older imported revision or rewind
+          // the local generation of a quarantined head.
+          const purePurge = head.state === 'purged' && head.change_id === null &&
+            archive.purge_state?.record_ids.includes(head.record_id) && state.record_ids.includes(head.record_id) &&
+            digest({ ...old, state: head.state, change_id: head.change_id, generation: head.generation }) === digest(head)
+          if (!purePurge) throw new MemoryError('RECORD_IMPORT_CONFLICT')
+          if (old.state !== 'purged') purgeHeadTransitions.push(old.record_id)
+        }
         if (!old) recordImports.push({ expected_generation: 0, next: copy(head) })
       }
       const changes = []
@@ -448,10 +457,12 @@ export class MemoryTransfer {
         assertId(id, 'identity')
         if (manifest.identities?.[id] !== undefined && stableStringify(manifest.identities[id]) !== stableStringify(value)) throw new MemoryError('IMPORT_IDENTITY_CONFLICT')
       }
-      const watermark = changes.length || descriptor || persona.descriptors.length || recordImports.length ? Math.max(manifest.revision_watermark, archive.revision_watermark, state.revision_floor) + 1 : manifest.revision_watermark
+      const recordDescriptors = purgeHeadTransitions.map((recordId) => buildRecordStateDescriptor({ root: this.#store.root,
+        spaceId: this.#store.memorySpaceId, recordId, state: 'purged', changeId: null, operationId }))
+      const watermark = changes.length || descriptor || persona.descriptors.length || recordImports.length || recordDescriptors.length ? Math.max(manifest.revision_watermark, archive.revision_watermark, state.revision_floor) + 1 : manifest.revision_watermark
       const merged = [...records.filter((meta) => !state.record_ids.includes(meta.record_id) && !decoded.records.some((item) => item.record_id === meta.record_id)), ...decoded.records]
       const importedBefore = (manifest.transfers ?? []).some((item) => item.checksum === archive.checksum)
-      if (changes.length || !importedBefore || descriptor || persona.descriptors.length || recordImports.length) {
+      if (changes.length || !importedBefore || descriptor || persona.descriptors.length || recordImports.length || recordDescriptors.length) {
         changes.push({ path: 'manifest.json', data: json({ ...manifest, revision_watermark: watermark, purge_generation: state.generation,
           identities: { ...manifest.identities, ...archive.manifest.identities },
           migrations: [...(manifest.migrations ?? []), ...archive.manifest.migrations.filter((entry) => !(manifest.migrations ?? []).some((old) => digest(old) === digest(entry)))],
@@ -460,7 +471,7 @@ export class MemoryTransfer {
         changes.push({ path: 'index/records.json', data: json(this.#store._index(merged, watermark)) })
       }
       if (recheckSource) await recheckSource()
-      return { changes, ...(descriptor ? { purge_descriptor: descriptor } : {}), ...(persona.descriptors.length ? { persona_descriptors: persona.descriptors } : {}), ...(recordImports.length ? { record_imports: recordImports } : {}), result: { api_version: API_VERSION, operation_id: operationId, status: changes.length ? 'committed' : 'unchanged', reason_code: 'OK', imported_files: decoded.files.length, record_ids: decoded.records.map((meta) => meta.record_id), pending_record_ids: (archive.integrity_state?.heads ?? []).filter((head) => head.state === 'quarantined').map((head) => head.record_id), omitted_pending_ids: archive.integrity_state?.omitted_pending_ids ?? [], checksum: archive.checksum, revision_watermark: watermark, purge_generation: state.generation, pending: false } }
+      return { changes, ...(descriptor ? { purge_descriptor: descriptor } : {}), ...(persona.descriptors.length ? { persona_descriptors: persona.descriptors } : {}), ...(recordDescriptors.length ? { record_descriptors: recordDescriptors } : {}), ...(recordImports.length ? { record_imports: recordImports } : {}), result: { api_version: API_VERSION, operation_id: operationId, status: changes.length ? 'committed' : 'unchanged', reason_code: 'OK', imported_files: decoded.files.length, record_ids: decoded.records.map((meta) => meta.record_id), pending_record_ids: (archive.integrity_state?.heads ?? []).filter((head) => head.state === 'quarantined').map((head) => head.record_id), omitted_pending_ids: archive.integrity_state?.omitted_pending_ids ?? [], checksum: archive.checksum, revision_watermark: watermark, purge_generation: state.generation, pending: false } }
     }, context)
   }
 
