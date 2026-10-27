@@ -8,7 +8,7 @@ An in-character **Whale Chan (鲸鱼娘)** Agent mode for [DeepSeek Harness](htt
 
 [中文文档](README.zh-CN.md)
 
-> Unreleased refactor preview: the default persona uses V2 memory API 1.3 and full transfer format 3. Fact selection, sourced corrections, independent growth, lifecycle maintenance, owner review and portable transfer are implemented. Focused real-session journeys have passed; full release acceptance, long-term growth and optional body journeys remain open. Use the [local management workflow](docs/management.md) before moving old data.
+> 0.2.0 release preparation — not yet published. The default persona uses V2 memory API 1.3 and full transfer format 3, with independent personality growth and portable local data. Read the [0.2.0 changes and upgrade guide](docs/release-0.2.0.md) before updating from 0.1.x. Focused real-session journeys have passed; final upgrade and desktop checks, long-term growth and optional body journeys remain separate validation scopes.
 
 ## What it is
 
@@ -45,7 +45,7 @@ dsh plugin --profile web add dsh-whale-soul
 
 The command above manages the web profile. For desktop, install the plugin from **Plugins** in the DSH desktop app; the standard CLI cannot manage the reserved desktop profile.
 
-These registry commands install the published release. To use this unreleased refactor, install its locally built archive instead: `dsh plugin --profile web add /absolute/dsh-whale-soul-preview.tgz`.
+These registry commands install the published release. To try the 0.2.0 candidate before publication, install its locally built archive instead: `dsh plugin --profile web add /absolute/dsh-whale-soul-0.2.0.tgz`.
 
 Only the `whale-soul` preset is registered. Sessions that reference a retired preset must select the current preset in the host before resuming. This change does not rewrite session history or stored memories.
 
@@ -92,6 +92,7 @@ Changing a root or space selects data; it does not move the previous store. Use 
 
 ## Learn more
 
+- [0.2.0 changes and upgrade guide](docs/release-0.2.0.md)
 - [Memory design](docs/MEMORY.md)
 - [Roleplay contract](docs/ROLEPLAY.md)
 - [Stability and maturity](docs/stability.md)

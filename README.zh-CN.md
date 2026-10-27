@@ -8,7 +8,7 @@
 
 [English README](README.md)
 
-> 未发布的改造预览：默认人格使用V2记忆API1.3与完整transfer v3。事实取舍、有来源的纠错、独立成长、生命周期维护、人工审查与可移植传输已有实现，聚焦真实会话旅程已通过；完整发布、长期成长和可选身体旅程仍待验收。迁移旧数据前使用[本地管理流程](docs/management.zh-CN.md)。
+> 0.2.0发布准备中，尚未发布。默认人格使用V2记忆API1.3与完整transfer v3，人格成长独立存储，数据保存在本地且可移植。从0.1.x升级前请先阅读[0.2.0更新与升级说明](docs/release-0.2.0.zh-CN.md)。聚焦真实会话旅程已通过；最终旧版升级与桌面检查、长期成长和可选身体旅程分别验收。
 
 ## 这是什么
 
@@ -45,7 +45,7 @@ dsh plugin --profile web add dsh-whale-soul
 
 以上命令管理 Web profile。桌面端请在 DSH 桌面应用的 **Plugins** 中安装；标准 CLI 不能管理保留的 `desktop` profile。
 
-以上仓库命令安装已发布版本。使用本次未发布改造时，应安装本地构建包：`dsh plugin --profile web add /绝对路径/dsh-whale-soul-preview.tgz`。
+以上仓库命令安装已发布版本。发布前试用0.2.0候选版，应安装本地构建包：`dsh plugin --profile web add /绝对路径/dsh-whale-soul-0.2.0.tgz`。
 
 仅注册 `whale-soul` 预设。历史会话若引用已移除的预设，恢复前需在宿主中改选当前预设；此变更不改写会话历史或已存记忆。
 
@@ -92,6 +92,7 @@ dsh plugin --profile web add dsh-whale-soul
 
 ## 了解更多
 
+- [0.2.0更新与升级说明](docs/release-0.2.0.zh-CN.md)
 - [记忆设计](docs/MEMORY.zh-CN.md)
 - [角色契约](docs/ROLEPLAY.zh-CN.md)
 - [稳定性与成熟度](docs/stability.zh-CN.md)
