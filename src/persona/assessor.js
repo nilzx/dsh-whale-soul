@@ -42,6 +42,10 @@ counterevidence_resolved may be true when there are no counterexamples, or when 
 Trusted persona core instructions:
 `
 
+const CORE_CONTINUATION_SYSTEM = `
+This call reviews continuation across a persona core upgrade, as identified by purpose=core_upgrade_continuation. The proposal is an existing personality entry, not a newly forming habit. prior_state is its host-recorded stable or candidate state, and core_version is the version under which it was retained. Judge whether the unchanged value and scope remain compatible with the new trusted core and supported by the original evidence. Do not require the entry to form again, invent fresh experiences, or demand new support merely because the core version changed. Still check actual support, counterevidence, privacy and retention; prior approval is not an exemption and cannot override the new core. A candidate remains a candidate; your verdict never promotes it.
+`
+
 function projectCore(core) {
   if (!plain(core) || !plain(core.allowed_dimensions)) throw fail('ASSESSOR_INVALID_CORE')
   const dimensions = Object.entries(core.allowed_dimensions)
@@ -84,25 +88,38 @@ function projectEvidence(records, core, identity) {
 }
 
 export function projectGrowthAssessmentInput(input) {
-  only(input, ['core', 'proposal', 'evidence', 'counterevidence'])
+  only(input, ['core', 'proposal', 'evidence', 'counterevidence', 'purpose'])
+  const continuation = input.purpose === 'core_upgrade_continuation'
+  if (input.purpose !== undefined && !continuation) throw fail('ASSESSOR_INVALID_PURPOSE')
   const core = projectCore(input.core)
   if (!plain(input.proposal) || !Object.hasOwn(core.allowed_dimensions, input.proposal.dimension)) throw fail('ASSESSOR_DIMENSION_DENIED')
   const proposal = { dimension: id(input.proposal.dimension),
     scope: boundedString(input.proposal.scope, 100, 'ASSESSOR_INVALID_PROPOSAL'),
     value: boundedString(input.proposal.value, 240, 'ASSESSOR_INVALID_PROPOSAL'),
     ...(input.proposal.core_version === undefined ? {} : { core_version: boundedString(input.proposal.core_version, 128, 'ASSESSOR_INVALID_PROPOSAL') }) }
+  if (continuation) {
+    if (!['stable', 'candidate'].includes(input.proposal.state) || proposal.core_version === undefined) throw fail('ASSESSOR_INVALID_PROPOSAL')
+    proposal.prior_state = input.proposal.state
+  }
   const identity = {}
   const evidence = projectEvidence(input.evidence, core, identity)
   if (!evidence.length) throw fail('ASSESSOR_EVIDENCE_REQUIRED')
   const counterevidence = projectEvidence(input.counterevidence ?? [], core, identity)
   if (counterevidence.some((entry) => evidence.some((support) => support.independence_key === entry.independence_key))) throw fail('ASSESSOR_EVIDENCE_ROLE_CONFLICT')
   if (JSON.stringify([...evidence, ...counterevidence], null, 2).length + 1 > 8000) throw fail('ASSESSOR_EVIDENCE_BUDGET_EXCEEDED')
-  return freezeJson({ core, proposal, evidence, counterevidence })
+  return freezeJson({ ...(continuation ? { purpose: input.purpose } : {}), core, proposal, evidence, counterevidence })
 }
 
 /** Bind this per real Agent/reflection job, never once to a shared preset scope. */
 export function createGrowthAssessor(options = {}) {
   const coreInstructions = boundedString(options.coreInstructions, 8192, 'ASSESSOR_CORE_INSTRUCTIONS_REQUIRED')
-  return createStructuredAssessor({ ...options, system: GROWTH_SYSTEM + coreInstructions,
+  const ordinary = createStructuredAssessor({ ...options, system: GROWTH_SYSTEM + coreInstructions,
     projectInput: projectGrowthAssessmentInput, validateVerdict: validateGrowthVerdict })
+  let continuation
+  return (input, hostCall) => {
+    if (input?.purpose !== 'core_upgrade_continuation') return ordinary(input, hostCall)
+    continuation ??= createStructuredAssessor({ ...options, system: GROWTH_SYSTEM + coreInstructions + CORE_CONTINUATION_SYSTEM,
+      projectInput: projectGrowthAssessmentInput, validateVerdict: validateGrowthVerdict })
+    return continuation(input, hostCall)
+  }
 }

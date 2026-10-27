@@ -116,11 +116,12 @@ export class PersonaGrowth {
     return records
   }
 
-  async #assessment(proposal, evidence, counterevidence) {
+  async #assessment(proposal, evidence, counterevidence, purpose) {
     const supportOrigins = new Set(evidence.map((entry) => entry.independence_key))
     if (counterevidence.some((entry) => supportOrigins.has(entry.independence_key))) throw new MemoryError('GROWTH_EVIDENCE_ROLE_CONFLICT')
     if (json([...evidence, ...counterevidence]).length > 8000) throw new MemoryError('REFLECTION_EVIDENCE_BUDGET_EXCEEDED')
-    const verdict = await this.#assess(Object.freeze({ core: clone(this.#core), proposal: clone(proposal), evidence: clone(evidence), counterevidence: clone(counterevidence) }))
+    const verdict = await this.#assess(Object.freeze({ core: clone(this.#core), proposal: clone(proposal), evidence: clone(evidence), counterevidence: clone(counterevidence),
+      ...(purpose === undefined ? {} : { purpose }) }))
     if (typeof verdict?.persistable !== 'boolean' || typeof verdict?.compatible !== 'boolean' || typeof verdict?.supported !== 'boolean' || !Number.isFinite(verdict.confidence) || verdict.confidence < 0 || verdict.confidence > 1) throw new MemoryError('INVALID_GROWTH_ASSESSMENT')
     return { persistable: verdict.persistable, compatible: verdict.compatible, supported: verdict.supported, confidence: verdict.confidence,
       counterevidence_resolved: counterevidence.length === 0 || verdict.counterevidence_resolved === true }
@@ -486,7 +487,7 @@ export class PersonaGrowth {
         throw error
       }
       this.#authorize(context, 'self.evaluate')
-      const assessment = await this.#assessment(before, evidence, counterevidence)
+      const assessment = await this.#assessment(before, evidence, counterevidence, 'core_upgrade_continuation')
       if (!assessment.persistable || !assessment.compatible || !assessment.supported || !assessment.counterevidence_resolved || assessment.confidence < this.#minimumConfidence) {
         return await recordUnchanged('not_rebased', !assessment.persistable ? 'STORAGE_BOUNDARY' : !assessment.compatible ? 'CORE_INCOMPATIBLE' : 'GROWTH_REVIEW_REQUIRED')
       }
