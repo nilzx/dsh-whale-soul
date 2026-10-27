@@ -17,16 +17,6 @@ const PRESET_TEXT = {
       description: 'A Whale Chan who lives in DSH. She follows your language, is tsundere and affectionate, and carries only a light memory index into a session.',
     },
   },
-  'whale-girl': {
-    zh: {
-      name: '鲸鱼娘（旧会话）',
-      description: '旧会话的兼容入口；新会话请选择鲸鱼娘。',
-    },
-    en: {
-      name: 'Whale Chan (Legacy)',
-      description: 'Compatibility entry for older sessions; choose Whale Chan for new sessions.',
-    },
-  },
 }
 
 function readPreference(ctx) {

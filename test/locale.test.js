@@ -10,7 +10,6 @@ function fakeContext(preference) {
   const service = {
     rows: [
       { id: 'whale-soul', name: '鲸鱼娘', description: '中文描述' },
-      { id: 'whale-girl', name: '鲸鱼娘（旧会话）', description: '中文旧会话描述' },
       { id: 'standard', name: 'Standard' },
     ],
     async list() {
@@ -40,17 +39,16 @@ function fakeContext(preference) {
 }
 
 test('localizes preset names and descriptions for zh and non-zh locales', async () => {
-  for (const [preference, soulName, legacyName, description] of [
-    ['zh', '鲸鱼娘', '鲸鱼娘（旧会话）', '一只住在 DSH 里的鲸鱼娘'],
-    ['zh-CN', '鲸鱼娘', '鲸鱼娘（旧会话）', '一只住在 DSH 里的鲸鱼娘'],
-    ['en', 'Whale Chan', 'Whale Chan (Legacy)', 'A Whale Chan who lives in DSH'],
-    ['ja', 'Whale Chan', 'Whale Chan (Legacy)', 'A Whale Chan who lives in DSH'],
+  for (const [preference, soulName, description] of [
+    ['zh', '鲸鱼娘', '一只住在 DSH 里的鲸鱼娘'],
+    ['zh-CN', '鲸鱼娘', '一只住在 DSH 里的鲸鱼娘'],
+    ['en', 'Whale Chan', 'A Whale Chan who lives in DSH'],
+    ['ja', 'Whale Chan', 'A Whale Chan who lives in DSH'],
   ]) {
     const { ctx, service, disposers } = fakeContext(preference)
     apply(ctx)
     const rows = await service.list()
     assert.equal(rows.find((row) => row.id === 'whale-soul').name, soulName)
-    assert.equal(rows.find((row) => row.id === 'whale-girl').name, legacyName)
     assert.match(rows.find((row) => row.id === 'whale-soul').description, new RegExp(description))
     assert.equal(rows.find((row) => row.id === 'standard').name, 'Standard')
     const document = await service.readDocument('whale-soul')
