@@ -6,8 +6,8 @@ const fail = (code) => { throw new MemoryError(code) }
 const same = (left, right) => digest(left) === digest(right)
 
 /**
- * Host-only surface authority. A name/text match alone cannot register a row:
- * binding requires the exact official main envelope and active Session object.
+ * Current-content binding requires the exact official main envelope and active
+ * Session object. Exact restored host snapshots gain withdrawal authority only.
  */
 export function createInjectedSurfaceController({ session, checkBoundary, isAgentLoopRequest, createUserMessage, joinContextSections,
   maxTrackedMessages = 128, maxReplacements = 32 } = {}) {
@@ -75,7 +75,17 @@ export function createInjectedSurfaceController({ session, checkBoundary, isAgen
       for (const seq of initialNodes) {
         const event = session.eventAt(seq)
         if (event?.type !== 'user/message' || event.data.source?.kind !== 'runtime-context' || !event.data.source.sections?.some((section) => own.has(section.name))) continue
-        if (!tracked.has(seq)) unknown++
+        if (!tracked.has(seq)) {
+          const message = event.data
+          // A confirmed Session's restored host snapshots are expired caches,
+          // not current content authority. Withdraw only this plugin's parts.
+          if (seq < session.firstLiveSeq && exactMessage(message) && Object.isFrozen(message) &&
+            Object.isFrozen(message.source.sections) && message.source.sections.every(Object.isFrozen)) {
+            if (tracked.size >= maxTrackedMessages) fail('INJECTED_SURFACE_TRACKING_BUDGET')
+            tracked.set(seq, { seq, event, message, eventHash: digest(event), source: message.source,
+              sections: new Map(message.source.sections.filter((section) => own.has(section.name)).map((section) => [section, () => false])) })
+          } else unknown++
+        }
       }
       for (const [seq, entry] of tracked) {
         if (!activeSeqs.has(seq)) { tracked.delete(seq); continue }
