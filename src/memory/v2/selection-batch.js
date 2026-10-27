@@ -39,6 +39,43 @@ function isContentControlOnly(quote) {
   const anchor = (part) => contentControlAnchors.some((pattern) => pattern.test(part))
   return clauses.length > 0 && clauses.some(anchor) && clauses.every((part) => anchor(part) || contentControlQualifiers.some((pattern) => pattern.test(part)))
 }
+// These are ambiguity hints, never keys or authority assigned to old records.
+// A writing habit must not block a first color preference merely by sharing a type.
+const preferenceTopics = new Map([
+  ['preference.drink', /茶|咖啡|饮品|饮料|拿铁|龙井|乌龙|豆浆|牛奶|果汁|\b(?:tea|coffee|drink|beverage|latte|milk|juice|water)\b/iu],
+  ['preference.color', /颜色|色调|红色|蓝色|绿色|青色|黄色|紫色|白色|黑色|\b(?:colou?r|red|blue|green|yellow|purple|white|black)\b/iu],
+  ['preference.food', /食物|口味|吃|菜|点心|\b(?:food|eat|dish|dessert|snack)\b/iu],
+  ['preference.food.sweetness', /甜|糖|\b(?:sweet|sugar)\b/iu],
+  ['preference.music', /音乐|歌曲|钢琴|小提琴|爵士|摇滚|\b(?:music|song|piano|violin|jazz|rock)\b/iu],
+  ['preference.language', /语言|中文|英文|日语|法语|德语|\b(?:language|chinese|english|japanese|french|german)\b/iu],
+  ['preference.address', /称呼|叫我|\b(?:nickname|call me|address me)\b/iu],
+])
+const preferenceChange = /更正|纠正|修正|改成|改为|不再|不是|更喜欢|更偏好|喜欢的是|偏好的是|\b(?:actually|correction|instead|no longer)\b/iu
+function preferenceStatementContext(content, start, end) {
+  while (start > 0 && !/[；;。.!?！？\n]/u.test(content[start - 1])) start--
+  while (end < content.length && !/[；;。.!?！？\n]/u.test(content[end])) end++
+  return content.slice(start, end)
+}
+function sharesPreferenceTopic(left, right, canonical = null) {
+  const topic = canonical === null ? null : preferenceTopics.get(normalizeMemorySlotKey(canonical))
+  return topic ? topic.test(left) && topic.test(right) : [...preferenceTopics.values()].some(pattern => pattern.test(left) && pattern.test(right))
+}
+function unkeyedPreferenceMayMatch(slot, quote, canonical) {
+  if (slot.type !== 'preference' || slot.canonical_key !== null) return false
+  const topic = canonical === null ? null : preferenceTopics.get(normalizeMemorySlotKey(canonical))
+  return topic ? topic.test(slot.gist) : sharesPreferenceTopic(slot.gist, quote)
+}
+function assertPreferenceCorrectionTarget(quote, context, targetRef, canonical, proposedCanonical, slots, correction) {
+  if (!correction) return
+  const negated = [...context.matchAll(/(?:不是|并非|不再(?:喜欢|偏好|喝|吃)?)([^，,；;。.!?！？\n]{1,80})/gu)].map(match => match[1].trim())
+  for (const value of negated) {
+    const matching = slots.filter(slot => slot.type === 'preference' && slot.gist.includes(value) &&
+      (sharesPreferenceTopic(slot.gist, quote) || slot.canonical_key !== null && proposedCanonical !== null &&
+        normalizeMemorySlotKey(slot.canonical_key) === normalizeMemorySlotKey(proposedCanonical)))
+    if (matching.length && (matching.length !== 1 || matching[0].target_ref !== targetRef)) fail('BATCH_CORRECTION_TARGET_AMBIGUOUS')
+  }
+  if (targetRef === null && slots.some(slot => unkeyedPreferenceMayMatch(slot, quote, canonical))) fail('BATCH_CORRECTION_TARGET_REQUIRED')
+}
 const scopeKeys = ['persona_id', 'agent_identity_id', 'subject_id']
 const freeze = (value) => { if (value && typeof value === 'object') { Object.values(value).forEach(freeze); Object.freeze(value) } return value }
 const fail = (code) => { throw new MemoryError(code) }
@@ -101,6 +138,7 @@ Instructions about saving this message are control information, not another fact
 Current-operation classification or wording directions are control information, not another fact or promise. Omit standalone requests about labeling this assistance, attributing this result, phrasing this response, or avoiding an inferred new trait; retain the actual event and outcome. Declarative notes about this operation's source and what it does not demonstrate are also provenance explanations, not a separate promise or trait. Genuine continuing interpersonal boundaries and long-term communication preferences still belong in memory. Adjacency to a wording request does not erase an actual fact.
 One item is one independently correctable fact. For two preferences return two items, with separate exact quotes. A non-null time_quote must be a substring of that item's evidence_quote; expand the exact fact quote to include its own time phrase. A one-week change is temporary and never revises a permanent preference. Do not borrow another clause's date.
 Known slots are host-approved candidates. A repeated or changed current fact MUST select that offered target_ref. Do not fabricate IDs/revisions, select an unoffered reference, or invent a different key to evade an existing slot. canonical_key on a selected target is only a semantic hint; the host binds its real key/type/revision. For new stable slots use one of preference.color, preference.drink, preference.food, preference.food.sweetness, identity.name, preference.address, preference.music, preference.language. Other unkeyed episodes/facts may use null; do not disguise a correction as an unkeyed new fact. A correction must retain the existing fact's kind/type; never relabel a known preference as fact/episode or use a null key to append a duplicate. Distinct facts must not share a target/key.
+An offered slot with canonical_key:null is still a real existing fact: use its gist to match the predicate and retain its target_ref when its value changes. Do not append a keyed drink preference merely because the earlier drink preference had no key. A correction such as "不是桂花乌龙，我说的是长期更喜欢白茶" targets the offered current 桂花乌龙 statement being contradicted, not a separate older 白茶 statement that is merely repeated positively. If the intended existing target cannot be identified reliably, retain the exact correction statement with target_ref:null for host clarification rather than choosing an unrelated fact; do not disguise it as an independent new fact. An independent new topic remains new: an existing writing habit does not turn a first color preference into a correction.
 Questions and requests to recall existing memories are not new factual assertions: return no item for "你还记得我长期偏爱的茶，以及我写作时的习惯吗？" or "Do you remember my favorite tea and my writing habits?". A topic or slot name supplies no value and must never revise a known slot. Select only complete independently asserted facts, including their actual value or outcome. In a mixed message, omit the question but keep separate lasting assertions; for example, in "你记得我喜欢什么茶吗？另外我长期喜欢茉莉龙井。" select only the stated jasmine-tea preference. A question mark elsewhere does not invalidate an independent assertion.
 Return {"items":[]} when there is no safe durable or qualifying interaction. Quotes must be faithful exact source text, not summaries. You cannot declare completeness or that anything has been saved.`
 export function createMemoryBatchSelectionAssessor(options = {}) {
@@ -215,6 +253,12 @@ export function createMemoryBatchSelector({ assess, clock = Date.now, timeoutMs 
           if (!isKnownMemorySlotKey(canonical)) fail('BATCH_UNKNOWN_SLOT_KEY')
           canonical = normalizeMemorySlotKey(canonical)
           if (knownSlots?.slots.some((slot) => normalizeMemorySlotKey(slot.canonical_key) === canonical)) fail('BATCH_EXISTING_SLOT_REQUIRES_REFERENCE')
+        }
+        if (single.allow_persist && single.decision !== 'temporary' && single.proposal.type === 'preference') {
+          const context = preferenceStatementContext(event.content, start, end)
+          // The proposed topic is only an ambiguity hint; persistence still uses the host-bound target key.
+          assertPreferenceCorrectionTarget(quote, context, target_ref, canonical, single.proposal.canonical_key ?? null, knownSlots?.slots ?? [],
+            preferenceChange.test(context) || !!label && /更正|纠正|修正|更新|修改|改/u.test(label))
         }
         if (canonical !== null) {
           const normalized = normalizeMemorySlotKey(canonical) ?? canonical, key = `${single.proposal.type}\0${normalized}`
