@@ -28,6 +28,7 @@ const serviceTools = ['soul_recall', 'soul_remember', 'soul_forget', 'soul_view_
 export async function installPersonaPlugin(ctx, config = {}, host) {
   const individualKey = normalizeIndividualKey(config.individualKey)
   const memoryProvider = assertMemoryProvider(ctx.get('whaleMemory'))
+  if (typeof host?.createUserMessage !== 'function' || typeof host?.joinContextSections !== 'function') throw new Error('whale-soul: official context surface bindings required')
   const original = Symbol.for('cordis.original'), providerIdentity = memoryProvider[original] ?? memoryProvider
   if (typeof host.scopeOf !== 'function' || typeof host.scopeChainOf !== 'function' || !host.scopeOf(ctx)) throw new Error('whale-soul: trusted persona scope required')
   const ownerScope = host.scopeOf(ctx)
@@ -63,7 +64,8 @@ export async function installPersonaPlugin(ctx, config = {}, host) {
   let images
   runtime = new PersonaRuntime({ ...config, individualKey, root, memoryProvider, llm: { prepareCall: (...args) => ctx.get('llm').prepareCall(...args) }, createAssembler: () => new host.BlockAssembler(),
     isMemoryProviderCurrent: () => { const current = ctx.get('whaleMemory'); return (current?.[original] ?? current) === providerIdentity },
-    sessionHost: { scopeChainOf: host.scopeChainOf, resolveDshHome: host.privateRootBindings.resolveDshHome, observer, z: host.z, ownsAgent, isAgentLoopRequest: host.isAgentLoopRequest },
+    sessionHost: { scopeChainOf: host.scopeChainOf, resolveDshHome: host.privateRootBindings.resolveDshHome, observer, z: host.z, ownsAgent, isAgentLoopRequest: host.isAgentLoopRequest,
+      createUserMessage: host.createUserMessage, joinContextSections: host.joinContextSections },
     additionalEvidenceAllowed: (id, context, meta) => images?.evidenceAllowed(id, context, meta) ?? false,
     onDream: (phase, payload) => ctx.emit(`whale-soul/dream-${phase}`, payload) })
   runtimes.set(ctx, runtime)
@@ -141,13 +143,14 @@ export async function installPersonaPlugin(ctx, config = {}, host) {
 export async function apply(ctx, config = {}) {
   let zod
   try { zod = await import('zod') } catch { throw new Error('whale-soul: session identity protection requires the host zod package (>=4.4.3 <5)') }
-  const [llm, sandbox, scope, bashSandbox, fsTools, bashTools, fsSearchTools, home, credentials, persistence, storageJson, storage, attachments] = await Promise.all([
-    '@deepseek-ai/dsh-llm', '@deepseek-ai/dsh-sandbox', '@deepseek-ai/dsh-scope',
+  const [llm, prompt, sandbox, scope, bashSandbox, fsTools, bashTools, fsSearchTools, home, credentials, persistence, storageJson, storage, attachments] = await Promise.all([
+    '@deepseek-ai/dsh-llm', '@deepseek-ai/dsh-system-prompt', '@deepseek-ai/dsh-sandbox', '@deepseek-ai/dsh-scope',
     '@deepseek-ai/dsh-bash-sandbox', '@deepseek-ai/dsh-tool-fs', '@deepseek-ai/dsh-tool-bash', '@deepseek-ai/dsh-tool-fs-search',
     '@deepseek-ai/dsh-home-paths', '@deepseek-ai/dsh-credentials-local', '@deepseek-ai/dsh-session-persistence-jsonl',
     '@deepseek-ai/dsh-storage-json', '@deepseek-ai/dsh-storage', '@deepseek-ai/dsh-attachment-local',
   ].map((specifier) => import(specifier)))
-  await installPersonaPlugin(ctx, config, { BlockAssembler: llm.BlockAssembler, isAgentLoopRequest: llm.isAgentLoopRequest, writableRoots: sandbox.writableRoots,
+  await installPersonaPlugin(ctx, config, { BlockAssembler: llm.BlockAssembler, isAgentLoopRequest: llm.isAgentLoopRequest,
+    createUserMessage: llm.createUserMessage, joinContextSections: prompt.joinContextSections, writableRoots: sandbox.writableRoots,
     scopeOf: scope.scopeOf, scopeChainOf: scope.scopeChainOf, z: zod.z, BashSandbox: bashSandbox.default,
     FsTools: fsTools, BashTools: bashTools, FsSearchTools: fsSearchTools, privateRootBindings: {
       resolveDshHome: home.resolveDshHome, LocalCredentialProvider: credentials.LocalCredentialProvider, resolveCredentialSpec: credentials.resolveSpec,

@@ -17,13 +17,14 @@ import { getPurgeState } from '../memory/v2/purge-ledger.js'
 import { personaBinding, normalizeIndividualKey } from '../memory/v2/persona-ledger.js'
 import { SessionIdentityFence, createSessionBoundary, observeSessionIdentityBoundary } from './session-fence.js'
 import { canonicalProtectionPath } from './protection.js'
+import { createInjectedSurfaceController, INJECTED_CONTEXT_NAMES } from './injected-surface.js'
 import { verifySelfIntegrity } from '../memory/v2/self-integrity.js'
 
 const capabilities = ['memory.read', 'memory.write', 'memory.list', 'memory.raw', 'self.write', 'self.evaluate']
 const code = (error) => typeof error?.code === 'string' && /^[A-Z][A-Z0-9_]{0,99}$/.test(error.code) ? error.code : 'PERSONA_RUNTIME_FAILURE'
 const check = (signal) => { if (signal?.aborted) throw new MemoryError('PERSONA_CANCELLED') }
 const union = (...lists) => [...new Set(lists.flat().filter(Boolean))]
-const injectedContextNames = new Set(['whale-soul:memory', 'whale-soul:owner-reviewed-memory', 'whale-soul:growth'])
+const injectedContextNames = new Set(INJECTED_CONTEXT_NAMES)
 function bounded(value, fallback, maximum) { return Number.isSafeInteger(value) && value >= 0 && value <= maximum ? value : fallback }
 
 /** Shared preset controller. Every Agent gets its own route, queue and cache. */
@@ -273,7 +274,12 @@ export class PersonaRuntime {
       timeoutMs: this.#options.assessmentTimeoutMs ?? 15000 }
     const state = { agent, sessionId, controller, queue: Promise.resolve(), lastQuery: '', latest: null,
       lastActivity: Date.now(), timer: null, job: null, cache: null, writes: 0, lastMaintenance: 0, status: agent.status ?? 'idle', inboxSources: new Map(), fence, ownedObserver: host.observer ? null : observer,
-      injectedSnapshots: new Map(), requestSnapshots: new WeakMap() }
+      injectedSnapshots: new Map(), requestSnapshots: new WeakMap(), surfaceBoundRequests: new WeakSet(), surface: null, lastSurfaceCleanup: null }
+    if (typeof host.createUserMessage === 'function' && typeof host.joinContextSections === 'function') {
+      state.surface = createInjectedSurfaceController({ session: agent.session, isAgentLoopRequest: host.isAgentLoopRequest,
+        createUserMessage: host.createUserMessage, joinContextSections: host.joinContextSections,
+        checkBoundary: () => { this.#assertLive(); check(controller.signal); fence.checkSync(); this.store._authorize(this.#context(sessionId), 'memory.read'); return true } })
+    }
     state.selector = this.#options.selectorFactory?.(agent) ?? createMemoryBatchSelector({
       assess: createMemoryBatchSelectionAssessor(route), timeoutMs: route.timeoutMs })
     state.assess = this.#options.assessorFactory?.(agent) ?? createGrowthAssessor({ ...route, coreInstructions: this.coreInstructions })
@@ -359,17 +365,22 @@ export class PersonaRuntime {
       return staged.promise
     }
     const operationSignal = signal ? AbortSignal.any([state.controller.signal, signal]) : state.controller.signal
+    const messageId = event.data.id
+    if (typeof messageId !== 'string' || !Number.isSafeInteger(event.seq) || !Number.isFinite(event.time)) return { status: 'ignored', reason_code: 'UNVERIFIABLE_USER_EVENT' }
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(messageId)) return { status: 'ignored', reason_code: 'UNVERIFIABLE_USER_EVENT' }
     const content = Array.isArray(event.data.content) ? event.data.content.filter((part) => part?.type === 'text' && typeof part.text === 'string').map((part) => part.text).join('\n') : ''
-    if (!content.trim()) return { status: 'ignored', reason_code: 'NO_TEXT' }
     const epoch = state.captureEpoch = (state.captureEpoch ?? 0) + 1
     state.operationSignal = operationSignal
     state.latest = { decision: 'ignore', reason_code: 'CURRENT_EVIDENCE_UNAVAILABLE' }
     state.operation = null
-    state.lastActivity = Date.now(); state.lastQuery = content.slice(0, 2000).toWellFormed()
+    state.lastActivity = Date.now()
     state.cache = null; state.job?.controller.abort(); clearTimeout(state.timer)
-    const messageId = event.data.id
-    if (typeof messageId !== 'string' || !Number.isSafeInteger(event.seq) || !Number.isFinite(event.time)) return { status: 'ignored', reason_code: 'UNVERIFIABLE_USER_EVENT' }
-    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(messageId)) return { status: 'ignored', reason_code: 'UNVERIFIABLE_USER_EVENT' }
+    if (!content.trim()) {
+      state.latest = { decision: 'ignore', reason_code: 'NO_TEXT' }
+      state.operation = { message_id: messageId, epoch, status: 'ignored' }
+      return { status: 'ignored', reason_code: 'NO_TEXT' }
+    }
+    state.lastQuery = content.slice(0, 2000).toWellFormed()
     state.operation = { message_id: messageId, epoch, status: 'unavailable' }
     const record = { ...this.state.identity, event_id: `message-${digest({ session: state.sessionId, message: messageId }).slice(0, 40)}`,
       message_id: messageId, session_id: state.sessionId, occurred_at: new Date(event.time).toISOString(),
@@ -438,6 +449,10 @@ export class PersonaRuntime {
     const state = await this.attachAgent(agent); await this.#waitCaptures(agent); await state.queue
     if ((await state.fence.authorize({ seal: false })).status !== 'confirmed') return { memory: '', growth: '' }
     check(signal); check(state.controller.signal); await this.state.refresh()
+    if (state.surface) {
+      state.lastSurfaceCleanup = state.surface.clean({ signal })
+      if (state.lastSurfaceCleanup.unknown_count) throw new MemoryError('INJECTED_SURFACE_UNVERIFIED', '这段会话中的旧记忆无法安全核验，请新建会话后继续。')
+    }
     const ctx = this.#context(state.sessionId)
     const memoryArgs = { query: state.lastQuery, maxChars: bounded(this.#options.maxContextChars, 2400, 2400), signal }
     const filters = await this.#readFilters(state, memoryArgs, ctx, signal)
@@ -464,10 +479,12 @@ export class PersonaRuntime {
     const external = filters.lease.recordIds.some((id) => memory.record_ids?.includes(id))
     state.cache = { memory: memory.context ?? '', growth: growth.traits?.length ? growth.context ?? '' : '', external, isCurrent: fingerprint,
       authorityCurrent: () => { try { return digest(readFileSync(selfHead)) === selfHeadHash } catch { return false } } }
-    for (const [name, text] of [[external ? 'whale-soul:owner-reviewed-memory' : 'whale-soul:memory', state.cache.memory], ['whale-soul:growth', state.cache.growth]]) {
+    for (const [name, text] of [[external ? 'whale-soul:owner-reviewed-memory' : 'whale-soul:memory', state.cache.memory], ['whale-soul:growth', state.cache.growth],
+      ['whale-soul:memory-operation', this.operationContextFor(agent)]]) {
       if (!text) continue
       state.injectedSnapshots.set(digest({ name, text }), { name, text,
-        isCurrent: () => state.cache?.authorityCurrent?.() === true && fingerprint() })
+        isCurrent: () => state.cache?.authorityCurrent?.() === true && fingerprint() &&
+          (name !== 'whale-soul:memory-operation' || this.operationContextFor(agent) === text) })
       while (state.injectedSnapshots.size > 64) state.injectedSnapshots.delete(state.injectedSnapshots.keys().next().value)
     }
     return this.contextFor(agent)
@@ -497,7 +514,15 @@ export class PersonaRuntime {
     }
     if (!state.requestSnapshots.get(request).every(({ message, section, issued }) =>
       message.source.sections.includes(section) && section.name === issued.name && section.text === issued.text && issued.isCurrent())) throw new MemoryError('INJECTED_CONTEXT_REVOKED')
+    if (state.surface && !state.surfaceBoundRequests.has(request)) {
+      state.surface.bind(request, state.requestSnapshots.get(request).map(({ message, section, issued }) => ({ message, section, isCurrent: issued.isCurrent })))
+      state.surfaceBoundRequests.add(request)
+    }
     return true
+  }
+  surfaceStatusFor(agent) {
+    const state = this.#agents.get(agent)
+    return Object.freeze({ enabled: Boolean(state?.surface), ...(state?.surface?.status() ?? {}), last_cleanup: state?.lastSurfaceCleanup ?? null })
   }
   /** Compatibility alias for the earlier owner-quotation host extension. */
   assertMemoryRequestCurrent(agent, request) {
@@ -637,7 +662,7 @@ export class PersonaRuntime {
   detachAgent(agent) {
     const state = this.#agents.get(agent)
     if (!state) return Promise.resolve()
-    state.controller.abort(); state.job?.controller.abort(); clearTimeout(state.timer)
+    state.controller.abort(); state.job?.controller.abort(); clearTimeout(state.timer); state.surface?.dispose()
     state.fence.dispose(); state.ownedObserver?.dispose()
     state.cache = null; state.latest = null; state.operation = null; state.lastQuery = ''; state.inboxSources.clear()
     this.#sessions.delete(state.sessionId); this.#agents.delete(agent)
