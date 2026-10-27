@@ -126,6 +126,33 @@ export class PersonaGrowth {
       counterevidence_resolved: counterevidence.length === 0 || verdict.counterevidence_resolved === true }
   }
 
+  #validateMerges(bindings, targetId) {
+    if (bindings === undefined) return
+    if (!Array.isArray(bindings) || bindings.length > 20 || new Set(bindings.map((entry) => entry?.proposal_id)).size !== bindings.length) throw new MemoryError('INVALID_GROWTH_MERGE')
+    for (const binding of bindings) {
+      assertOnly(binding, ['proposal_id', 'expected_revision'])
+      assertId(binding.proposal_id)
+      if (binding.proposal_id === targetId || !Number.isSafeInteger(binding.expected_revision) || binding.expected_revision < 1) throw new MemoryError('INVALID_GROWTH_MERGE')
+    }
+  }
+
+  #mergeChanges(bindings, manifest, target, refs, counterRefs) {
+    const changes = [], ids = []
+    for (const binding of bindings ?? []) {
+      const source = this.#checkedFile('proposals', binding.proposal_id, manifest)
+      if (source.revision !== binding.expected_revision) throw new MemoryError('GROWTH_REVISION_CONFLICT')
+      if (source.state !== 'candidate' || source.core_version !== this.#core.version) throw new MemoryError('INVALID_GROWTH_MERGE')
+      if (source.evidence_refs.some((id) => !refs.includes(id)) || source.counterevidence_refs.some((id) => !counterRefs.includes(id))) throw new MemoryError('GROWTH_MERGE_EVIDENCE_REQUIRED')
+      // Retain the candidate's complete original text and sources. The managed
+      // receipt links this inactive entry to the target revision atomically.
+      const next = { ...source, state: 'retired', revision: source.revision + 1, updated_at: new Date(this.#clock()).toISOString() }
+      manifest.proposals[source.proposal_id] = digest(next)
+      changes.push({ path: `${this.#base()}/proposals/${source.proposal_id}.json`, data: json(next) })
+      ids.push(source.proposal_id)
+    }
+    return { changes, receipt: ids.length ? { merged_proposal_ids: ids, merge_target: target } : {} }
+  }
+
   async proposeGrowth(args, context) {
     const operationId = args?.operation_id ?? randomUUID()
     try {
@@ -178,8 +205,9 @@ export class PersonaGrowth {
     const operationId = args?.operation_id ?? randomUUID()
     try {
       this.#authorize(context, 'self.evaluate')
-      assertOnly(args, ['operation_id', 'proposal_id', 'maintenance_id', 'expected_revision', 'evidence_refs', 'counterevidence_refs'])
+      assertOnly(args, ['operation_id', 'proposal_id', 'maintenance_id', 'expected_revision', 'evidence_refs', 'counterevidence_refs', 'merge_candidates'])
       assertId(args.proposal_id); assertId(args.maintenance_id)
+      this.#validateMerges(args.merge_candidates, args.proposal_id)
       const completed = await this.#completed(operationId, { action: 'evaluateGrowth', args, ...this.#identity }, context, 'self.evaluate')
       if (completed) return completed
       if (!Number.isSafeInteger(args.expected_revision) || args.expected_revision < 1) throw new MemoryError('EXPECTED_REVISION_REQUIRED')
@@ -241,7 +269,8 @@ export class PersonaGrowth {
         else if (assessment.confidence >= this.#minimumConfidence && uniqueEvents.size >= requirements.independent_events && sessions.size >= requirements.sessions && maintenanceRefs.length >= requirements.subsequent_maintenance) state = 'stable'
         const next = { ...proposal, state, revision: proposal.revision + 1, evidence_refs: refs,
           counterevidence_refs: counterRefs, maintenance_refs: maintenanceRefs, assessment, updated_at: new Date(this.#clock()).toISOString() }
-        const changes = [{ path: `${this.#base()}/proposals/${args.proposal_id}.json`, data: json(next) }]
+        const merged = this.#mergeChanges(args.merge_candidates, manifest, { kind: 'proposal', id: proposal.proposal_id, revision: next.revision }, refs, counterRefs)
+        const changes = [...merged.changes, { path: `${this.#base()}/proposals/${args.proposal_id}.json`, data: json(next) }]
         if (state === 'stable') {
           const previous = manifest.traits[proposal.trait_id] ? this.#checkedFile('traits', proposal.trait_id, manifest) : null
           if ((previous?.revision ?? 0) !== proposal.expected_trait_revision) throw new MemoryError('GROWTH_REVISION_CONFLICT')
@@ -257,7 +286,7 @@ export class PersonaGrowth {
         manifest.proposals[args.proposal_id] = digest(next)
         manifest.maintenance[args.maintenance_id] = evaluated.map((entry) => entry === attempt ? { ...entry, state: 'completed' } : entry)
         return { changes: this.#changes(manifest, spaceManifest, changes), result: result(state, state === 'stable' ? 'SUPPORTED_GROWTH' : state === 'disputed' ? 'REQUIRES_REVIEW' : 'MORE_SUPPORT_REQUIRED',
-          { proposal_id: args.proposal_id, trait_id: proposal.trait_id, revision: next.revision }) }
+          { proposal_id: args.proposal_id, trait_id: proposal.trait_id, revision: next.revision, ...merged.receipt }) }
       }, this.#hostContext(context), { authorize: () => this.#authorize(context, 'self.evaluate') })
     } catch (error) { return failure(error, operationId) }
   }
@@ -273,8 +302,9 @@ export class PersonaGrowth {
     const operationId = args?.operation_id ?? randomUUID()
     try {
       this.#authorize(context, 'self.evaluate')
-      assertOnly(args, ['operation_id', 'trait_id', 'expected_revision', 'maintenance_id', 'evidence_refs', 'counterevidence_refs', 'action'])
+      assertOnly(args, ['operation_id', 'trait_id', 'expected_revision', 'maintenance_id', 'evidence_refs', 'counterevidence_refs', 'action', 'merge_candidates'])
       assertId(args.trait_id); assertId(args.maintenance_id)
+      this.#validateMerges(args.merge_candidates, args.trait_id)
       if (!['reassess', 'retire'].includes(args.action ?? 'reassess')) throw new MemoryError('INVALID_GROWTH_ACTION')
       if (!Number.isSafeInteger(args.expected_revision) || args.expected_revision < 1) throw new MemoryError('EXPECTED_REVISION_REQUIRED')
       const completed = await this.#completed(operationId, { action: 'reviewTrait', args, ...this.#identity }, context, 'self.evaluate')
@@ -334,13 +364,15 @@ export class PersonaGrowth {
         const next = { ...trait, state, revision: trait.revision + 1, evidence_refs: refs, counterevidence_refs: counterRefs,
           review_maintenance_refs: reviewRefs, assessment, unresolved_counterevidence: !assessment.counterevidence_resolved,
           updated_at: new Date(this.#clock()).toISOString(), supersedes_revision: trait.revision }
+        const merged = this.#mergeChanges(args.merge_candidates, manifest, { kind: 'trait', id: trait.trait_id, revision: next.revision }, refs, counterRefs)
         this.#authorize(context, 'self.evaluate')
         manifest.traits[trait.trait_id] = digest(next)
         manifest.maintenance[args.maintenance_id] = attempts.map((entry) => entry === attempt ? { ...entry, state: 'completed' } : entry)
         return { changes: this.#changes(manifest, spaceManifest, [
+          ...merged.changes,
           { path: `${this.#base()}/history/${trait.trait_id}/${trait.revision}.json`, data: json(trait) },
           { path: `${this.#base()}/traits/${trait.trait_id}.json`, data: json(next) },
-        ]), result: result(state, state === 'retired' ? 'SUPPORTED_RETIREMENT' : state === 'disputed' ? 'REQUIRES_REVIEW' : 'REVIEW_RECORDED', { trait_id: trait.trait_id, revision: next.revision }) }
+        ]), result: result(state, state === 'retired' ? 'SUPPORTED_RETIREMENT' : state === 'disputed' ? 'REQUIRES_REVIEW' : 'REVIEW_RECORDED', { trait_id: trait.trait_id, revision: next.revision, ...merged.receipt }) }
       }, this.#hostContext(context), { authorize: () => this.#authorize(context, 'self.evaluate') })
     } catch (error) { return failure(error, operationId) }
   }

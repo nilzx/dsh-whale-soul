@@ -698,11 +698,18 @@ export class PersonaRuntime {
       const tasks = []
       for (const raw of reflected.proposals.slice(0, 20)) {
         const proposal = { ...raw, scope: raw.scope.trim(), value: raw.value.trim() }
-        const candidate = candidates.find((item) => item.dimension === proposal.dimension && item.scope === proposal.scope && item.value === proposal.value)
-        const trait = traits.find((item) => item.dimension === proposal.dimension && item.scope === proposal.scope)
+        const candidate = proposal.existing_target?.kind === 'trait' ? null : candidates.find((item) => proposal.existing_target?.kind === 'candidate'
+          ? item.proposal_id === proposal.existing_target.id : item.dimension === proposal.dimension && item.scope === proposal.scope && item.value === proposal.value)
+        const trait = traits.find((item) => proposal.existing_target?.kind === 'trait' ? item.trait_id === proposal.existing_target.id : item.dimension === proposal.dimension && item.scope === proposal.scope)
+        if (proposal.existing_target && !(proposal.existing_target.kind === 'trait' ? trait : candidate)) throw new MemoryError('REFLECTION_UNKNOWN_TARGET')
+        const merging = (proposal.merge_candidates ?? []).map((binding) => {
+          const source = candidates.find((item) => item.proposal_id === binding.proposal_id && item.revision === binding.expected_revision)
+          if (!source || source.proposal_id === candidate?.proposal_id) throw new MemoryError('REFLECTION_INVALID_MERGE')
+          return source
+        })
         const previous = candidate ?? (trait?.value === proposal.value ? trait : null)
-        const refs = union(previous?.evidence_refs ?? [], proposal.evidence_refs)
-        const counterRefs = union(previous?.counterevidence_refs ?? trait?.counterevidence_refs ?? [], proposal.counterevidence_refs)
+        const refs = union(previous?.evidence_refs ?? [], proposal.evidence_refs, ...merging.map((item) => item.evidence_refs))
+        const counterRefs = union(previous?.counterevidence_refs ?? trait?.counterevidence_refs ?? [], proposal.counterevidence_refs, ...merging.map((item) => item.counterevidence_refs))
         const assessment = { core: this.core, proposal: previous ?? { dimension: proposal.dimension, scope: proposal.scope.trim(), value: proposal.value.trim() },
           evidence: refs.map((ref) => this.state.resolveEvidence(ref)), counterevidence: counterRefs.map((ref) => this.state.resolveEvidence(ref)) }
         const key = digest(projectGrowthAssessmentInput(assessment))
@@ -717,7 +724,8 @@ export class PersonaRuntime {
       const results = []
       for (const task of tasks) {
         check(controller.signal)
-        const base = { evidence_refs: task.refs, counterevidence_refs: task.counterRefs }
+        const base = { evidence_refs: task.refs, counterevidence_refs: task.counterRefs,
+          ...(task.proposal.merge_candidates?.length ? { merge_candidates: task.proposal.merge_candidates } : {}) }
         if (task.candidate) results.push(await state.growth.evaluateGrowth({ ...base, proposal_id: task.candidate.proposal_id,
           expected_revision: task.candidate.revision, maintenance_id: id }, ctx))
         else if (task.trait?.value === task.proposal.value) results.push(await state.growth.reviewTrait({ ...base,
