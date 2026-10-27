@@ -490,12 +490,13 @@ export class PersonaRuntime {
     const external = filters.lease.recordIds.some((id) => memory.record_ids?.includes(id))
     state.cache = { memory: memory.context ?? '', growth: growth.traits?.length ? growth.context ?? '' : '', external, isCurrent: fingerprint,
       authorityCurrent: () => { try { return digest(readFileSync(selfHead)) === selfHeadHash } catch { return false } } }
+    const operationEpoch = state.operation?.epoch
     for (const [name, text] of [[external ? 'whale-soul:owner-reviewed-memory' : 'whale-soul:memory', state.cache.memory], ['whale-soul:growth', state.cache.growth],
       ['whale-soul:memory-operation', this.operationContextFor(agent)]]) {
       if (!text) continue
       state.injectedSnapshots.set(digest({ name, text }), { name, text,
         isCurrent: () => state.cache?.authorityCurrent?.() === true && fingerprint() &&
-          (name !== 'whale-soul:memory-operation' || this.operationContextFor(agent) === text) })
+          (name !== 'whale-soul:memory-operation' || state.operation?.epoch === operationEpoch && this.operationContextFor(agent) === text) })
       while (state.injectedSnapshots.size > 64) state.injectedSnapshots.delete(state.injectedSnapshots.keys().next().value)
     }
     return this.contextFor(agent)
