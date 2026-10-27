@@ -45,6 +45,8 @@
               checkIntervalMs: 900000
               idleMs: 300000
           # Optional, one-way body bridge; a no-op when no companion answers.
+          - id: whale-soul-context-usage
+            name: 'dsh-whale-soul/context-usage'
           - id: whale-soul-body
             name: 'dsh-whale-soul/body'
             config:
@@ -133,6 +135,8 @@
               automaticCold: false
               checkIntervalMs: 900000
               idleMs: 300000
+          - id: whale-soul-context-usage
+            name: 'dsh-whale-soul/context-usage'
           - id: whale-soul-body
             name: 'dsh-whale-soul/body'
             config:

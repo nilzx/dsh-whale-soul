@@ -25,7 +25,8 @@
     "./client": "./src/client.js",
     "./persona": "./src/persona/plugin.js",
     "./memory": "./src/memory/v2/index.js",
-    "./memory-provider": "./src/memory/provider-plugin.js"
+    "./memory-provider": "./src/memory/provider-plugin.js",
+    "./context-usage": "./src/context-usage.js"
   },
   "files": [
     "src",
@@ -102,7 +103,9 @@
     "@deepseek-ai/dsh-tool-fs": ">=0.2.1-rc.3 <0.3.0",
     "@deepseek-ai/dsh-tool-bash": ">=0.2.1-rc.3 <0.3.0",
     "@deepseek-ai/dsh-tool-fs-search": ">=0.2.1-rc.3 <0.3.0",
-    "zod": ">=4.4.3 <5"
+    "zod": ">=4.4.3 <5",
+    "@deepseek-ai/dsh-token-meter": ">=0.2.1-rc.3 <0.3.0",
+    "@deepseek-ai/dsh-commands": ">=0.2.1-rc.3 <0.3.0"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/cordis": {
@@ -154,6 +157,12 @@
       "optional": true
     },
     "zod": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-token-meter": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-commands": {
       "optional": true
     }
   }

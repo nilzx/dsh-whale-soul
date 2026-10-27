@@ -51,6 +51,7 @@ After installation, start a new session and choose **Whale Chan** (shown as **é²
 - Choose **Whale Chan** and chat normally. She can still do normal Agent work: files, shell, web, schedules, skills, and so on.
 - Configure `individualKey` on the persona plugin row to keep separate named individuals in one memory space. Omit it or use `default` to continue the original individual. [Individual identity](docs/individuals.md) explains Session switching and recovery.
 - Configure `stabilityMode` on the `dsh-whale-soul/persona` plugin row. [Stability rules](docs/stability.md) describe the four modes and persistent maturity.
+- Run `/whale-context en` to inspect Whale Soul's estimated share of the current retained context, split into persona core, growth, memory/recall, runtime hints and tools. Both whole-context and within-Whale percentages are shown. The local command makes no model call and does not add its output to model context or memory; counts use DSH's heuristic and are not billing tokens.
 - Read [self integrity and owner upgrades](docs/self-integrity.md) before moving an older memory root to API 1.3. Unanchored 1.1 growth remains opaque; a 1.2 source must retain its trusted self anchors, and missing anchors are rejected. See [lifecycle and deeper recall](docs/lifecycle.md) for the writer floor and cold-memory boundaries.
 - Use the [local management CLI](docs/management.md) for owner operations. V2 rejects integrity-breaking direct edits; external-change review and the full memory lifecycle are still under implementation.
 
