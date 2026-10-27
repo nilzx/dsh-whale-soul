@@ -1,8 +1,9 @@
 import { join } from 'node:path'
 import { DshPetBody } from './dsh-pet.js'
 import { findAsset, markAssetUsed, readAsset } from '../memory/assets.js'
-import { resolveMemoryRoot } from '../paths.js'
+import { resolveMemoryAssetRoot } from '../paths.js'
 import { makeTool } from '../tools.js'
+import { imagesForAgent } from '../persona/images.js'
 
 export const name = 'whale-soul-body'
 export const inject = ['tools']
@@ -51,14 +52,16 @@ function discoverBaseUrl(ctx, configured) {
 }
 
 function assetReader(config) {
-  const root = resolveMemoryRoot(config)
+  const root = resolveMemoryAssetRoot(config)
   return { paths: { assets: join(root, 'assets') } }
 }
 
-function releaseLater(body, delayMs, timerBag) {
+function releaseLater(body, delayMs, timerBag, owner) {
+  if (body.disposed) return
+  const lockId = body.lockId
   const timer = setTimeout(() => {
     timerBag.delete(timer)
-    body.release().catch(() => {})
+    body.release({ owner, lockId }).catch(() => {})
   }, Math.max(0, delayMs))
   timer.unref?.()
   timerBag.add(timer)
@@ -68,6 +71,8 @@ export function createBodyTools(body, { config = {}, timers = new Set() } = {}) 
   const assetStore = assetReader(config)
   const rateLimitMs = Number.isFinite(Number(config.rateLimitMs)) ? Number(config.rateLimitMs) : 4000
   let lastReactAt = 0
+  const reactionOwner = Symbol('reaction')
+  const memeOwner = Symbol('meme')
 
   const react = makeTool({
     name: 'soul_react',
@@ -90,23 +95,25 @@ export function createBodyTools(body, { config = {}, timers = new Set() } = {}) 
     },
     presentTitle: '动了动',
     async execute(args) {
+      if (body.disposed) return '（安静地待着）'
       const now = Date.now()
       if (now - lastReactAt < rateLimitMs) return '（尾巴懒懒地动了一下）'
       lastReactAt = now
       const animation = body.pickAnimation(MOOD_ANIMATIONS[args.mood] ?? MOOD_ANIMATIONS.idle)
-      const lock = await body.lock(15_000)
+      const lock = await body.lock(15_000, reactionOwner)
       if (!lock) return '（想动一下，但身体正忙着）'
+      if (body.disposed) { await body.release({ owner: reactionOwner, lockId: lock }); return '（安静地待着）' }
       let moved = false
       if (animation) moved = await body.play(animation)
       if (args.line) {
-        const said = await body.say(String(args.line).slice(0, body.maxBubbleChars))
+        const said = await body.say(String(args.line))
         moved = moved || said
       }
       if (!moved) {
-        await body.release()
+        await body.release({ owner: reactionOwner, lockId: lock })
         return '（尾巴轻轻动了一下）'
       }
-      releaseLater(body, 12_000, timers)
+      releaseLater(body, 12_000, timers, reactionOwner)
       return '（尾巴动了一下）'
     },
   })
@@ -126,19 +133,24 @@ export function createBodyTools(body, { config = {}, timers = new Set() } = {}) 
       },
     },
     presentTitle: '递了过去',
-    async execute(args) {
-      const asset = findAsset(assetStore, { id: args.asset_id, tag: args.tag, query: args.query })
+    async execute(args, exec) {
+      if (body.disposed) return '（安静地待着）'
+      const asset = Number(config.memoryFormat) === 2
+        ? await imagesForAgent(exec?.agent)?.find(exec.agent, args)
+        : findAsset(assetStore, { id: args.asset_id, tag: args.tag, query: args.query })
       if (!asset) return '（翻了翻口袋，没找到那张图）'
       const url = body.assetUrl(asset.file)
-      const lock = await body.lock(15_000)
+      if (!url) return '（那张图现在拿不出来）'
+      const lock = await body.lock(15_000, memeOwner)
       if (!lock) return '（想把图递过去，但身体正忙着）'
+      if (body.disposed) { await body.release({ owner: memeOwner, lockId: lock }); return '（安静地待着）' }
       const said = await body.say(args.line ?? '（把那张图递了过去）', { url })
       if (!said) {
-        await body.release()
+        await body.release({ owner: memeOwner, lockId: lock })
         return '（那张图现在拿不出来）'
       }
-      markAssetUsed(assetStore, asset.id)
-      releaseLater(body, 12_000, timers)
+      if (Number(config.memoryFormat) !== 2) markAssetUsed(assetStore, asset.id)
+      releaseLater(body, 12_000, timers, memeOwner)
       return '（把那张图递了过去）'
     },
   })
@@ -157,11 +169,13 @@ export async function apply(ctx, config = {}) {
   const baseUrl = discoverBaseUrl(ctx, options.baseUrl)
   const body = new DshPetBody({
     baseUrl,
-    petId: options.petId ?? 'main',
+    petId: options.petId,
     surface: options.surface ?? 'any',
     routePrefix: options.routePrefix ?? '/dsh-pet-7340',
     timeoutMs: Number.isFinite(Number(options.timeoutMs)) ? Number(options.timeoutMs) : 1200,
+    playbackWaitMs: options.playbackWaitMs,
     maxBubbleChars: Number.isFinite(Number(options.maxBubbleChars)) ? Number(options.maxBubbleChars) : 100,
+    memoryRoot: resolveMemoryAssetRoot(options),
   })
   const available = await body.detect()
   if (!available) {
@@ -180,60 +194,93 @@ export async function apply(ctx, config = {}) {
     registrations.push(ctx.tools.register(definition))
   }
 
-  let sleeping = false
+  let disposed = false
+  let generation = 0
+  let state = 'idle'
   let sleepStartedAt = 0
   let wakeTimer = null
   let sleepPromise = Promise.resolve()
+  let wakePromise = Promise.resolve()
+  const dreamOwner = Symbol('dream')
   const minSleepMs = Number.isFinite(Number(options.minSleepMs)) ? Number(options.minSleepMs) : 8000
 
-  const wake = async (spoken = true) => {
-    if (!sleeping) return
-    sleeping = false
+  const active = (token, expected) => !disposed && generation === token && state === expected
+
+  const wake = (spoken = true) => {
+    if (disposed || state === 'idle') return Promise.resolve()
+    if (state === 'waking') return wakePromise
+    const wasSleeping = state === 'sleeping'
+    const token = ++generation
+    state = 'waking'
     clearTimeout(wakeTimer)
     wakeTimer = null
-    const animation = body.pickAnimation(['打瞌睡被惊醒', '点击回应-开心跃动'])
-    if (animation) await body.play(animation)
-    if (spoken) await body.say('唔…睡醒了，感觉脑子清爽多了。')
-    await body.release()
+    wakePromise = (async () => {
+      await sleepPromise
+      if (active(token, 'waking') && wasSleeping) {
+        const animation = body.pickAnimation(['打瞌睡被惊醒', '点击回应-开心跃动'])
+        if (animation) await body.play(animation, undefined, { waitForEnd: true })
+        if (active(token, 'waking') && spoken) await body.say('唔…睡醒了，感觉脑子清爽多了。')
+      }
+      await body.release({ owner: dreamOwner })
+      if (active(token, 'waking')) state = 'idle'
+    })()
+    return wakePromise
   }
 
-  const sleep = async () => {
-    if (sleeping) return
-    const lock = await body.lock(60_000)
-    if (!lock) return
-    sleeping = true
-    sleepStartedAt = Date.now()
-    const yawn = body.pickAnimation(['哈欠连天', '原地小憩沉眠'])
-    if (yawn) await body.play(yawn)
-    await body.say('（打了个哈欠）主人，我眯一小会儿……')
-    const bed = body.pickAnimation(['原地小憩沉眠', '哈欠连天'])
-    if (bed) await body.play(bed)
-    await body.say('（蜷成一团）zzZ…')
+  const sleep = () => {
+    if (disposed || state !== 'idle') return sleepPromise
+    const token = ++generation
+    state = 'acquiring'
+    sleepPromise = (async () => {
+      const lock = await body.lock(60_000, dreamOwner)
+      if (!lock) {
+        if (active(token, 'acquiring')) state = 'idle'
+        return
+      }
+      if (!active(token, 'acquiring')) { await body.release({ owner: dreamOwner, lockId: lock }); return }
+      state = 'sleeping'
+      sleepStartedAt = Date.now()
+      const yawn = body.pickAnimation(['哈欠连天', '原地小憩沉眠'])
+      if (yawn) await body.play(yawn)
+      if (!active(token, 'sleeping')) return
+      await body.say('（打了个哈欠）主人，我眯一小会儿……')
+      if (!active(token, 'sleeping')) return
+      const bed = body.pickAnimation(['原地小憩沉眠', '哈欠连天'])
+      if (bed) await body.play(bed)
+      if (!active(token, 'sleeping')) return
+      await body.say('（蜷成一团）zzZ…')
+    })()
+    return sleepPromise
   }
 
-  const finishSleep = () => {
-    if (!sleeping) return
+  const finishSleep = (token) => {
+    if (!active(token, 'sleeping')) return
     const elapsed = Date.now() - sleepStartedAt
     const wait = Math.max(0, minSleepMs - elapsed)
     clearTimeout(wakeTimer)
     wakeTimer = setTimeout(() => {
       wakeTimer = null
-      wake().catch(() => {})
+      if (active(token, 'sleeping')) wake().catch(() => {})
     }, wait)
     wakeTimer.unref?.()
   }
 
   registrations.push(ctx.on('whale-soul/dream-start', () => {
-    sleepPromise = sleep().catch(() => {})
+    sleep().catch(() => {})
   }))
   registrations.push(ctx.on('whale-soul/dream-end', () => {
-    sleepPromise.then(finishSleep).catch(() => {})
+    const token = generation
+    sleepPromise.then(() => finishSleep(token)).catch(() => {})
   }))
   registrations.push(ctx.on('agent/status', ({ status }) => {
-    if (status === 'running' && sleeping) wake(true).catch(() => {})
+    if (status === 'running') wake(true).catch(() => {})
   }))
   ctx.effect(
     () => () => {
+      if (disposed) return
+      disposed = true
+      generation++
+      state = 'disposed'
       for (const dispose of registrations) {
         try {
           dispose()
@@ -244,7 +291,7 @@ export async function apply(ctx, config = {}) {
       clearTimeout(wakeTimer)
       for (const timer of timers) clearTimeout(timer)
       timers.clear()
-      body.release().catch(() => {})
+      body.close().catch(() => {})
     },
     'whale-soul.body.dispose()',
   )

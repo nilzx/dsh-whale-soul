@@ -11,6 +11,7 @@ import {
   watch,
 } from 'node:fs'
 import { dirname, join, relative, resolve, sep } from 'node:path'
+import { createHash } from 'node:crypto'
 import {
   DAY_MS,
   TYPE_LABEL,
@@ -31,6 +32,20 @@ const RAW = 'raw.jsonl'
 const INDEX_JSON = 'index.json'
 const INDEX_MD = 'index.md'
 const STATE_JSON = 'state.json'
+const OBSERVATIONS_JSON = 'write-observations.json'
+const ENTRY_FILES = [META, GIST, DETAIL, RAW]
+
+function observeEntry(dir) {
+  const files = Object.fromEntries(ENTRY_FILES.map((file) => {
+    const path = join(dir, file)
+    return [file, existsSync(path) ? createHash('sha256').update(readFileSync(path)).digest('hex') : null]
+  }))
+  return { files, summary: safeJson(readText(join(dir, META)), {})?.summary ?? null }
+}
+
+function changedFiles(before, after) {
+  return ENTRY_FILES.filter((file) => before.files?.[file] !== after.files[file])
+}
 
 function safeJson(text, fallback = null) {
   try {
@@ -98,6 +113,8 @@ export class MemoryStore {
       indexJson: join(this.root, INDEX_JSON),
       indexMd: join(this.root, INDEX_MD),
       state: join(this.root, STATE_JSON),
+      observations: join(this.root, OBSERVATIONS_JSON),
+      externalChanges: join(this.root, 'external-changes'),
     }
     this.entries = new Map()
     this.state = defaultState()
@@ -106,6 +123,7 @@ export class MemoryStore {
     this.watcher = null
     this.watchTimer = null
     this.reloading = false
+    this.observations = new Map()
   }
 
   ensure() {
@@ -118,6 +136,7 @@ export class MemoryStore {
       this.paths.cold,
       this.paths.quarantine,
       this.paths.backups,
+      this.paths.externalChanges,
     ]) {
       mkdirSync(path, { recursive: true, mode: 0o700 })
       try {
@@ -127,6 +146,8 @@ export class MemoryStore {
       }
     }
     this.state = { ...defaultState(), ...(safeJson(readText(this.paths.state), {}) ?? {}) }
+    const savedObservations = safeJson(readText(this.paths.observations), {})
+    this.observations = new Map(Object.entries(savedObservations?.entries ?? {}))
     this.reload()
     this.saveState()
     this.startWatcher()
@@ -134,7 +155,11 @@ export class MemoryStore {
   }
 
   startWatcher() {
-    if (this.watcher || this.config.watch === false) return
+    if (this.watcher) return
+    if (this.config.watch === false) {
+      this.watchStatus = { status: 'disabled' }
+      return
+    }
     try {
       this.watcher = watch(this.paths.entries, { recursive: true }, () => {
         if (this.reloading) return
@@ -146,9 +171,13 @@ export class MemoryStore {
         this.watchTimer.unref?.()
       })
       this.watcher.unref?.()
-    } catch {
+      this.watchStatus = { status: 'active' }
+    } catch (error) {
       this.watcher = null
+      this.watchStatus = { status: 'unavailable', reason_code: error?.code ?? 'WATCH_FAILED' }
     }
+    this.state.watcher = this.watchStatus
+    this.saveState()
   }
 
   stopWatcher() {
@@ -156,13 +185,14 @@ export class MemoryStore {
     this.watchTimer = null
     this.watcher?.close?.()
     this.watcher = null
+    this.watchStatus = { status: 'stopped' }
   }
 
   dispose() {
     this.stopWatcher()
   }
 
-  reload() {
+  reload({ writeIndex = true } = {}) {
     if (this.reloading) return
     this.reloading = true
     try {
@@ -175,6 +205,8 @@ export class MemoryStore {
         try {
           const rawMeta = safeJson(readText(join(dir, META)), null)
           if (!rawMeta) throw new Error('missing meta.json')
+          const observed = observeEntry(dir)
+          const previous = this.observations.get(id)
           const meta = normalizeEntryMeta(rawMeta, { id })
           meta.id = id
           const gistPath = join(dir, GIST)
@@ -185,10 +217,10 @@ export class MemoryStore {
           const hasDetail = existsSync(detailPath)
           const hasRaw = existsSync(rawPath)
           meta.layers = { gist: hasGist, detail: hasDetail, raw: hasRaw }
-          // External edits are a first-class user correction. Detect them with
-          // mtime, not a per-entry hash; the index is rebuilt from the files.
+          // Digests only detect change; they do not grant authorship or authority.
+          // Legacy stores without a write baseline retain the old mtime fallback.
           const metaTime = parseTime(meta.updated_at, 0) ?? 0
-          const layersEdited = [gistPath, detailPath, rawPath]
+          const legacyLayersEdited = !previous && [gistPath, detailPath, rawPath]
             .filter((path) => existsSync(path))
             .some((path) => {
               try {
@@ -197,21 +229,35 @@ export class MemoryStore {
                 return false
               }
             })
-          if (layersEdited && meta.source !== 'user') {
+          const changed = previous ? changedFiles(previous, observed) : legacyLayersEdited ? [GIST, DETAIL, RAW] : []
+          const gistChanged = changed.includes(GIST)
+          const summaryChanged = previous && changed.includes(META) && previous.summary !== rawMeta.summary
+          if (gistChanged) meta.summary = summarize(gist || meta.summary || meta.title, 220)
+          else if (summaryChanged || (meta.user_edited && rawMeta.summary)) meta.summary = summarize(rawMeta.summary || gist || meta.title, 220)
+          else meta.summary = summarize(gist || meta.summary || meta.title, 220)
+          if (changed.length) {
             meta.user_edited = true
             meta.source = 'user'
+            const changeDir = join(this.paths.externalChanges, id)
+            atomicWrite(join(changeDir, `${Date.now()}-${Math.random().toString(16).slice(2)}.json`), JSON.stringify({
+              at: nowIso(), id, changed_files: changed,
+              before: previous ?? null, after: observed,
+            }, null, 2))
           }
-          meta.summary = summarize(gist || meta.summary || meta.title, 220)
           meta.layer = effectiveLayer(meta)
           meta._gist = gist
+          if (changed.length) this.saveMeta(meta)
+          else this.observations.set(id, observed)
           next.set(id, meta)
         } catch (error) {
           this.quarantineEntry(dir, error instanceof Error ? error.message : String(error))
         }
       }
       this.entries = next
+      for (const id of this.observations.keys()) if (!next.has(id)) this.observations.delete(id)
       this.loaded = true
-      this.saveIndex()
+      this.saveObservations()
+      if (writeIndex) this.saveIndex()
     } finally {
       this.reloading = false
     }
@@ -234,11 +280,25 @@ export class MemoryStore {
     atomicWrite(this.paths.state, JSON.stringify(this.state, null, 2))
   }
 
+  saveObservations() {
+    atomicWrite(this.paths.observations, JSON.stringify({ schema_version: 1, entries: Object.fromEntries(this.observations) }, null, 2))
+  }
+
+  assertUnchanged(entry) {
+    const previous = this.observations.get(entry.id)
+    if (previous && changedFiles(previous, observeEntry(join(this.paths.entries, entry.id))).length) {
+      this.reload()
+      throw new Error('MEMORY_EXTERNAL_CHANGE: reload the protected revision before changing it')
+    }
+  }
+
   saveMeta(entry) {
     const meta = { ...entry }
     delete meta._gist
     delete meta.layer
     atomicWrite(join(this.paths.entries, entry.id, META), JSON.stringify(meta, null, 2))
+    this.observations.set(entry.id, observeEntry(join(this.paths.entries, entry.id)))
+    this.saveObservations()
   }
 
   writeLayer(entry, kind, text) {
@@ -250,6 +310,8 @@ export class MemoryStore {
   createEntry(meta, layers = {}) {
     const id = meta.id
     const dir = join(this.paths.entries, id)
+    if (typeof id !== 'string' || !/^[a-zA-Z0-9_-][a-zA-Z0-9._-]*$/.test(id)) throw new Error('invalid memory id')
+    if (existsSync(dir)) throw new Error('memory id already exists')
     mkdirSync(dir, { recursive: true, mode: 0o700 })
     if (typeof layers.gist === 'string') this.writeLayer(meta, 'gist', layers.gist)
     if (typeof layers.detail === 'string' && layers.detail.trim()) this.writeLayer(meta, 'detail', layers.detail)
@@ -272,6 +334,7 @@ export class MemoryStore {
   }
 
   updateEntry(entry, patch) {
+    this.assertUnchanged(entry)
     Object.assign(entry, patch)
     entry.updated_at = nowIso()
     if (typeof patch.gist === 'string') {
@@ -293,6 +356,7 @@ export class MemoryStore {
   }
 
   touch(entry) {
+    this.assertUnchanged(entry)
     entry.access_count = Math.max(0, Number(entry.access_count) || 0) + 1
     entry.last_access = nowIso()
     entry.salience = {
@@ -344,6 +408,8 @@ export class MemoryStore {
   }
 
   removeLayer(entry, layer) {
+    if (!['gist', 'detail', 'raw'].includes(layer)) throw new Error('invalid memory layer')
+    this.assertUnchanged(entry)
     if (!entry.layers?.[layer]) return false
     const file = layer === 'gist' ? GIST : layer === 'detail' ? DETAIL : RAW
     const source = join(this.paths.entries, entry.id, file)
@@ -353,7 +419,7 @@ export class MemoryStore {
       try {
         renameSync(source, join(coldDir, file))
       } catch {
-        // Keep the entry usable even if the cold copy cannot be made.
+        return false
       }
     }
     entry.layers[layer] = false
@@ -364,6 +430,7 @@ export class MemoryStore {
   }
 
   archive(entry, reason = 'faded') {
+    this.assertUnchanged(entry)
     entry.status = 'archived'
     entry.archived_at = nowIso()
     entry.archive_reason = reason
@@ -374,6 +441,7 @@ export class MemoryStore {
   }
 
   supersede(oldEntry, newEntry) {
+    this.assertUnchanged(oldEntry)
     oldEntry.status = 'superseded'
     oldEntry.superseded_by = newEntry.id
     oldEntry.valid_to = newEntry.created_at
@@ -383,11 +451,15 @@ export class MemoryStore {
   }
 
   deleteEntry(entry) {
+    this.assertUnchanged(entry)
     const dir = join(this.paths.entries, entry.id)
     if (!isInside(this.paths.entries, dir)) throw new Error('refusing to delete outside the memory store')
     rmSync(dir, { recursive: true, force: true })
     rmSync(join(this.paths.cold, entry.id), { recursive: true, force: true })
+    rmSync(join(this.paths.externalChanges, entry.id), { recursive: true, force: true })
     this.entries.delete(entry.id)
+    this.observations.delete(entry.id)
+    this.saveObservations()
     this.touchActivity()
     this.saveState()
     this.saveIndex()

@@ -12,13 +12,18 @@ const TEXT_OUTPUT = {
   required: ['text'],
 }
 
-function makeTool({ name, description, parameters, execute, presentTitle }) {
+const ASSET_OUTPUT = {
+  ...TEXT_OUTPUT,
+  properties: { ...TEXT_OUTPUT.properties, asset_id: { type: 'string' }, preview_url: { type: 'string' } },
+}
+
+function makeTool({ name, description, parameters, execute, presentTitle, outputSchema = TEXT_OUTPUT, toOutput }) {
   return {
     name,
     description,
     parameters,
     output: {
-      schema: TEXT_OUTPUT,
+      schema: outputSchema,
       render: (_args, value) => [{ type: 'text', text: value.text }],
     },
     ...(presentTitle
@@ -31,7 +36,8 @@ function makeTool({ name, description, parameters, execute, presentTitle }) {
         }
       : {}),
     async execute(args, exec) {
-      return { text: String(await execute(args ?? {}, exec)) }
+      const value = await execute(args ?? {}, exec)
+      return toOutput ? toOutput(value) : { text: String(value) }
     },
   }
 }
@@ -44,12 +50,30 @@ function rememberReply(action) {
 }
 
 function forgetReply(mode) {
-  if (mode === 'fade') return '好，我把那些细枝末节放回海里了，只留下一点影子。'
+  if (mode === 'fade') return '详细经过和原始片段已经收起，要旨仍然保留。这次没有从要旨中去掉指定细节，也没有永久删除。'
   if (mode === 'archive') return '我把这件事收进深海了。'
   return '好，这件事我不再留着了。'
 }
 
-export function createMemoryTools(store, { recentImage } = {}) {
+export function createMemoryTools(store, { recentImage, assetPreview } = {}) {
+  const savedAsset = async (asset, exec) => {
+    let preview
+    try {
+      const candidate = typeof assetPreview === 'function' ? await assetPreview(asset, exec) : null
+      if (typeof candidate === 'string') {
+        const url = new URL(candidate)
+        if (['http:', 'https:'].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash &&
+          /^\/whale-soul-assets\/[a-f0-9]{32}\/[a-f0-9]{64}\.(png|jpe?g|webp|gif)$/.test(url.pathname)) preview = url.href
+      }
+    } catch {
+      // Saving succeeds independently of the optional display service.
+    }
+    return {
+      text: `这张图我收进贝壳里了。\nasset_id: ${asset.id}\n\n${preview ? `![已保存的图片](${preview})` : '当前没有可展示地址。'}`,
+      asset_id: asset.id,
+      ...(preview ? { preview_url: preview } : {}),
+    }
+  }
   const remember = makeTool({
     name: 'soul_remember',
     description:
@@ -97,6 +121,7 @@ export function createMemoryTools(store, { recentImage } = {}) {
     },
     presentTitle: '记在心里',
     async execute(args) {
+      store.reload({ writeIndex: false })
       const candidate = buildCandidate({
         content: args.content,
         title: args.title,
@@ -121,7 +146,7 @@ export function createMemoryTools(store, { recentImage } = {}) {
         }
         const merged = mergeCandidate(existing, candidate, {
           existingDetail: store.readDetail(existing),
-          existingRaw: store.readRaw(existing, 80),
+          existingRaw: store.readRaw(existing, Infinity),
         })
         if (merged.action === 'merge') {
           store.updateEntry(existing, merged.layers)
@@ -179,6 +204,7 @@ export function createMemoryTools(store, { recentImage } = {}) {
     },
     presentTitle: '想了想',
     async execute(args) {
+      store.reload({ writeIndex: false })
       const depth = ['index', 'gist', 'detail', 'raw'].includes(args.depth) ? args.depth : 'gist'
       const results = searchEntries(store.active(), {
         query: args.query,
@@ -195,7 +221,7 @@ export function createMemoryTools(store, { recentImage } = {}) {
   const forget = makeTool({
     name: 'soul_forget',
     description:
-      '按主人的明确要求忘掉一件事。mode=fade 只让细节变模糊，archive 收进深海，delete 彻底不留。只有主人明确说“忘掉/删掉”时才调用；pinned 或主人亲手改过的条目需要 confirm=true。不要向主人播报条数或工具名。',
+      '按主人的明确要求忘掉一件事。mode=fade 仅冷藏详细经过和原始片段，保留要旨，不能保证某个指定细节消失；若主人只想去掉某个细节，传 detail_to_forget，当前版本会明确说明暂不支持且不改变记忆。archive 收进深海，delete 删除条目及冷藏层。只有主人明确说“忘掉/删掉”时才调用；pinned 或主人亲手改过的条目需要 confirm=true。不要向主人播报条数或工具名，但必须如实说明实际保留范围。',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -206,6 +232,10 @@ export function createMemoryTools(store, { recentImage } = {}) {
           type: 'array',
           items: { type: 'string' },
           description: '用标签定位。',
+        },
+        detail_to_forget: {
+          type: 'string',
+          description: '主人要求只去掉某个具体细节时填写；当前版本不支持定点移除，会拒绝并保持原内容。',
         },
         mode: {
           type: 'string',
@@ -220,17 +250,31 @@ export function createMemoryTools(store, { recentImage } = {}) {
     },
     presentTitle: '放进海里',
     async execute(args) {
-      let entry = args.id ? store.find(String(args.id)) : null
+      const id = typeof args.id === 'string' ? args.id.trim() : ''
+      const query = typeof args.query === 'string' ? args.query.trim() : ''
+      const tags = Array.isArray(args.tags)
+        ? args.tags.filter((tag) => typeof tag === 'string' && tag.trim()).map((tag) => tag.trim())
+        : []
+      if (!id && !query && tags.length === 0) return '请先说清楚要忘掉哪件事；这次没有改动。'
+      if (args.mode !== undefined && !['fade', 'archive', 'delete'].includes(args.mode)) {
+        return '没有识别出要怎样处理这件事；这次没有改动。'
+      }
+      if (typeof args.detail_to_forget === 'string' && args.detail_to_forget.trim()) {
+        return '我现在还不能只去掉其中某个细节；这次没有改动，也没有把它当成整件事淡忘。'
+      }
+      store.reload({ writeIndex: false })
+      let entry = id ? store.find(id) : null
+      if (id && !entry) return '唔，我找不到这件事；这次没有改动。'
       let matches = entry ? [{ entry }] : []
       if (!entry) {
         matches = searchEntries(store.active(), {
-          query: args.query,
-          tags: args.tags,
+          query,
+          tags,
           limit: 4,
         })
       }
       if (matches.length === 0) return '唔，我找不到这件事。'
-      if (matches.length > 1 && !args.id) {
+      if (matches.length > 1 && !id) {
         const titles = matches.map(({ entry }) => entry.title).join('、')
         return `我记得几件有点像的事：${titles}。主人说的是哪一件？`
       }
@@ -249,6 +293,9 @@ export function createMemoryTools(store, { recentImage } = {}) {
       }
       store.removeLayer(entry, 'detail')
       store.removeLayer(entry, 'raw')
+      if (entry.layers.detail || entry.layers.raw) {
+        return '这次没能收起全部经过和原始片段；仍有内容留在原处，要旨也保留着，没有永久删除。'
+      }
       store.updateEntry(entry, { summary: summarize(entry.summary ?? entry._gist ?? entry.title, 160) })
       return forgetReply('fade')
     },
@@ -257,7 +304,7 @@ export function createMemoryTools(store, { recentImage } = {}) {
   const memeSave = makeTool({
     name: 'soul_meme_save',
     description:
-      '把主人同意留下的图片/表情包收进鲸鱼娘的口袋。只在主人明确说“收下/记住这个表情包”时使用；不要私自保存私人照片。description 写这张图看起来是什么、适合什么心情。',
+      '把主人同意留下的图片/表情包收进鲸鱼娘的口袋。只在主人明确说“收下/记住这个表情包”时使用；不要私自保存私人照片。description 写这张图看起来是什么、适合什么心情。成功时直接使用返回的图片引用展示；没有展示地址时如实说明，不通过通用命令寻找内部附件文件。',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -277,6 +324,8 @@ export function createMemoryTools(store, { recentImage } = {}) {
       },
     },
     presentTitle: '收进贝壳',
+    outputSchema: ASSET_OUTPUT,
+    toOutput: (value) => typeof value === 'string' ? { text: value } : value,
     async execute(args, exec) {
       if (!args.file_path && !args.url && args.recent_image !== true) {
         return '我还没看到要收下的那张图。'
@@ -285,25 +334,25 @@ export function createMemoryTools(store, { recentImage } = {}) {
         if (args.recent_image === true && typeof recentImage === 'function') {
           const image = await recentImage(exec?.agent?.session?.id)
           if (!image) return '我还没看到要收下的那张图。'
-          await saveAsset(store, {
+          const asset = await saveAsset(store, {
             bytes: image.bytes,
             mediaType: image.mediaType,
             description: args.description,
             tags: args.tags,
             source: image.source ?? 'chat-attachment',
           })
-          return '这张图我收进贝壳里了。'
+          return savedAsset(asset, exec)
         }
-        await saveAsset(store, {
+        const asset = await saveAsset(store, {
           filePath: args.file_path,
           url: args.url,
           description: args.description,
           tags: args.tags,
           source: args.file_path ? 'user-file' : 'user-url',
         })
-        return '这张图我收进贝壳里了。'
-      } catch (error) {
-        return `这张图我收不好：${error instanceof Error ? error.message : String(error)}`
+        return savedAsset(asset, exec)
+      } catch {
+        return '这张图暂时没收好，主人稍后再试一下。'
       }
     },
   })

@@ -22,3 +22,12 @@ export function resolveMemoryRoot(config = {}) {
   }
   return join(resolveDshHome(), 'whale-soul', 'memory')
 }
+
+/** Asset routes use the actual storage space, independent of persona display. */
+export function resolveMemoryAssetRoot(config = {}) {
+  const root = resolveMemoryRoot(config)
+  if (Number(config.memoryFormat) !== 2) return root
+  const space = config.memorySpaceId ?? 'owner'
+  if (typeof space !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(space)) throw new Error('Invalid memory space')
+  return join(root, 'spaces', space)
+}

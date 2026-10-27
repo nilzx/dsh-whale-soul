@@ -110,9 +110,10 @@ export function retrievability(entry, now = Date.now()) {
 
 export function effectiveLayer(entry, now = Date.now()) {
   if (entry.status === 'archived') return 'archive'
+  if (entry.layers?.gist === false) return 'index'
   if (entry.pinned || entry.user_edited) return entry.layers?.gist === false ? 'index' : 'gist'
   const r = retrievability(entry, now)
-  if (r < 0.12) return 'index'
+  if (r < 0.15) return 'index'
   if (r < 0.35) return 'gist'
   return entry.layers?.detail ? 'detail' : 'gist'
 }
@@ -227,6 +228,9 @@ export function normalizeEntryMeta(raw, { id, now = nowIso() } = {}) {
     supersedes: typeof raw.supersedes === 'string' ? raw.supersedes : null,
     superseded_by: typeof raw.superseded_by === 'string' ? raw.superseded_by : null,
     canonical_key: typeof raw.canonical_key === 'string' ? raw.canonical_key : null,
+    ...Object.fromEntries(['subject_id', 'memory_space_id', 'agent_identity_id', 'persona_id']
+      .filter((key) => typeof raw[key] === 'string' && raw[key].trim())
+      .map((key) => [key, raw[key].trim()])),
     layers: {
       gist: raw.layers?.gist !== false,
       detail: raw.layers?.detail === true,

@@ -1,10 +1,10 @@
-import { existsSync, readFileSync } from 'node:fs'
-import { basename, join } from 'node:path'
 import { MemoryStore } from './store.js'
+import { registerAssetRoutes } from './asset-route.js'
 import { buildL0 } from './retrieval.js'
 import { runDream } from './decay.js'
 import { createMemoryTools } from '../tools.js'
 import { nowIso } from './schema.js'
+import { assetUrl } from './assets.js'
 
 export const name = 'whale-soul-memory'
 export const inject = ['systemPrompt', 'tools']
@@ -15,56 +15,6 @@ const DEFAULT_IDLE_MS = 5 * 60 * 1000
 function option(config, key, fallback) {
   const value = Number(config?.[key])
   return Number.isFinite(value) ? value : fallback
-}
-
-function registerAssetRoute(ctx, store) {
-  let webServer
-  try {
-    webServer = typeof ctx.get === 'function' ? ctx.get('webServer') : undefined
-  } catch {
-    webServer = undefined
-  }
-  if (!webServer || typeof webServer.register !== 'function') return null
-  try {
-    const dispose = webServer.register({
-      kind: 'prefix',
-      path: '/whale-soul-assets',
-      handler: (req, res) => {
-        try {
-          const url = new URL(req.url ?? '/', 'http://localhost')
-          const name = basename(decodeURIComponent(url.pathname))
-          if (!/^[a-f0-9]{64}\.(png|jpe?g|webp|gif)$/i.test(name)) {
-            res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
-            res.end('asset not found')
-            return
-          }
-          const path = join(store.paths.assets, name)
-          if (!existsSync(path)) {
-            res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
-            res.end('asset not found')
-            return
-          }
-          const ext = name.split('.').pop()?.toLowerCase()
-          const mime = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : ext === 'gif' ? 'image/gif' : 'image/jpeg'
-          const bytes = readFileSync(path)
-          res.writeHead(200, {
-            'content-type': mime,
-            'cache-control': 'private, max-age=86400',
-            'content-length': bytes.byteLength,
-          })
-          res.end(bytes)
-        } catch {
-          if (!res.writableEnded) {
-            res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' })
-            res.end('asset read failed')
-          }
-        }
-      },
-    })
-    return dispose
-  } catch {
-    return null
-  }
 }
 
 const runtimes = new WeakMap()
@@ -110,7 +60,21 @@ export function apply(ctx, config = {}) {
         ref,
         typeof AbortSignal?.timeout === 'function' ? AbortSignal.timeout(10_000) : undefined,
       )
-      return { bytes: stored.data, mediaType: ref.mediaType, source: 'chat-attachment' }
+      if (latestImages.get(sessionId) !== ref) return null
+      return { bytes: stored.data, mediaType: stored.ref.mediaType, source: 'chat-attachment' }
+    } catch {
+      return null
+    }
+  }
+
+  const assetPreview = (asset) => {
+    try {
+      const web = typeof ctx.get === 'function' ? ctx.get('webServer') : undefined
+      const connection = typeof ctx.get === 'function' ? ctx.get('connection') : undefined
+      if (!assetRoute.active || typeof web?.getOrigin !== 'function' || typeof connection?.admit !== 'function') return null
+      const origin = new URL(web.getOrigin())
+      if (!['http:', 'https:'].includes(origin.protocol) || origin.username || origin.password || origin.search || origin.hash || origin.pathname !== '/') return null
+      return assetUrl(origin.origin, asset, store.root)
     } catch {
       return null
     }
@@ -170,7 +134,7 @@ export function apply(ctx, config = {}) {
     'whale-soul.memory.context()',
   )
 
-  for (const definition of createMemoryTools(store, { recentImage })) {
+  for (const definition of createMemoryTools(store, { recentImage, assetPreview })) {
     ctx.effect(() => ctx.tools.register(definition), `whale-soul.memory.tool(${definition.name})`)
   }
 
@@ -192,7 +156,14 @@ export function apply(ctx, config = {}) {
         if (oldest !== undefined) latestImages.delete(oldest)
       }
     })
-    ctx.effect(() => () => activityDispose(), 'whale-soul.memory.activity()')
+    const sessionDispose = ctx.on('session/disposed', (session) => {
+      latestImages.delete(session?.header?.id ?? session?.id)
+    })
+    ctx.effect(() => () => {
+      activityDispose()
+      sessionDispose()
+      latestImages.clear()
+    }, 'whale-soul.memory.activity()')
   }
 
   if (autoDream && checkIntervalMs > 0) {
@@ -203,12 +174,11 @@ export function apply(ctx, config = {}) {
     }, 'whale-soul.memory.dream-timer()')
   }
 
-  const assetDispose = registerAssetRoute(ctx, store)
-  if (assetDispose) ctx.effect(() => assetDispose, 'whale-soul.memory.asset-route()')
+  const assetRoute = registerAssetRoutes(ctx, store)
 
   ctx.effect(() => () => store.dispose(), 'whale-soul.memory.dispose()')
 
-  runtimes.set(ctx, { store, runDreamNow })
+  runtimes.set(ctx, { store, runDreamNow, assetRoute })
 }
 
 export default { name, inject, apply }
