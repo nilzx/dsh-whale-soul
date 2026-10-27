@@ -84,13 +84,13 @@ export function createHostProtection(ctx, { protectedRoots, resolvePrivateRoots,
   if (!baseFs || !baseSubprocess || typeof baseSubprocess.spawn !== 'function' || typeof baseSandbox?.confine !== 'function') throw fail('HOST_SERVICES_REQUIRED')
   const capabilityContext = ctx.isolate('fs').isolate('subprocess').isolate('sandbox').isolate('shell')
   const status = { platform: process.platform, initialized: false, readIsolation: false, writeGuard: false,
-    boundary: 'macos-seatbelt-layer', error: null }
+    boundary: 'macos-seatbelt-layer', error: null, initializationAttempts: 0 }
   const lifetime = new AbortController(), processes = new Set(), attestations = new Map(), signedArgv = new WeakMap()
   const localReads = new Set(localReadTools), executions = new Set(executionTools)
-  let disposed = false, uninstall, initPromise, unsubscribe, generation = 0, probing = false
+  let disposed = false, uninstall, initPromise, unsubscribe, generation = 0, probing = false, initializing = false, hasBeenReady = false
   const invalidate = () => {
     generation++; status.initialized = false; status.readIsolation = false; status.error = 'HOST_PRIVATE_ROOTS_CHANGED'
-    if (!probing) initPromise = undefined
+    if (!initializing) initPromise = undefined
     attestations.clear()
     for (const process of processes) process.terminate()
   }
@@ -364,30 +364,63 @@ export function createHostProtection(ctx, { protectedRoots, resolvePrivateRoots,
     get status() { if (privateSnapshot && !privateSnapshot.isCurrent()) invalidate(); return Object.freeze({ ...status }) },
     initialize() {
       if (disposed) return Promise.reject(fail('DISPOSED'))
+      if (initializing) return initPromise
       if (privateSnapshot && !privateSnapshot.isCurrent()) invalidate()
-      return initPromise ??= (async () => {
+      if (initPromise) return initPromise
+      initializing = true
+      const deadline = performance.now() + 10000
+      const budget = AbortSignal.timeout(10000)
+      // Publish the shared promise before awaiting any provider or probe.
+      return initPromise = Promise.resolve().then(async () => {
+        // Profile services activate concurrently. Before the first ready state
+        // only, a changed trusted snapshot may restart the complete probes.
+        // Three attempts share one ten-second budget, not ten seconds each.
+        const attemptLimit = hasBeenReady ? 1 : 3
+        const budgeted = (promise) => new Promise((resolve, reject) => {
+          const abort = () => reject(fail('READ_ISOLATION_PROBE_TIMEOUT'))
+          if (budget.aborted) { abort(); Promise.resolve(promise).catch(() => {}); return }
+          budget.addEventListener('abort', abort, { once: true })
+          Promise.resolve(promise).then((value) => { budget.removeEventListener('abort', abort); resolve(value) },
+            (error) => { budget.removeEventListener('abort', abort); reject(error) })
+        })
+        status.initializationAttempts = 0
         try {
-          await providerFiber.await()
-          configureRoots()
-          basePolicy.dispose(); basePolicy = makePolicy()
-          if (!unsubscribe && typeof resolvePrivateRoots?.subscribe === 'function') unsubscribe = resolvePrivateRoots.subscribe(invalidate, () => privateSnapshot?.isCurrent() === true)
-          const started = generation
-          probing = true
-          assertRoots()
-          const result = await collect({ op: 'probe', roots: rootSpecs }, undefined, 1024, probeTimeoutMs)
-          if (result.toString('utf8') !== 'protected-read-denied') throw fail('READ_ISOLATION_PROBE_FAILED')
-          const policy = ctx.get('sandboxPolicy')?.resolve()
-          if (!policy || policy.mode === 'danger-full-access') throw fail('UNCONFINED_POLICY_FORBIDDEN')
-          const combined = await sandbox.confine(['/usr/bin/true'], policy, AbortSignal.timeout(probeTimeoutMs))
-          const test = subprocess.spawn({ argv: combined.argv, cwd: '/', stdio: { stdin: 'ignore', stdout: { maxBytes: 1024 }, stderr: { maxBytes: 1024 } },
-            graceMs: 100, signal: AbortSignal.timeout(probeTimeoutMs) })
-          if ((await test.done).exitCode !== 0) throw fail('COMBINED_CONFINEMENT_PROBE_FAILED')
-          assertRoots(); if (started !== generation) throw fail('HOST_PRIVATE_ROOTS_CHANGED')
-          status.initialized = true; status.readIsolation = true; status.error = null
-          return Object.freeze({ ...status })
-        } catch (error) { status.error = error.code || 'READ_ISOLATION_PROBE_FAILED'; throw fail(status.error) }
-        finally { probing = false; if (!status.initialized) initPromise = undefined }
-      })()
+          await budgeted(providerFiber.await())
+          for (let attempt = 1; attempt <= attemptLimit; attempt++) {
+            status.initializationAttempts = attempt
+            try {
+              if (budget.aborted || performance.now() >= deadline) throw fail('READ_ISOLATION_PROBE_TIMEOUT')
+              configureRoots()
+              basePolicy.dispose(); basePolicy = makePolicy()
+              if (!unsubscribe && typeof resolvePrivateRoots?.subscribe === 'function') unsubscribe = resolvePrivateRoots.subscribe(invalidate, () => privateSnapshot?.isCurrent() === true)
+              const started = generation
+              probing = true
+              assertRoots()
+              const result = await budgeted(collect({ op: 'probe', roots: rootSpecs }, budget, 1024, probeTimeoutMs))
+              if (result.toString('utf8') !== 'protected-read-denied') throw fail('READ_ISOLATION_PROBE_FAILED')
+              const policy = ctx.get('sandboxPolicy')?.resolve()
+              if (!policy || policy.mode === 'danger-full-access') throw fail('UNCONFINED_POLICY_FORBIDDEN')
+              const step = AbortSignal.any([budget, AbortSignal.timeout(probeTimeoutMs)])
+              const combined = await budgeted(sandbox.confine(['/usr/bin/true'], policy, step))
+              const test = subprocess.spawn({ argv: combined.argv, cwd: '/', stdio: { stdin: 'ignore', stdout: { maxBytes: 1024 }, stderr: { maxBytes: 1024 } }, graceMs: 100, signal: step })
+              if ((await budgeted(test.done)).exitCode !== 0) throw fail('COMBINED_CONFINEMENT_PROBE_FAILED')
+              assertRoots(); if (started !== generation) throw fail('HOST_PRIVATE_ROOTS_CHANGED')
+              if (budget.aborted || performance.now() >= deadline) throw fail('READ_ISOLATION_PROBE_TIMEOUT')
+              status.initialized = true; status.readIsolation = true; status.error = null; hasBeenReady = true
+              return Object.freeze({ ...status })
+            } catch (error) {
+              if (error.code !== 'HOST_PRIVATE_ROOTS_CHANGED' || attempt === attemptLimit || budget.aborted || disposed) throw error
+              status.initialized = false; status.readIsolation = false
+              for (const process of processes) process.terminate()
+            } finally { probing = false }
+          }
+        } catch (error) {
+          status.initialized = false; status.readIsolation = false; status.error = error.code || 'READ_ISOLATION_PROBE_FAILED'
+          for (const process of processes) process.terminate()
+          throw fail(status.error)
+        }
+        finally { probing = false; initializing = false; if (!status.initialized) initPromise = undefined }
+      })
     },
     install() {
       if (disposed) throw fail('DISPOSED')
