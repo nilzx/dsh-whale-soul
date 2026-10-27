@@ -471,13 +471,16 @@ export class MemoryExternalChanges {
         if ('title' in patch && (typeof patch.title !== 'string' || !patch.title.trim() || patch.title.length > 200) || 'tags' in patch && (!Array.isArray(patch.tags) || patch.tags.length > 24 || patch.tags.some((tag) => typeof tag !== 'string' || !tag.trim() || tag.length > 64)) || 'gist' in patch && (typeof patch.gist !== 'string' || !patch.gist.trim() || patch.gist.length > 2000) || 'detail' in patch && (typeof patch.detail !== 'string' || !patch.detail.trim())) fail('EXTERNAL_PATCH_NOT_ALLOWED')
         record = clone(data.base.candidate.record); mode = 'adopt'
         for (const field of args.fields) if (['gist', 'detail'].includes(field)) record[field] = patch[field]; else record.meta[field] = patch[field]
+        const textFields = ['gist', 'detail'].filter((field) => field in patch)
+        // Metadata-only review quotes the existing prose; it does not invent a new factual statement.
+        const quotationText = [...new Set((textFields.length ? textFields : ['gist', 'detail']).map((field) => record[field]))].join('\n\n')
         const evidenceId = `external-${digest({ change: entry.change_id, operationId, patch }).slice(0, 40)}`
         record.evidence = [{ evidence_id: evidenceId, subject_ids: [head.subject_id], session_id: `review-${digest(operationId).slice(0, 40)}`, message_id: entry.change_id,
-          observed_at: now, actor_ids: [ctx.agent_identity_id], claim_kind: 'quotation', content: patchText }]
+          observed_at: now, actor_ids: [ctx.agent_identity_id], claim_kind: 'quotation', content: quotationText }]
         record.meta = { ...record.meta, revision_id: randomUUID(), revision: head.head_revision + 1, supersedes: head.head_revision_id,
           updated_at: now, observed_at: now, claim_kind: 'quotation', provenance_refs: [evidenceId], actor_ids: [ctx.agent_identity_id],
           external_revision: { protected: true, source: 'owner_external_edit', change_id: entry.change_id, base_revision_id: head.head_revision_id,
-            observed_hash: entry.observed_hash, patch_hash: digest(patchText), growth_eligible: false, maturity_eligible: false } }
+            observed_hash: entry.observed_hash, patch_hash: digest(patchText), adopted_fields: [...args.fields], growth_eligible: false, maturity_eligible: false } }
       }
       if (!files) {
         files = this.store._recordFiles(record)

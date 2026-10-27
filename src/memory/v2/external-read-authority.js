@@ -30,11 +30,22 @@ function quotationProof(store, record, head, seen = new Set()) {
     record.evidence.length !== 1 || meta.provenance_refs.length !== 1) return null
   const evidence = record.evidence[0]
   if (evidence.claim_kind !== 'quotation' || evidence.evidence_id !== meta.provenance_refs[0] ||
-    evidence.subject_ids.length !== 1 || evidence.subject_ids[0] !== meta.subject_id || evidence.message_id !== external.change_id ||
-    digest(evidence.content) !== external.patch_hash) return null
+    evidence.subject_ids.length !== 1 || evidence.subject_ids[0] !== meta.subject_id || evidence.message_id !== external.change_id) return null
   let patch
-  try { patch = JSON.parse(evidence.content) } catch { return null }
-  if (!plain(patch) || Object.keys(patch).length < 1 || Object.keys(patch).length > 4 || stableStringify(patch) !== evidence.content ||
+  if (external.adopted_fields !== undefined) {
+    const fields = external.adopted_fields
+    if (!Array.isArray(fields) || fields.length < 1 || fields.length > 4 || new Set(fields).size !== fields.length ||
+      fields.some((field) => !['title', 'tags', 'gist', 'detail'].includes(field))) return null
+    patch = Object.fromEntries(fields.map((field) => [field, ['gist', 'detail'].includes(field) ? record[field] : meta[field]]))
+    const textFields = ['gist', 'detail'].filter((field) => fields.includes(field))
+    const quotationText = [...new Set((textFields.length ? textFields : ['gist', 'detail']).map((field) => record[field]))].join('\n\n')
+    if (evidence.content !== quotationText) return null
+  } else {
+    // Existing revisions retain their original JSON quotation bytes.
+    try { patch = JSON.parse(evidence.content) } catch { return null }
+    if (stableStringify(patch) !== evidence.content) return null
+  }
+  if (!plain(patch) || Object.keys(patch).length < 1 || Object.keys(patch).length > 4 || digest(stableStringify(patch)) !== external.patch_hash ||
     Object.keys(patch).some((key) => !['title', 'tags', 'gist', 'detail'].includes(key)) ||
     Object.entries(patch).some(([key, value]) => !same(value, ['gist', 'detail'].includes(key) ? record[key] : meta[key])) ||
     evidence.evidence_id !== `external-${digest({ change: external.change_id, operationId: revision.operation_id, patch }).slice(0, 40)}`) return null
