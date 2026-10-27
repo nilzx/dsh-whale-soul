@@ -12,4 +12,10 @@ V2 文件服务支持管理层物理冷藏和单进程宿主维护。`autoMemory
 
 最低 writer API 为 1.3.0。旧 1.2 writer 不理解物理冷藏契约，不得打开此根；`physical-cold-v1` 能力标记不能代替版本门槛。新 reader 默认以 `LIFECYCLE_INTEGRITY_UPGRADE_REQUIRED` 拒绝 1.2 根，显式跨根 `upgrade-self` 接受 1.1/1.2 源。1.2 已锚 self 原件和稳定特征保留，1.1 未锚成长仍冷存为 opaque。存储格式 2、便携包格式 3、provider 协议 1.0.0 分别独立版本化。
 
-可信 `PersonaRuntime.recall` 宿主 API 将显式 `include_cold: true` 传给管理层确认引文的读取授权。授权绑定布尔读取意图、原 context、层级、当前 head、字节和时间窗，取消或晚期变化立即失效。默认自动上下文和普通召回仍排除冷藏，模型工具 schema 不变；引文读取不授予成长或成熟度资格。
+可信 `PersonaRuntime.recall` 宿主 API 将显式 `include_cold: true` 传给管理层确认引文的读取授权。授权绑定布尔读取意图、原 context、层级、当前 head、字节和时间窗，取消或晚期变化立即失效。默认自动上下文和普通召回仍排除冷藏，模型工具 `soul_recall` 提供相同可选布尔项，供主动更深回忆；不填或 `false` 仍只读活跃层，不授予记忆管理、恢复或写入能力；引文读取不授予成长或成熟度资格。
+
+## 主动更深回忆
+
+主动回忆较早的冷藏经历时，可以调用 `soul_recall({"query":"那次演出","include_cold":true})`。此可选项只接受布尔值，默认 false。原 query、depth、时间和数量参数契约保持。读取仍绑定真实 Agent/Session/个体，并继续检查来源、隐私、同意边界、到期和取消；不会改写原件或增加成长、成熟度资格。
+
+本选项不支持直接更正冷藏记录，不会隐式恢复、修订或回温；自动 L0 上下文仍排除冷藏。
