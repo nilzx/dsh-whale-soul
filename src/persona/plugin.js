@@ -12,6 +12,7 @@ import { PersonaImages, createPersonaImageTools } from './images.js'
 import { registerAssetRoutes } from '../memory/asset-route.js'
 import { assetUrl } from '../memory/assets.js'
 import { observeSessionIdentityBoundary } from './session-fence.js'
+import { installMemoryMaintenanceHost } from './memory-maintenance-host.js'
 import { installSessionDispatch } from './session-dispatch.js'
 import { assertMemoryProvider } from '../memory/v2/provider.js'
 
@@ -44,7 +45,7 @@ export async function installPersonaPlugin(ctx, config = {}, host) {
     if (!plugin) throw new Error('whale-soul: official protected tool bindings required')
     await capabilityContext.plugin(plugin, options).await()
   }
-  let runtime
+  let runtime, memoryMaintenance
   await capabilityContext.plugin(FileImage, {
     ownsAgent: (agent) => host.scopeChainOf(agent).includes(host.scopeOf(ctx)) &&
       ctx.get('agents')?.get(agent.id) === agent,
@@ -58,12 +59,15 @@ export async function installPersonaPlugin(ctx, config = {}, host) {
   }).await()
   let images
   runtime = new PersonaRuntime({ ...config, root, memoryProvider, llm: { prepareCall: (...args) => ctx.get('llm').prepareCall(...args) }, createAssembler: () => new host.BlockAssembler(),
+    getMemoryMaintenanceHost: () => memoryMaintenance,
     sessionHost: { scopeChainOf: host.scopeChainOf, resolveDshHome: host.privateRootBindings.resolveDshHome, observer, z: host.z, ownsAgent },
     additionalEvidenceAllowed: (id, context, meta) => images?.evidenceAllowed(id, context, meta) ?? false,
     onDream: (phase, payload) => ctx.emit(`whale-soul/dream-${phase}`, payload) })
   runtimes.set(ctx, runtime)
   ctx.effect(() => () => runtime.dispose(), 'whale-soul.persona.runtime()')
   await runtime.ready()
+  memoryMaintenance = installMemoryMaintenanceHost(ctx, { runtime, ownsAgent, scopeChainOf: host.scopeChainOf, config })
+  ctx.effect(() => () => memoryMaintenance.dispose(), 'whale-soul.persona.memory-maintenance()')
   const dispatch = installSessionDispatch(ctx, { runtime, ownsAgent, scopeChainOf: host.scopeChainOf, resolveDshHome: host.privateRootBindings.resolveDshHome, serviceTools })
   ctx.effect(() => () => dispatch.dispose(), 'whale-soul.persona.session-dispatch()')
   const assetRoute = registerAssetRoutes(ctx, { root: runtime.store.spaceRoot })
@@ -125,7 +129,7 @@ export async function installPersonaPlugin(ctx, config = {}, host) {
   }), 'whale-soul.persona.events()')
   for (const definition of createPersonaTools(runtime)) ctx.effect(() => ctx.tools.register(definition), `whale-soul.persona.tool(${definition.name})`)
   for (const definition of createPersonaImageTools(images)) ctx.effect(() => ctx.tools.register(definition), `whale-soul.persona.tool(${definition.name})`)
-  return { runtime, images, protection, capabilityContext, assetRoute, dispatch }
+  return { runtime, images, protection, capabilityContext, assetRoute, dispatch, memoryMaintenance }
 }
 
 export async function apply(ctx, config = {}) {
