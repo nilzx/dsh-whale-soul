@@ -1,6 +1,8 @@
 export { MemoryStoreV2 } from './store.js'
 export { MemoryAdministration } from './administration.js'
 export { MemoryExternalChanges } from './external-changes.js'
+export { MemoryExternalWatcher } from './external-watcher.js'
+export { createExternalReviewRoutes, installExternalReview } from './external-review-web.js'
 export { MemoryTransfer, validateTransferArchive } from './transfer.js'
 export { MemoryAssetsV2, deriveImageIdentifiers, validateAssetMetadata } from './assets.js'
 export { createMemorySelector, createMemorySelectionAssessor } from './selection.js'
