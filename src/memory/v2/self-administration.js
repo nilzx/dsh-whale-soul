@@ -1,3 +1,4 @@
+import { upgradeLegacySelf } from './self-upgrade.js'
 import { randomUUID } from 'node:crypto'
 import { API_VERSION, MemoryError, assertId, assertOnly, digest, failure } from './contracts.js'
 import { loadSelfHead, readSelfFiles, selfAnchor, validateSelfHead, verifySelfFiles, verifySelfIntegrity } from './self-integrity.js'
@@ -7,6 +8,7 @@ const fail = (code) => { throw new MemoryError(code) }
 export class PersonaSelfAdministration {
   constructor({store} = {}) { if (!store?.managedTransaction) fail('MANAGED_MEMORY_REQUIRED'); this.store=store }
   #authorize(ctx) { return this.store._authorize(ctx,'memory.manage') }
+  upgradeLegacySelf(args,ctx) { return upgradeLegacySelf(this.store,args,ctx) }
   async status(args,ctx) {
     try {
       this.#authorize(ctx); assertOnly(args,['agent_identity_id']); const id=assertId(args.agent_identity_id)

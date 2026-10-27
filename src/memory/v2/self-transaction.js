@@ -1,5 +1,6 @@
 import { MemoryError, assertId, assertOnly, digest } from './contracts.js'
-import { buildSelfDescriptor, listSelfHeads, loadSelfHead, pruneSelfFiles, readSelfFiles, selfAnchor, verifySelfFiles } from './self-integrity.js'
+import { validateImportedSelfDescriptor } from './self-transfer.js'
+import { buildSelfDescriptor, listSelfHeads, loadSelfHead, pruneSelfFiles, readSelfFiles, selfAnchor, selfFileReferences, verifySelfFiles } from './self-integrity.js'
 
 const fail = (code) => { throw new MemoryError(code) }
 const bytes = (data) => Buffer.isBuffer(data) ? data : Buffer.from(data)
@@ -17,6 +18,8 @@ export function prepareSelfTransaction(root, spaceId, built, operationId, purgeS
     restore = built.self_restoration; assertOnly(restore,['agent_identity_id','expected_generation','files_hash']); assertId(restore.agent_identity_id)
     touched.add(restore.agent_identity_id)
   }
+  const imports = built.self_imports ?? []
+  imports.forEach(validateImportedSelfDescriptor)
   const changes = [...built.changes], descriptors = [], sources = []
   for (const agentId of touched) {
     const old = loadSelfHead(root,spaceId,agentId)
@@ -38,7 +41,13 @@ export function prepareSelfTransaction(root, spaceId, built, operationId, purgeS
       original = new Map()
     } else if (old) {
       const currentAnchor = selfAnchor(root,spaceId,agentId)
-      verifySelfFiles(old,original,currentAnchor)
+      const verified = new Map(original)
+      for (const [path,data] of verified) {
+        if (old.files.some(file=>file.path===path)) continue
+        if (changes.some(change=>change.path===`self/${agentId}/${path}`&&change.data===null) && removed.size && selfFileReferences(data,[...removed])) verified.delete(path)
+      }
+      verifySelfFiles(old,verified,currentAnchor)
+      original = verified
     } else if (!initializing || original.size) fail('SELF_INTEGRITY_UPGRADE_REQUIRED')
     let next = new Map(original)
     for (const change of changes) {
@@ -51,6 +60,12 @@ export function prepareSelfTransaction(root, spaceId, built, operationId, purgeS
     }
     if (restore?.agent_identity_id === agentId) verifySelfFiles(old,next,anchor)
     next = pruneSelfFiles(next,[...removed])
+    const imported = imports.find(item => item.next.agent_identity_id === agentId)
+    if (imported) {
+      if (old || original.size) fail('SELF_IMPORT_CONFLICT')
+      verifySelfFiles(imported.next, next, anchor)
+      continue
+    }
     const descriptor = buildSelfDescriptor({root,spaceId,anchor,files:next,operationId,previous:old,initialize:initializing})
     if (!old || old.files_hash !== descriptor.next.files_hash || old.core_version !== anchor.core_version || restore?.agent_identity_id === agentId) descriptors.push(descriptor)
     // The prune is part of this same durable write set, never a new baseline

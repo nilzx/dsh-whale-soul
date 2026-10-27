@@ -206,6 +206,7 @@ function references(value, removed, key = '') {
   if (Array.isArray(value)) return value.some((v) => references(v,removed,key))
   return value && typeof value === 'object' && Object.entries(value).some(([k,v]) => references(v,removed,k))
 }
+export function selfFileReferences(bytes, removedIds) { return references(parseJson(bytes),new Set(removedIds)) }
 /** Prune only references revoked by committed or currently committing authority. */
 export function pruneSelfFiles(files, removedIds) {
   const removed = new Set(removedIds), next = new Map(files)
