@@ -8,7 +8,7 @@
 
 [English README](README.md)
 
-> 0.2.1准备中，尚未发布；npm最新版本仍为0.2.0。默认人格使用V2记忆API1.3与完整transfer v3，人格成长独立存储，数据保存在本地且可移植。从0.1.x升级前请阅读[0.2.1升级说明](docs/release-0.2.1.zh-CN.md)。0.1.5迁移与真实Electron桌面短流程已通过；长期成长和完整可选身体旅程继续单独验收。
+> 0.2.1准备中，尚未发布；npm最新版本仍为0.2.0。默认人格使用V2记忆API1.3与完整transfer v3，人格成长独立存储，数据保存在本地且可移植。从0.1.x升级前请阅读[0.2.1升级说明](docs/release-0.2.1.zh-CN.md)。0.2.0的0.1.5迁移与真实Electron桌面短流程已通过。0.2.1已通过一轮Electron合成损坏修复验收；更广泛损坏、长期成长和完整可选身体旅程仍单独验收。
 
 ## 这是什么
 
@@ -45,7 +45,7 @@ dsh plugin --profile web add dsh-whale-soul
 
 以上命令管理 Web profile。桌面端请在 DSH 桌面应用的 **Plugins** 中安装；标准 CLI 不能管理保留的 `desktop` profile。
 
-以上仓库命令安装已发布版本。也可安装本地构建包：`dsh plugin --profile web add /绝对路径/dsh-whale-soul-0.2.0.tgz`。
+以上仓库命令安装已发布版本。0.2.1候选版可安装本地构建包：`dsh plugin --profile web add /绝对路径/dsh-whale-soul-0.2.1.tgz`。
 
 仅注册 `whale-soul` 预设。历史会话若引用已移除的预设，恢复前需在宿主中改选当前预设；此变更不改写会话历史或已存记忆。
 
@@ -59,7 +59,7 @@ dsh plugin --profile web add dsh-whale-soul
 - 在人格插件行配置`individualKey`可在同一记忆空间保留多个独立个体；省略或设置`default`继续原个体。会话切换与恢复见[个体身份](docs/individuals.zh-CN.md)。
 - 在`dsh-whale-soul/persona`插件行配置`stabilityMode`，四档及持久成熟度见[稳定性规则](docs/stability.zh-CN.md)。
 - 输入`/whale-context`查看鲸鱼娘占当前留存上下文的估算比例，细分人格核心、人格补完、记忆/召回、运行提示和工具，同时显示占总上下文和占鲸鱼娘内部的百分比。本地指令无需模型调用，结果不进入模型上下文或记忆；沿用DSH估算方式，不是计费token。
-- 旧记忆根升级至API1.3前，请阅读[人格完整性与所有者升级](docs/self-integrity.zh-CN.md)：1.1未锚定的成长只保全为不可自动加载的历史；1.2源必须已有可信self锚，缺锚拒绝。writer门槛与冷藏边界见[生命周期与更深回忆](docs/lifecycle.zh-CN.md)。
+- [人格完整性与所有者升级](docs/self-integrity.zh-CN.md)说明显式所有者API对旧根的直接校验规则；普通预设启动遇到这些数据错误时会进入自动修复。writer门槛与冷藏边界见[生命周期与更深回忆](docs/lifecycle.zh-CN.md)。
 - 管理操作使用[本地管理CLI](docs/management.zh-CN.md)。直接外改需明确[审查](docs/external-review-api.md)；存储、正文纯净和可移植性见[V2记忆设计](docs/MEMORY.zh-CN.md)。
 
 ## 记忆位置与基础配置

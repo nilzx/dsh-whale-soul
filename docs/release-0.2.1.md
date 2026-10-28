@@ -4,6 +4,8 @@
 
 Status: preparation; not yet published. npm latest remains 0.2.0.
 
+One focused Electron test with a synthetically damaged memory record passed. After an initial authentication failure, automatic retry completed repair. Original text and record, revision and identity references were preserved, and current-format validation passed. Broader corruption patterns and long-term behavior remain separate validation scopes.
+
 Memory data problems are handled by an independent repair Agent. This covers existing-data corruption as well as upgrades: the repair target is the current memory specification, rather than a separate migration plan for each version.
 
 - Healthy memory loads normally. When startup or a memory operation detects a data error, the host preserves the source and starts a repair job using the configured model.

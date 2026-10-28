@@ -8,7 +8,7 @@ An in-character **Whale Chan (鲸鱼娘)** Agent mode for [DeepSeek Harness](htt
 
 [中文文档](README.zh-CN.md)
 
-> 0.2.1 preparation (not yet published; npm latest is 0.2.0). The default persona uses V2 memory API 1.3 and full transfer format 3, with independent personality growth and portable local data. Read the [0.2.1 upgrade guide](docs/release-0.2.1.md) before updating from 0.1.x. The 0.1.5 migration and Electron desktop smoke checks have passed. Long-term growth and optional body journeys remain separate validation scopes.
+> 0.2.1 preparation (not yet published; npm latest is 0.2.0). The default persona uses V2 memory API 1.3 and full transfer format 3, with independent personality growth and portable local data. Read the [0.2.1 upgrade guide](docs/release-0.2.1.md) before updating from 0.1.x. The 0.1.5 migration and Electron desktop smoke checks passed for 0.2.0. One focused Electron repair test with synthetic corruption has passed for 0.2.1. Broader corruption cases, long-term growth and optional body journeys remain separate validation scopes.
 
 ## What it is
 
@@ -45,7 +45,7 @@ dsh plugin --profile web add dsh-whale-soul
 
 The command above manages the web profile. For desktop, install the plugin from **Plugins** in the DSH desktop app; the standard CLI cannot manage the reserved desktop profile.
 
-These registry commands install the published release. To install a local archive instead, use: `dsh plugin --profile web add /absolute/dsh-whale-soul-0.2.0.tgz`.
+These registry commands install the published release. To install a local 0.2.1 candidate archive, use: `dsh plugin --profile web add /absolute/dsh-whale-soul-0.2.1.tgz`.
 
 Only the `whale-soul` preset is registered. Sessions that reference a retired preset must select the current preset in the host before resuming. This change does not rewrite session history or stored memories.
 
@@ -59,7 +59,7 @@ Memory data errors are repaired automatically by an independent Agent against th
 - Configure `individualKey` on the persona plugin row to keep separate named individuals in one memory space. Omit it or use `default` to continue the original individual. [Individual identity](docs/individuals.md) explains Session switching and recovery.
 - Configure `stabilityMode` on the `dsh-whale-soul/persona` plugin row. [Stability rules](docs/stability.md) describe the four modes and persistent maturity.
 - Run `/whale-context en` to inspect Whale Soul's estimated share of the current retained context, split into persona core, growth, memory/recall, runtime hints and tools. Both whole-context and within-Whale percentages are shown. The local command makes no model call and does not add its output to model context or memory; counts use DSH's heuristic and are not billing tokens.
-- Read [self integrity and owner upgrades](docs/self-integrity.md) before moving an older memory root to API 1.3. Unanchored 1.1 growth remains opaque; a 1.2 source must retain its trusted self anchors, and missing anchors are rejected. See [lifecycle and deeper recall](docs/lifecycle.md) for the writer floor and cold-memory boundaries.
+- [Self integrity and owner upgrades](docs/self-integrity.md) describes the direct validation rules for older roots when using explicit owner APIs. Ordinary preset startup sends detected data errors to automatic repair. See [lifecycle and deeper recall](docs/lifecycle.md) for the writer floor and cold-memory boundaries.
 - Use the [local management CLI](docs/management.md) for owner operations. Direct edits need explicit [external-change review](docs/external-review-api.md); [V2 memory design](docs/MEMORY.md) explains storage, content purity and portability.
 
 ## Memory location and basic settings

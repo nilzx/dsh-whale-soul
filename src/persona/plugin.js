@@ -30,6 +30,100 @@ export const runtimeFor = (ctx) => runtimes.get(ctx)
 const serviceTools = ['soul_recall', 'soul_remember', 'soul_forget', 'soul_agreement_accept', 'soul_view_image', 'soul_meme_save', 'soul_meme_recall', 'soul_meme_use', 'soul_react',
   'ask_user_question', 'todo_write', 'web_search', 'web_fetch', 'job_list', 'job_output', 'job_kill']
 
+/** Keep host/plugin startup independent from a pending automatic memory repair. */
+export function startPersonaPlugin(ctx, config = {}, host, install = installPersonaPlugin) {
+  const controller = new AbortController(), ownerScope = host.scopeOf(ctx), removers = []
+  const owns = agent => host.scopeChainOf(agent).includes(ownerScope) && ctx.get('agents')?.get(agent.id) === agent
+  let capturing = true, bufferedInbox = new WeakMap()
+  const drains = new WeakMap()
+  const flushStartupInbox = async (agent, installed) => {
+    if (drains.has(agent)) return drains.get(agent)
+    const task = (async () => {
+      const events = bufferedInbox.get(agent)
+      while (events?.length) {
+        controller.signal.throwIfAborted()
+        await installed.runtime.stageInbox(agent, events[0])
+        installed.images.capture(agent, events.shift())
+      }
+      bufferedInbox.delete(agent)
+    })()
+    drains.set(agent, task)
+    try { await task } finally { if (drains.get(agent) === task) drains.delete(agent) }
+  }
+  let resolveReady, rejectReady
+  const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject })
+  ready.catch(() => {})
+  const failStartup = error => {
+    if (!controller.signal.aborted) ctx.logger?.error?.(error)
+    rejectReady(error)
+  }
+  const removeGates = () => { for (const remove of removers.splice(0)) remove() }
+  const waitReady = signal => {
+    const combined = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal
+    combined.throwIfAborted()
+    return new Promise((resolve, reject) => {
+      const abort = () => { combined.removeEventListener('abort', abort); reject(combined.reason) }
+      combined.addEventListener('abort', abort, { once: true })
+      ready.then(value => { combined.removeEventListener('abort', abort); resolve(value) },
+        error => { combined.removeEventListener('abort', abort); reject(error) })
+    })
+  }
+  const attach = async (agent, installed) => {
+    if (!owns(agent)) return false
+    await installed.runtime.attachAgent(agent)
+    controller.signal.throwIfAborted()
+    installed.images.attachAgent(agent)
+    await flushStartupInbox(agent, installed)
+    return true
+  }
+  ctx.effect(() => () => {
+    controller.abort(new Error('Whale Soul startup disposed'))
+    rejectReady(controller.signal.reason)
+    capturing = false; bufferedInbox = new WeakMap()
+    removeGates()
+  }, 'whale-soul.persona.startup()')
+  removers.push(ctx.on('session/event', (session, event) => {
+    if (!capturing || event?.type !== 'agent/inbox/spliced') return
+    const agent = ctx.get('agents')?.get(session?.id ?? session?.header?.id)
+    if (!agent || !owns(agent)) return
+    const events = bufferedInbox.get(agent) ?? []
+    events.push(event); bufferedInbox.set(agent, events)
+  }))
+  removers.push(ctx.on('agent/created', async ({ agent, signal }) => {
+    if (!owns(agent)) return
+    await attach(agent, await waitReady(signal))
+  }))
+  removers.push(ctx.on('agent/request', async ({ agent, signal }, next) => {
+    if (!owns(agent)) return next()
+    const installed = await waitReady(signal)
+    if (await attach(agent, installed)) {
+      await installed.dispatch.ensure(agent)
+      await installed.runtime.waitCurrent(agent, { signal })
+      await installed.runtime.prepareContext(agent, { signal })
+    }
+    return next()
+  }, { prepend: true }))
+  removers.push(ctx.on('agent/pre-step', async ({ agent, signal }, next) => {
+    if (!owns(agent)) return next()
+    const installed = await waitReady(signal)
+    if (!await attach(agent, installed)) return next()
+    const decision = await next()
+    if (decision.kind === 'enter') await installed.runtime.acceptInboxMessages(agent, decision.messages, { signal })
+    return decision
+  }, { prepend: true }))
+  // Calling the async installer now registers its observer synchronously, before
+  // the first repair await, while the host receives a non-promise startup handle.
+  try {
+    Promise.resolve(install(ctx, config, { ...host, startupSignal: controller.signal, flushStartupInbox })).then(installed => {
+      if (controller.signal.aborted) return
+      capturing = false
+      removeGates()
+      resolveReady(installed)
+    }, failStartup)
+  } catch (error) { failStartup(error) }
+  return { ready }
+}
+
 /** Explicit constructors make the host composition testable without global state. */
 export async function installPersonaPlugin(ctx, config = {}, host) {
   const individualKey = normalizeIndividualKey(config.individualKey)
@@ -43,7 +137,14 @@ export async function installPersonaPlugin(ctx, config = {}, host) {
   ctx.effect(() => () => observer.dispose(), 'whale-soul.persona.session-observer()')
   const root = resolveMemoryRoot(config)
   const repairController = new AbortController()
-  ctx.effect(() => () => repairController.abort(), 'whale-soul.persona.memory-repair()')
+  const abortRepair = () => repairController.abort(host.startupSignal?.reason)
+  if (host.startupSignal?.aborted) abortRepair()
+  else host.startupSignal?.addEventListener('abort', abortRepair, { once: true })
+  ctx.effect(() => () => {
+    host.startupSignal?.removeEventListener('abort', abortRepair)
+    repairController.abort()
+  }, 'whale-soul.persona.memory-repair()')
+  const checkStartup = () => repairController.signal.throwIfAborted()
   const repairMemory = cause => repairPersonaMemory({ ...config, root, individualKey, cause, signal: repairController.signal, retryDelayMs: config.repairRetryDelayMs,
     onStatus: state => ctx.emit('whale-soul/memory-repair', { state }),
     runAgent: repair => runMemoryRepairAgent({ ...repair, maxTurns: config.repairMaxTurns ?? 12, llm: ctx.get('llm'),
@@ -51,13 +152,15 @@ export async function installPersonaPlugin(ctx, config = {}, host) {
       createUserMessage: host.createUserMessage, createToolResultMessage: host.createToolResultMessage }) })
   try {
     await preparePersonaMemory({ ...config, root, individualKey })
+    checkStartup()
     const classification = inspectMemoryRoot(root, config.memorySpaceId ?? 'owner')
     if (classification.kind === 'v2') {
       const probe = new MemoryStoreV2({ root, memory_space_id: config.memorySpaceId ?? 'owner' })
       const warning = probe._records().warnings[0]
       if (warning) throw Object.assign(new Error(warning.reason_code), { code: warning.reason_code })
     }
-  } catch (cause) { await repairMemory(cause) }
+  } catch (cause) { checkStartup(); await repairMemory(cause) }
+  checkStartup()
   mkdirSync(root, { recursive: true, mode: 0o700 })
   const resolvePrivateRoots = protectMigrationSources(createHostPrivateRoots(ctx, host.privateRootBindings), root)
   const protection = createHostProtection(ctx, { protectedRoots: [fileURLToPath(new URL('../..', import.meta.url)), root],
@@ -65,11 +168,13 @@ export async function installPersonaPlugin(ctx, config = {}, host) {
   protection.install()
   ctx.effect(() => () => protection.dispose(), 'whale-soul.persona.protection()')
   await protection.initialize()
+  checkStartup()
   const capabilityContext = protection.capabilityContext
   for (const [plugin, options] of [[host.BashSandbox, {}], [host.FsTools, { readImage: false }], [host.BashTools, {}],
     [host.FsSearchTools, { sampleOverCapGlobResults: false }]]) {
     if (!plugin) throw new Error('whale-soul: official protected tool bindings required')
     await capabilityContext.plugin(plugin, options).await()
+    checkStartup()
   }
   let runtime, memoryMaintenance
   await capabilityContext.plugin(FileImage, {
@@ -83,6 +188,7 @@ export async function installPersonaPlugin(ctx, config = {}, host) {
       }
     },
   }).await()
+  checkStartup()
   let images
   runtime = new PersonaRuntime({ ...config, individualKey, root, memoryProvider, repairMemory, llm: { prepareCall: (...args) => ctx.get('llm').prepareCall(...args) }, createAssembler: () => new host.BlockAssembler(),
     getMemoryMaintenanceHost: () => memoryMaintenance,
@@ -94,6 +200,7 @@ export async function installPersonaPlugin(ctx, config = {}, host) {
   runtimes.set(ctx, runtime)
   ctx.effect(() => () => runtime.dispose(), 'whale-soul.persona.runtime()')
   await runtime.ready()
+  checkStartup()
   memoryMaintenance = installMemoryMaintenanceHost(ctx, { runtime, ownsAgent, scopeChainOf: host.scopeChainOf, config })
   ctx.effect(() => () => memoryMaintenance.dispose(), 'whale-soul.persona.memory-maintenance()')
   const dispatch = installSessionDispatch(ctx, { runtime, ownsAgent, scopeChainOf: host.scopeChainOf, resolveDshHome: host.privateRootBindings.resolveDshHome,
@@ -128,12 +235,14 @@ export async function installPersonaPlugin(ctx, config = {}, host) {
     required: true, interpolate: false, text: (context) => runtime.operationContextFor(context.agent),
   }), 'whale-soul.persona.operation-context()')
   ctx.effect(() => ctx.on('agent/request', async ({ agent, signal }, next) => {
+    await host.flushStartupInbox?.(agent, { runtime, images })
     await dispatch.ensure(agent)
     await runtime.waitCurrent(agent, { signal })
     await runtime.prepareContext(agent, { signal })
     return next()
   }), 'whale-soul.persona.await-current-memory()')
   ctx.effect(() => ctx.on('agent/pre-step', async ({ agent, signal }, next) => {
+    await host.flushStartupInbox?.(agent, { runtime, images })
     const decision = await next()
     if (decision.kind === 'enter') await runtime.acceptInboxMessages(agent, decision.messages, { signal })
     return decision
@@ -174,7 +283,7 @@ export async function apply(ctx, config = {}) {
     '@deepseek-ai/dsh-home-paths', '@deepseek-ai/dsh-credentials-local', '@deepseek-ai/dsh-session-persistence-jsonl',
     '@deepseek-ai/dsh-storage-json', '@deepseek-ai/dsh-storage', '@deepseek-ai/dsh-attachment-local',
   ].map((specifier) => import(specifier)))
-  await installPersonaPlugin(ctx, config, { BlockAssembler: llm.BlockAssembler, isAgentLoopRequest: llm.isAgentLoopRequest,
+  startPersonaPlugin(ctx, config, { BlockAssembler: llm.BlockAssembler, isAgentLoopRequest: llm.isAgentLoopRequest,
     createUserMessage: llm.createUserMessage, createToolResultMessage: llm.createToolResultMessage, joinContextSections: prompt.joinContextSections, writableRoots: sandbox.writableRoots,
     scopeOf: scope.scopeOf, scopeChainOf: scope.scopeChainOf, z: zod.z, BashSandbox: bashSandbox.default,
     FsTools: fsTools, BashTools: bashTools, FsSearchTools: fsSearchTools, privateRootBindings: {
