@@ -13,7 +13,7 @@ import { getWhaleCore } from './core.js'
 
 const jobs = new Map()
 const json = value => `${JSON.stringify(value, null, 2)}\n`
-export const isMemoryDataError = error => !/SCOPE|CONTEXT|CAPABILITY|NOT_FOUND|PURGED|CONFLICT/.test(error?.code ?? '') && /(?:LEGACY_|MIXED_MEMORY|SESSION_(?:MIRROR|BINDING)|MEMORY_ROOT|MEMORY_SPACE|STORAGE_JSON|RECORD_|PERSONA_|SELF_|LIFECYCLE_INTEGRITY|INTEGRITY_|SOURCE_PROTECTION|UNSUPPORTED_(?:FORMAT|API|SPACE|RECORD|SELF)|INVALID_(?:ROOT|SPACE|MANIFEST|MEMORY|RECORD|PERSONA|SELF|STABILITY|TRANSFER))/.test(error?.code ?? '')
+export const isMemoryDataError = error => !/SCOPE|CONTEXT|CAPABILITY|NOT_FOUND|PURGED|CONFLICT/.test(error?.code ?? '') && /(?:LEGACY_|EXTERNAL_CHANGE|MIXED_MEMORY|SESSION_(?:MIRROR|BINDING)|MEMORY_ROOT|MEMORY_SPACE|STORAGE_JSON|RECORD_|PERSONA_|SELF_|LIFECYCLE_INTEGRITY|INTEGRITY_|SOURCE_PROTECTION|UNSUPPORTED_(?:FORMAT|API|SPACE|RECORD|SELF)|INVALID_(?:ROOT|SPACE|MANIFEST|MEMORY|RECORD|PERSONA|SELF|STABILITY|TRANSFER))/.test(error?.code ?? '')
 function files(root, base = '') {
   const rows = []
   for (const entry of readdirSync(join(root, base), { withFileTypes: true })) {
