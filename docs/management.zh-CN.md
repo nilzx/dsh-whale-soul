@@ -2,6 +2,9 @@
 
 [English](management.md)
 
+从0.2.1起，Agent预设会按当前规范自动修复旧布局或损坏记忆，未完成时自行续跑，不要求用户手动编辑文件。以下命令作为所有者可选的显式管理能力保留；底层存储及CLI仍按直接调用的校验语义运行。
+
+
 入口：`node /绝对路径/plugin/src/manage.js help`。所有数据命令都必须提供绝对路径 `--root` 和明确的 `--space`，不会选择真实默认记忆目录。该命令只供所有者在独立本地进程使用，不注册为聊天工具；不能用来改核心、伪造来源或任意改写历史。
 
 示例中的`/plugin`代表已安装或解包后的插件目录，其中应有`package.json`与`src/manage.js`，无需全局安装npm包。`--root`和`--space`应使用人格实际配置的`memoryRoot`与`memorySpaceId`；默认分别为`~/.dsh/whale-soul/memory`（设置`DSH_HOME`后为`$DSH_HOME/whale-soul/memory`）及`owner`。命令中的根路径需展开为绝对路径。

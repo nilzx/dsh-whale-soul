@@ -8,7 +8,7 @@ An in-character **Whale Chan (鲸鱼娘)** Agent mode for [DeepSeek Harness](htt
 
 [中文文档](README.zh-CN.md)
 
-> 0.2.0. The default persona uses V2 memory API 1.3 and full transfer format 3, with independent personality growth and portable local data. Read the [0.2.0 changes and upgrade guide](docs/release-0.2.0.md) before updating from 0.1.x. The 0.1.5 migration and Electron desktop smoke checks have passed. Long-term growth and optional body journeys remain separate validation scopes.
+> 0.2.1 preparation (not yet published; npm latest is 0.2.0). The default persona uses V2 memory API 1.3 and full transfer format 3, with independent personality growth and portable local data. Read the [0.2.1 upgrade guide](docs/release-0.2.1.md) before updating from 0.1.x. The 0.1.5 migration and Electron desktop smoke checks have passed. Long-term growth and optional body journeys remain separate validation scopes.
 
 ## What it is
 
@@ -51,7 +51,7 @@ Only the `whale-soul` preset is registered. Sessions that reference a retired pr
 
 After installation, start a new session and choose **Whale Chan** (shown as **鲸鱼娘** when DSH is in Chinese) in the Agent mode selector. Existing sessions keep the preset they started with.
 
-If you already used a V1 release, preserve its memory directory and follow [V1 migration](docs/management.md) into a separate root before using this runtime with that data. An old root is refused with `LEGACY_MIGRATION_REQUIRED`; installation does not migrate it automatically. Early V2 API 1.1/1.2 roots use the separate [storage upgrade](docs/self-integrity.md).
+Memory data errors are repaired automatically by an independent Agent against the current data specification. It handles damaged data as well as old layouts, preserves sources and rollback backups, validates the result, and resumes unfinished work automatically. Its tools operate on memory files only; plugin files cannot be modified. Ordinary V1 roots, including empty folders, have a fast local conversion path. [Automatic repair](docs/release-0.2.1.md) explains this workflow; [local management](docs/management.md) remains optional owner control. The explicit [storage upgrade](docs/self-integrity.md) remains available for owner-managed recovery.
 
 ## Use
 

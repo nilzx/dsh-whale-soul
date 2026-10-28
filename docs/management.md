@@ -2,6 +2,9 @@
 
 [中文](management.zh-CN.md)
 
+From 0.2.1, the Agent preset automatically repairs old or damaged memory against the current specification. Unfinished repair resumes without requiring user file edits. The commands below are optional explicit owner controls; low-level storage and CLI operations retain their direct validation semantics.
+
+
 Run `node /absolute/plugin/src/manage.js help`. Every data command requires an explicit absolute `--root` and a `--space`; the CLI never chooses the real default memory directory. It is a standalone owner process, not an Agent tool or a way for a model to obtain management permissions.
 
 Replace `/absolute/plugin` in the examples with the installed or unpacked package directory containing `package.json` and `src/manage.js`. This does not require a global npm installation. Use the persona's actual `memoryRoot` and `memorySpaceId`; their defaults are `~/.dsh/whale-soul/memory` (or `$DSH_HOME/whale-soul/memory`) and `owner`. Expand the root to an absolute path for these commands.

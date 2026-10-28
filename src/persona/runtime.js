@@ -22,6 +22,8 @@ import { SessionIdentityFence, createSessionBoundary, observeSessionIdentityBoun
 import { resolveSharedRecordEvidence } from '../memory/v2/evidence.js'
 import { isMemoryMaintenanceHost } from './memory-maintenance-host.js'
 import { canonicalProtectionPath } from './protection.js'
+import { isMemoryDataError } from './memory-repair.js'
+import { inspectMemoryRoot } from '../memory/v2/root-format.js'
 import { createInjectedSurfaceController, INJECTED_CONTEXT_NAMES } from './injected-surface.js'
 import { verifySelfIntegrity } from '../memory/v2/self-integrity.js'
 
@@ -57,6 +59,42 @@ export class PersonaRuntime {
         if (phase === 'after_prepare') { this.#assertLive(); check(this.#operation.getStore()); check(this.#lifetime.signal); this.#sessionBoundary.getStore()?.checkSync() }
       } }
     this.store = assertProviderStore(this.memoryProvider.createStore(storageOptions), storageOptions)
+    if (typeof options.repairMemory === 'function') {
+      let repairing = null
+      const initialize = this.store.initialize.bind(this.store)
+      const needsRepair = error => {
+        if (!isMemoryDataError(error)) return false
+        if (!error.code.startsWith('INVALID_')) return true
+        try {
+          inspectMemoryRoot(this.store.root, this.store.memorySpaceId)
+          if (this.store._records().warnings.length) return true
+          if (this.state?.identity) verifySelfIntegrity(this.store.root, this.store.memorySpaceId, this.state.identity.agent_identity_id)
+          return false
+        } catch { return true }
+      }
+      const repair = async error => {
+        repairing ??= Promise.resolve(options.repairMemory(error)).then(async () => {
+          this.store.initialized = false
+          await initialize()
+          for (const state of this.#sessions.values()) state.cache = null
+        }).finally(() => { repairing = null })
+        await repairing
+      }
+      for (const name of ['initialize', 'managedRead', 'managedTransaction', 'queryMemory', 'proposeMemory', 'reviseMemory']) {
+        const original = this.store[name].bind(this.store)
+        this.store[name] = async (...args) => {
+          if (repairing) await repairing
+          let result
+          try { result = await original(...args) }
+          catch (error) { if (!needsRepair(error)) throw error; await repair(error); return original(...args) }
+          const warning = result?.warnings?.find(item => isMemoryDataError({ code: item.reason_code }))
+          if (warning || ['rejected', 'unavailable'].includes(result?.status) && needsRepair({ code: result.reason_code })) {
+            await repair(new MemoryError(warning?.reason_code ?? result.reason_code)); return original(...args)
+          }
+          return result
+        }
+      }
+    }
     this.#externalReads = createExternalReadAuthority({ store: this.store })
     this.state = new PersonaState({ store: this.store, persona_id: this.core.persona_id,
       core_version: this.core.version, mode: options.stabilityMode ?? 'auto', subject_id: options.subjectId ?? 'owner', individual_key: this.#individualKey })
@@ -66,9 +104,19 @@ export class PersonaRuntime {
     this.#ready = this.#initialize()
   }
   async #initialize() {
-    await this.state.initialize()
-    await this.recoverPendingMemories()
-    return this
+    for (;;) {
+      try {
+        await this.state.initialize()
+        const warning = this.store._records().warnings.find(item => isMemoryDataError({ code: item.reason_code }))
+        if (warning && typeof this.#options.repairMemory === 'function') throw new MemoryError(warning.reason_code)
+        await this.recoverPendingMemories()
+        return this
+      } catch (error) {
+        if (typeof this.#options.repairMemory !== 'function' || !isMemoryDataError(error)) throw error
+        await this.#options.repairMemory(error)
+        this.store.initialized = false
+      }
+    }
   }
   ready() { return this.#ready }
   get disposed() { return this.#disposed }
@@ -613,7 +661,17 @@ export class PersonaRuntime {
     }, operationSignal)
   }
 
-  async prepareContext(agent, { signal } = {}) {
+  async prepareContext(agent, options = {}) {
+    try { return await this.#prepareContext(agent, options) }
+    catch (error) {
+      if (typeof this.#options.repairMemory !== 'function' || !isMemoryDataError(error)) throw error
+      await this.#options.repairMemory(error)
+      this.store.initialized = false; await this.store.initialize(); await this.state.initialize()
+      for (const state of this.#sessions.values()) state.cache = null
+      return this.#prepareContext(agent, options)
+    }
+  }
+  async #prepareContext(agent, { signal } = {}) {
     const state = await this.attachAgent(agent); await this.#waitCaptures(agent); await state.queue
     if ((await state.fence.authorize({ seal: false })).status !== 'confirmed') return { memory: '', growth: '' }
     check(signal); check(state.controller.signal); await this.state.refresh()

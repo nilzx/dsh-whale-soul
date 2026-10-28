@@ -8,7 +8,7 @@
 
 [English README](README.md)
 
-> 0.2.0。默认人格使用V2记忆API1.3与完整transfer v3，人格成长独立存储，数据保存在本地且可移植。从0.1.x升级前请先阅读[0.2.0更新与升级说明](docs/release-0.2.0.zh-CN.md)。0.1.5迁移与真实Electron桌面短流程已通过；长期成长和完整可选身体旅程继续单独验收。
+> 0.2.1准备中，尚未发布；npm最新版本仍为0.2.0。默认人格使用V2记忆API1.3与完整transfer v3，人格成长独立存储，数据保存在本地且可移植。从0.1.x升级前请阅读[0.2.1升级说明](docs/release-0.2.1.zh-CN.md)。0.1.5迁移与真实Electron桌面短流程已通过；长期成长和完整可选身体旅程继续单独验收。
 
 ## 这是什么
 
@@ -51,7 +51,7 @@ dsh plugin --profile web add dsh-whale-soul
 
 安装后新建会话，在 Agent 模式选择器里选 **鲸鱼娘**（英文界面显示 Whale Chan）。已有会话保持启动时的模式。
 
-如果用过V1版本，请保全原记忆目录，先按[V1迁移流程](docs/management.zh-CN.md)迁移到独立根，再用当前运行时接续这些数据。旧根会返回`LEGACY_MIGRATION_REQUIRED`，安装不会自动迁移。早期V2 API1.1/1.2根使用独立的[存储升级流程](docs/self-integrity.zh-CN.md)。
+记忆数据错误由独立Agent对照当前规范自动修复，覆盖已有数据损坏及旧布局。程序保全来源和回退备份，验证修复结果，未完成时自动续跑；Agent工具只处理记忆文件，不能修改插件。普通V1根及其空目录仍有无需模型的快捷转换。详见[自动修复说明](docs/release-0.2.1.zh-CN.md)；[本地管理](docs/management.zh-CN.md)继续作为可选的所有者能力保留。
 
 ## 使用
 

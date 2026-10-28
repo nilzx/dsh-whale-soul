@@ -3,6 +3,11 @@ import { protectMigrationSources } from './source-protection.js'
 import { fileURLToPath } from 'node:url'
 import { mkdirSync } from 'node:fs'
 import { resolveMemoryRoot } from '../paths.js'
+import { preparePersonaMemory } from './auto-upgrade.js'
+import { repairPersonaMemory } from './memory-repair.js'
+import { runMemoryRepairAgent } from './memory-repair-agent.js'
+import { inspectMemoryRoot } from '../memory/v2/root-format.js'
+import { MemoryStoreV2 } from '../memory/v2/store.js'
 import { createHostProtection } from './host-policy.js'
 import { createHostPrivateRoots } from './host-private-roots.js'
 import FileImage from './file-image.js'
@@ -37,6 +42,22 @@ export async function installPersonaPlugin(ctx, config = {}, host) {
   const observer = observeSessionIdentityBoundary(ctx, ownsAgent, host.z)
   ctx.effect(() => () => observer.dispose(), 'whale-soul.persona.session-observer()')
   const root = resolveMemoryRoot(config)
+  const repairController = new AbortController()
+  ctx.effect(() => () => repairController.abort(), 'whale-soul.persona.memory-repair()')
+  const repairMemory = cause => repairPersonaMemory({ ...config, root, individualKey, cause, signal: repairController.signal, retryDelayMs: config.repairRetryDelayMs,
+    onStatus: state => ctx.emit('whale-soul/memory-repair', { state }),
+    runAgent: repair => runMemoryRepairAgent({ ...repair, maxTurns: config.repairMaxTurns ?? 12, llm: ctx.get('llm'),
+      resolveRoute: () => ctx.get('agentDefaultModel').currentSelection(), createAssembler: () => new host.BlockAssembler(),
+      createUserMessage: host.createUserMessage, createToolResultMessage: host.createToolResultMessage }) })
+  try {
+    await preparePersonaMemory({ ...config, root, individualKey })
+    const classification = inspectMemoryRoot(root, config.memorySpaceId ?? 'owner')
+    if (classification.kind === 'v2') {
+      const probe = new MemoryStoreV2({ root, memory_space_id: config.memorySpaceId ?? 'owner' })
+      const warning = probe._records().warnings[0]
+      if (warning) throw Object.assign(new Error(warning.reason_code), { code: warning.reason_code })
+    }
+  } catch (cause) { await repairMemory(cause) }
   mkdirSync(root, { recursive: true, mode: 0o700 })
   const resolvePrivateRoots = protectMigrationSources(createHostPrivateRoots(ctx, host.privateRootBindings), root)
   const protection = createHostProtection(ctx, { protectedRoots: [fileURLToPath(new URL('../..', import.meta.url)), root],
@@ -63,7 +84,7 @@ export async function installPersonaPlugin(ctx, config = {}, host) {
     },
   }).await()
   let images
-  runtime = new PersonaRuntime({ ...config, individualKey, root, memoryProvider, llm: { prepareCall: (...args) => ctx.get('llm').prepareCall(...args) }, createAssembler: () => new host.BlockAssembler(),
+  runtime = new PersonaRuntime({ ...config, individualKey, root, memoryProvider, repairMemory, llm: { prepareCall: (...args) => ctx.get('llm').prepareCall(...args) }, createAssembler: () => new host.BlockAssembler(),
     getMemoryMaintenanceHost: () => memoryMaintenance,
     isMemoryProviderCurrent: () => { const current = ctx.get('whaleMemory'); return (current?.[original] ?? current) === providerIdentity },
     sessionHost: { scopeChainOf: host.scopeChainOf, resolveDshHome: host.privateRootBindings.resolveDshHome, observer, z: host.z, ownsAgent, isAgentLoopRequest: host.isAgentLoopRequest,
@@ -154,7 +175,7 @@ export async function apply(ctx, config = {}) {
     '@deepseek-ai/dsh-storage-json', '@deepseek-ai/dsh-storage', '@deepseek-ai/dsh-attachment-local',
   ].map((specifier) => import(specifier)))
   await installPersonaPlugin(ctx, config, { BlockAssembler: llm.BlockAssembler, isAgentLoopRequest: llm.isAgentLoopRequest,
-    createUserMessage: llm.createUserMessage, joinContextSections: prompt.joinContextSections, writableRoots: sandbox.writableRoots,
+    createUserMessage: llm.createUserMessage, createToolResultMessage: llm.createToolResultMessage, joinContextSections: prompt.joinContextSections, writableRoots: sandbox.writableRoots,
     scopeOf: scope.scopeOf, scopeChainOf: scope.scopeChainOf, z: zod.z, BashSandbox: bashSandbox.default,
     FsTools: fsTools, BashTools: bashTools, FsSearchTools: fsSearchTools, privateRootBindings: {
       resolveDshHome: home.resolveDshHome, LocalCredentialProvider: credentials.LocalCredentialProvider, resolveCredentialSpec: credentials.resolveSpec,
