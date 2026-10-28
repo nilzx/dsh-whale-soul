@@ -2,7 +2,7 @@
 
 [中文](release-0.2.1.zh-CN.md)
 
-Status: preparation; not yet published. npm latest remains 0.2.0.
+Release: `0.2.1`.
 
 One focused Electron test with a synthetically damaged memory record passed. After an initial authentication failure, automatic retry completed repair. Original text and record, revision and identity references were preserved, and current-format validation passed. Broader corruption patterns and long-term behavior remain separate validation scopes.
 
