@@ -8,6 +8,8 @@ An in-character **Whale Chan (鲸鱼娘)** Agent mode for [DeepSeek Harness](htt
 
 [中文文档](README.zh-CN.md)
 
+> 0.2.2 preparation: fixes startup with a symbolic link to a memory directory. npm latest remains 0.2.1. The configured link is retained; migration, repair and backups operate on its physical target directory.
+
 > 0.2.1 — automatic memory repair. The default persona uses V2 memory API 1.3 and full transfer format 3, with independent personality growth and portable local data. Read the [0.2.1 upgrade guide](docs/release-0.2.1.md) before updating from 0.1.x. The 0.1.5 migration and Electron desktop smoke checks passed for 0.2.0. One focused Electron repair test with synthetic corruption has passed for 0.2.1. Broader corruption cases, long-term growth and optional body journeys remain separate validation scopes.
 
 ## What it is

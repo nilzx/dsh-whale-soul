@@ -1,5 +1,5 @@
 import { existsSync, lstatSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { join } from 'node:path'
 import { MemoryError, digest } from '../memory/v2/contracts.js'
 import { acquireRootLock, atomicWrite } from '../memory/v2/transactions.js'
 import { inspectMemoryRoot } from '../memory/v2/root-format.js'
@@ -7,6 +7,7 @@ import { MemoryStoreV2 } from '../memory/v2/store.js'
 import { MemoryTransfer } from '../memory/v2/transfer.js'
 import { PersonaState } from './state.js'
 import { getWhaleCore } from './core.js'
+import { resolveMemoryStorageRoot } from '../paths.js'
 
 const json = value => `${JSON.stringify(value, null, 2)}\n`
 const checked = result => {
@@ -39,7 +40,7 @@ function legacy(root, space) {
 /** Host startup only. The neutral store and management CLI retain explicit migration semantics. */
 export async function preparePersonaMemory({ root, memorySpaceId = 'owner', subjectId = 'owner', individualKey = 'default',
   stabilityMode = 'auto', core = getWhaleCore(), faultInjector } = {}) {
-  root = resolve(root)
+  root = resolveMemoryStorageRoot(root)
   const stage = `${root}.upgrade-v1`, backupRoot = `${root}.legacy-v1`, journal = `${root}.upgrade-v1.json`, lock = `${root}.upgrade-v1-lock`
   if (!existsSync(journal) && (!existsSync(root) || existsSync(join(root, 'manifest.json')) || !legacy(root, memorySpaceId))) return { status: 'unchanged' }
   const release = await acquireRootLock(lock, { waitMs: 30_000 })

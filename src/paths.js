@@ -1,5 +1,15 @@
 import { homedir } from 'node:os'
-import { isAbsolute, join, resolve } from 'node:path'
+import { realpathSync } from 'node:fs'
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
+
+/** Resolve the configured root once so linked storage keeps its directory link. */
+export function resolveMemoryStorageRoot(value) {
+  const root = resolve(value)
+  try { return realpathSync(root) } catch (error) {
+    if (error.code !== 'ENOENT' || dirname(root) === root) throw error
+    return join(resolveMemoryStorageRoot(dirname(root)), basename(root))
+  }
+}
 
 /** Resolve the DSH data home without importing DSH-internal helper packages. */
 export function resolveDshHome() {
@@ -18,9 +28,9 @@ export function resolveMemoryRoot(config = {}) {
   const configuredRoot = config.memoryRoot ?? config.root
   if (typeof configuredRoot === 'string' && configuredRoot.trim()) {
     const value = expandHome(configuredRoot.trim())
-    return isAbsolute(value) ? resolve(value) : resolve(process.cwd(), value)
+    return resolveMemoryStorageRoot(isAbsolute(value) ? value : resolve(process.cwd(), value))
   }
-  return join(resolveDshHome(), 'whale-soul', 'memory')
+  return resolveMemoryStorageRoot(join(resolveDshHome(), 'whale-soul', 'memory'))
 }
 
 /** Asset routes use the actual storage space, independent of persona display. */

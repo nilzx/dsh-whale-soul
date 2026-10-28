@@ -10,6 +10,7 @@ import { getPersonaAnchor, personaBinding } from '../memory/v2/persona-ledger.js
 import { commitSourceProtection, sourceProtectionSnapshot } from '../memory/v2/source-protection.js'
 import { PersonaState } from './state.js'
 import { getWhaleCore } from './core.js'
+import { resolveMemoryStorageRoot } from '../paths.js'
 
 const jobs = new Map()
 const json = value => `${JSON.stringify(value, null, 2)}\n`
@@ -47,7 +48,7 @@ const schema = properties => ({ type: 'object', properties, additionalProperties
 
 /** Repair jobs own memory data only; the model never receives a plugin or shell write tool. */
 export function repairPersonaMemory(options) {
-  const root = resolve(options.root), pluginRoot = resolve(fileURLToPath(new URL('../..', import.meta.url)))
+  const root = resolveMemoryStorageRoot(options.root), pluginRoot = resolve(fileURLToPath(new URL('../..', import.meta.url)))
   if (root === pluginRoot || root.startsWith(`${pluginRoot}${sep}`) || pluginRoot.startsWith(`${root}${sep}`)) throw new MemoryError('REPAIR_MEMORY_DIRECTORY_REQUIRED')
   if (jobs.has(root)) return jobs.get(root)
   const promise = (async () => {
