@@ -8,7 +8,7 @@
 
 [English README](README.md)
 
-> 0.2.2：修复记忆目录使用软链接时的启动卡住问题。配置的软链接会保留，迁移、修复和备份在实际目标目录执行。详见[0.2.2更新说明](docs/release-0.2.2.zh-CN.md)。
+> 0.2.3：修复Windows拒绝同步目录时记忆写入失败、会话启动卡住的问题，并清理失败的锁候选目录。详见[0.2.3更新说明](docs/release-0.2.3.zh-CN.md)。同时包含[0.2.2软链接目录修复](docs/release-0.2.2.zh-CN.md)。
 
 > 0.2.1：记忆自动修复。默认人格使用V2记忆API1.3与完整transfer v3，人格成长独立存储，数据保存在本地且可移植。从0.1.x升级前请阅读[0.2.1升级说明](docs/release-0.2.1.zh-CN.md)。0.2.0的0.1.5迁移与真实Electron桌面短流程已通过。0.2.1已通过一轮Electron合成损坏修复验收；更广泛损坏、长期成长和完整可选身体旅程仍单独验收。
 
@@ -47,7 +47,7 @@ dsh plugin --profile web add dsh-whale-soul
 
 以上命令管理 Web profile。桌面端请在 DSH 桌面应用的 **Plugins** 中安装；标准 CLI 不能管理保留的 `desktop` profile。
 
-以上仓库命令安装已发布版本。也可安装本地构建包：`dsh plugin --profile web add /绝对路径/dsh-whale-soul-0.2.2.tgz`。
+以上仓库命令安装已发布版本。也可安装本地构建包：`dsh plugin --profile web add /绝对路径/dsh-whale-soul-0.2.3.tgz`。
 
 仅注册 `whale-soul` 预设。历史会话若引用已移除的预设，恢复前需在宿主中改选当前预设；此变更不改写会话历史或已存记忆。
 

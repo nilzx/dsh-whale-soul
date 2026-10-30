@@ -8,7 +8,7 @@ An in-character **Whale Chan (鲸鱼娘)** Agent mode for [DeepSeek Harness](htt
 
 [中文文档](README.zh-CN.md)
 
-> 0.2.2 — fixes startup with a symbolic link to a memory directory. The configured link is retained; migration, repair and backups operate on its physical target directory. See the [0.2.2 release notes](docs/release-0.2.2.md).
+> 0.2.3 — fixes memory writes and startup on Windows when directory synchronization is refused, and cleans failed lock candidates. See the [0.2.3 release notes](docs/release-0.2.3.md). The [0.2.2 linked-directory fix](docs/release-0.2.2.md) is included.
 
 > 0.2.1 — automatic memory repair. The default persona uses V2 memory API 1.3 and full transfer format 3, with independent personality growth and portable local data. Read the [0.2.1 upgrade guide](docs/release-0.2.1.md) before updating from 0.1.x. The 0.1.5 migration and Electron desktop smoke checks passed for 0.2.0. One focused Electron repair test with synthetic corruption has passed for 0.2.1. Broader corruption cases, long-term growth and optional body journeys remain separate validation scopes.
 
@@ -47,7 +47,7 @@ dsh plugin --profile web add dsh-whale-soul
 
 The command above manages the web profile. For desktop, install the plugin from **Plugins** in the DSH desktop app; the standard CLI cannot manage the reserved desktop profile.
 
-These registry commands install the published release. To install a local 0.2.2 archive, use: `dsh plugin --profile web add /absolute/dsh-whale-soul-0.2.2.tgz`.
+These registry commands install the published release. To install a local 0.2.3 archive, use: `dsh plugin --profile web add /absolute/dsh-whale-soul-0.2.3.tgz`.
 
 Only the `whale-soul` preset is registered. Sessions that reference a retired preset must select the current preset in the host before resuming. This change does not rewrite session history or stored memories.
 
