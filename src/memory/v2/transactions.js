@@ -17,10 +17,13 @@ import { commitMaintenanceDescriptor, reconcileMaintenanceState, validateMainten
 import { applyLifecycleTransition, declareLifecycleCapability, validateLifecycleDescriptor } from './lifecycle-journal.js'
 import { repairCompletedRecordChanges } from './record-recovery.js'
 
+// Windows answers FlushFileBuffers on a directory handle with EPERM/EACCES, so a
+// refused directory sync means the platform has no such durability primitive;
+// the file itself was already fsynced before it was renamed into place.
 function syncDir(path) {
   let fd
   try { fd = openSync(path, 'r'); fsyncSync(fd) } catch (error) {
-    if (!['EINVAL', 'ENOTSUP', 'EISDIR', 'EBADF'].includes(error?.code)) throw error
+    if (!['EINVAL', 'ENOTSUP', 'EISDIR', 'EBADF', 'EPERM', 'EACCES'].includes(error?.code)) throw error
   } finally { if (fd !== undefined) closeSync(fd) }
 }
 
@@ -56,7 +59,12 @@ function alive(owner) {
 function createLockCandidate(root, owner) {
   const candidate = join(root, `.lock-candidate-${owner.token}`)
   mkdirSync(candidate, { mode: 0o700 })
-  atomicWrite(join(candidate, 'owner.json'), JSON.stringify(owner))
+  // The candidate is removed by the acquirer's own cleanup, which never runs when
+  // publishing the owner file throws, so a failed candidate must retire itself.
+  try { atomicWrite(join(candidate, 'owner.json'), JSON.stringify(owner)) } catch (error) {
+    rmSync(candidate, { recursive: true, force: true })
+    throw error
+  }
   return candidate
 }
 
