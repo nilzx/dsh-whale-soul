@@ -103,8 +103,9 @@ async function assessComplete(assess, input, signal, validate = value => value) 
   try { return validate(await assess(input, { signal })) }
   catch (error) {
     abort(signal)
-    if (!['ASSESSOR_INVALID_JSON', 'SESSION_MEMORY_SOURCE_MISMATCH', 'SESSION_MEMORY_INVALID_TEXT'].includes(error.code) && !error.code?.startsWith('INVALID_SESSION_MEMORY_')) throw error
-    const hint = error.code === 'SESSION_MEMORY_SOURCE_MISMATCH' ? 'An unknown source ref was returned. Use only the listed user excerpt refs in source_refs; do not invent refs or output quotations.'
+    if (!['ASSESSOR_INVALID_JSON', 'SESSION_MEMORY_SOURCE_MISMATCH', 'SESSION_MEMORY_INVALID_TEXT', 'SESSION_MEMORY_UNKNOWN_CANDIDATE'].includes(error.code) && !error.code?.startsWith('INVALID_SESSION_MEMORY_')) throw error
+    const hint = error.code === 'SESSION_MEMORY_UNKNOWN_CANDIDATE' ? 'Use only the exact item IDs and existing record IDs listed in the input. Merge groups must have disjoint members and each primary must be a member of its own group. Do not invent or renumber IDs.'
+      : error.code === 'SESSION_MEMORY_SOURCE_MISMATCH' ? 'An unknown source ref was returned. Use only the listed user excerpt refs in source_refs; do not invent refs or output quotations.'
       : error.code === 'SESSION_MEMORY_INVALID_TEXT' ? 'Generated prose contained invalid replacement characters. Rewrite clean valid Unicode from the original source, without replacement characters.'
         : error.code.startsWith('INVALID_SESSION_MEMORY_') ? `The result did not match the requested schema (${error.code}). Follow the exact schema in the system instructions, with at most twelve items; memory types are fact, identity, preference, episode, emotion or procedure. detail_level is summary or detail; source_refs contains 1 to 32 listed refs. Keep text compact.`
         : 'The prior response was not complete JSON. Return one compact valid JSON object only; shorten detail and quotes rather than exceeding the output budget.'
@@ -199,8 +200,11 @@ export class SessionMemory {
     const sources = new Map(userMessages.map(message => [message.ref, message]))
     const context = this.#runtime.state.issueContext(currentId, ['memory.read', 'memory.write', 'memory.manage'])
     const existing = await this.#existing(context)
-    const known = [...existing].sort((a, b) => b.meta.updated_at.localeCompare(a.meta.updated_at)).slice(0, 32)
+    let knownSize = 0
+    const fromSource = record => record.evidence.some(evidence => evidence.session_id === target)
+    const known = [...existing].sort((a, b) => Number(fromSource(b)) - Number(fromSource(a)) || b.meta.updated_at.localeCompare(a.meta.updated_at))
       .map(record => ({ record_id: record.meta.record_id, gist: record.gist.slice(0, 500), detail: record.detail.slice(0, 1200), observed_at: record.meta.observed_at, type: record.meta.type }))
+      .filter(record => (knownSize += JSON.stringify(record).length) <= 20000)
     const assess = this.#assess(agent), candidates = []
     for (const batch of chunks(userMessages)) {
       abort(signal)
@@ -259,20 +263,30 @@ export class SessionMemory {
       selected.forEach((item, index) => { item.id = `memory-${index}` })
       const verdict = await assessComplete(this.#select(agent), { focus, items: selected.map(item => ({
         id: item.id, title: item.title, type: item.type, gist: item.gist, detail: item.detail,
-      })), existing_memories: known }, signal)
+      })), existing_memories: known }, signal, value => {
+        const ids = new Set(selected.map(item => item.id)), groupedIds = new Set()
+        if (value.keep_ids.some(id => !ids.has(id)) || (value.already_saved ?? []).some(match => !ids.has(match.id) || match.record_ids.some(id => !existing.some(record => record.meta.record_id === id)))) failure('SESSION_MEMORY_UNKNOWN_CANDIDATE')
+        for (const group of value.merge_groups ?? []) {
+          if (!ids.has(group.keep_id) || !group.member_ids.includes(group.keep_id)) failure('SESSION_MEMORY_UNKNOWN_CANDIDATE')
+          for (const id of new Set(group.member_ids)) { if (!ids.has(id) || groupedIds.has(id)) failure('SESSION_MEMORY_UNKNOWN_CANDIDATE'); groupedIds.add(id) }
+        }
+        return value
+      })
       const keep = new Set(verdict.keep_ids)
       if ([...keep].some(id => !selected.some(item => item.id === id))) failure('SESSION_MEMORY_UNKNOWN_CANDIDATE')
       alreadySaved = (verdict.already_saved ?? []).map(match => {
         const item = selected.find(item => item.id === match.id)
-        if (!item || keep.has(match.id) || match.record_ids.some(id => !existing.some(record => record.meta.record_id === id))) failure('SESSION_MEMORY_UNKNOWN_CANDIDATE')
+        if (!item || match.record_ids.some(id => !existing.some(record => record.meta.record_id === id))) failure('SESSION_MEMORY_UNKNOWN_CANDIDATE')
+        keep.delete(match.id)
         return { status: 'already_saved', record_id: match.record_ids[0], existing_record_ids: match.record_ids, title: item.title }
       })
       const merged = new Map(), grouped = new Set()
       for (const group of verdict.merge_groups ?? []) {
-        if (!keep.has(group.keep_id) || !group.member_ids.includes(group.keep_id)) failure('SESSION_MEMORY_UNKNOWN_CANDIDATE')
-        const members = group.member_ids.map(id => {
+        keep.add(group.keep_id)
+        const members = [...new Set(group.member_ids)].map(id => {
           const item = selected.find(item => item.id === id)
-          if (!item || grouped.has(id) || id !== group.keep_id && keep.has(id)) failure('SESSION_MEMORY_UNKNOWN_CANDIDATE')
+          if (!item || grouped.has(id)) failure('SESSION_MEMORY_UNKNOWN_CANDIDATE')
+          if (id !== group.keep_id) keep.delete(id)
           grouped.add(id); return item
         })
         const references = [...new Map(members.flatMap(item => item.references).map(reference => [reference.message.ref, reference])).values()]
