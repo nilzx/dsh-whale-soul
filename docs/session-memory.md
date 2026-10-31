@@ -2,7 +2,7 @@
 
 [中文](session-memory.zh-CN.md)
 
-Development preview: this skill is not included in the published 0.2.3 package. Release readiness is still under review.
+Available since version 0.3.0.
 
 In a Whale Chan session, invoke `/whale-remember-session` and identify the source conversation with a DSH session reference or session ID. Say “the current conversation” to process the session you are in.
 
@@ -22,7 +22,7 @@ The tool reads the conversation through DSH's session service and uses the user'
 
 Sources retain the actual session, message and time in normal V2 evidence metadata. Detailed prose is composed directly from the selected user excerpts; first-person wording belongs to the source user. Memory prose contains the actual content rather than a transcript wrapper or extraction receipt. Names and preferred forms of address are retained as identity information and prioritized in the current user's small memory context. Importing does not change persona traits or maturity.
 
-The preview has been checked against a fixed 14-round Web conversation, including focused extraction, automatic selection, repeat import and recall in a new session. This is a development feature, not part of the published 0.2.3 package.
+This workflow has been checked against a fixed 14-round Web conversation, including focused extraction, automatic selection, repeat import and recall in a new session.
 
 Sessions in the current workspace can be selected by ID. To select a conversation from another workspace, include its exact ID or DSH session reference in your request. Ambiguous targets should be clarified before extraction. The host must provide its `sessionQuery` and `skills` services; unavailable history or a model error is reported without claiming that memories were saved.
 

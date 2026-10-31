@@ -8,7 +8,7 @@
 
 [English README](README.md)
 
-开发预览：新增`/whale-remember-session`，从指定会话提取持久记忆，可限定主题并自动判断概要或细节。详见[会话记忆](docs/session-memory.zh-CN.md)；npm 0.2.3尚未包含此功能。
+> 0.3.0：新增`/whale-remember-session`，从指定会话提取持久记忆，可限定主题并自动判断概要或细节。详见[更新说明](docs/release-0.3.0.zh-CN.md)与[会话记忆用法](docs/session-memory.zh-CN.md)。
 
 > 0.2.3：修复Windows拒绝同步目录时记忆写入失败、会话启动卡住的问题，并清理失败的锁候选目录。详见[0.2.3更新说明](docs/release-0.2.3.zh-CN.md)。同时包含[0.2.2软链接目录修复](docs/release-0.2.2.zh-CN.md)。
 
@@ -23,6 +23,7 @@
 - **人格保持连续**：普通聊天不能直接重写核心身份，宿主安全、隐私、权限和停止控制始终有效。
 - **跟随当前语言**：人格提示要求回复和可见说明跟随当前消息语言，模型实际表现另行验收。
 - **有归属的长期记忆**：筛选后的事实保留原话、修订和身份归属，同消息多项事实分别记录结果。
+- **会话记忆提取**：选择DSH会话，指定要记的内容或让Agent自行筛选，保留简短概要或原始用户陈述中的必要细节。
 - **明确双方约定**：[窄对话桥接](docs/agreements.zh-CN.md)区分提议与双方接受。待办状态适配器可核验“将绑定待办标记为完成”这一明确约定；它不证明待办背后的工作产物已交付。
 - **独立人格成长**：人格补完与事实、核心分开保存，有经历依据并经过后续反思才可沉淀。[核心升级](docs/core-upgrades.zh-CN.md)会重审兼容成长，并保留个体身份、原文、历史和成熟度。
 - **可调稳定性**：多变、普通、顽固、自动四档控制成长门槛；默认自动随有效经历逐渐稳固，性格命令和反复自述不能刷成熟度。
@@ -49,7 +50,7 @@ dsh plugin --profile web add dsh-whale-soul
 
 以上命令管理 Web profile。桌面端请在 DSH 桌面应用的 **Plugins** 中安装；标准 CLI 不能管理保留的 `desktop` profile。
 
-以上仓库命令安装已发布版本。也可安装本地构建包：`dsh plugin --profile web add /绝对路径/dsh-whale-soul-0.2.3.tgz`。
+以上仓库命令安装已发布版本。也可安装本地构建包：`dsh plugin --profile web add /绝对路径/dsh-whale-soul-0.3.0.tgz`。
 
 仅注册 `whale-soul` 预设。历史会话若引用已移除的预设，恢复前需在宿主中改选当前预设；此变更不改写会话历史或已存记忆。
 
@@ -60,6 +61,7 @@ dsh plugin --profile web add dsh-whale-soul
 ## 使用
 
 - 选择 **鲸鱼娘**（英文界面显示 Whale Chan），正常聊天即可。文件、shell、网页、定时、skills 这些 Agent 能力都还在。
+- 输入`/whale-remember-session`并提供会话ID或DSH会话引用，即可提取持久记忆；指定主题时只记相关内容，不指定时自主筛选。详见[示例与来源规则](docs/session-memory.zh-CN.md)。
 - 在人格插件行配置`individualKey`可在同一记忆空间保留多个独立个体；省略或设置`default`继续原个体。会话切换与恢复见[个体身份](docs/individuals.zh-CN.md)。
 - 在`dsh-whale-soul/persona`插件行配置`stabilityMode`，四档及持久成熟度见[稳定性规则](docs/stability.zh-CN.md)。
 - 输入`/whale-context`查看鲸鱼娘占当前留存上下文的估算比例，细分人格核心、人格补完、记忆/召回、运行提示和工具，同时显示占总上下文和占鲸鱼娘内部的百分比。本地指令无需模型调用，结果不进入模型上下文或记忆；沿用DSH估算方式，不是计费token。

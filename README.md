@@ -8,7 +8,7 @@ An in-character **Whale Chan (鲸鱼娘)** Agent mode for [DeepSeek Harness](htt
 
 [中文文档](README.zh-CN.md)
 
-Development preview: use `/whale-remember-session` to extract lasting memories from a selected conversation, with optional topic restrictions and automatic summary/detail selection. See [conversation memory](docs/session-memory.md); this is not included in npm 0.2.3.
+> 0.3.0 — use `/whale-remember-session` to retain useful memories from a selected conversation, with optional topic restrictions and automatic summary/detail selection. See the [release notes](docs/release-0.3.0.md) and [conversation memory guide](docs/session-memory.md).
 
 > 0.2.3 — fixes memory writes and startup on Windows when directory synchronization is refused, and cleans failed lock candidates. See the [0.2.3 release notes](docs/release-0.2.3.md). The [0.2.2 linked-directory fix](docs/release-0.2.2.md) is included.
 
@@ -23,6 +23,7 @@ Development preview: use `/whale-remember-session` to extract lasting memories f
 - **A continuous persona** — ordinary chat does not rewrite her core identity. Host safety, privacy, permissions and stop controls remain effective.
 - **Language following** — the persona asks for replies and visible explanations in the language of the current message; model behavior is tested separately.
 - **Scoped long-term memory** — selected facts retain original evidence, revisions and identity attribution. Several facts in one message have separate outcomes.
+- **Conversation memory import** — select a DSH conversation, name what to retain or let the Agent choose, and keep concise summaries or original supporting user excerpts.
 - **Explicit agreements** — a [narrow conversation bridge](docs/agreements.md) keeps proposals separate from mutual acceptance. A todo-state adapter can verify an explicit agreement to mark one bound todo completed; it does not prove the work behind that todo was delivered.
 - **Independent growth** — personality additions are stored apart from facts and the core, with evidence and later reflection before they become stable. [Core upgrades](docs/core-upgrades.md) recheck compatible growth while preserving identity, text, history and maturity.
 - **Adjustable stability** — `variable`, `normal`, `stubborn` and default `auto` control growth thresholds. Auto becomes steadier with eligible experiences; chat commands and repeated self-descriptions do not qualify.
@@ -49,7 +50,7 @@ dsh plugin --profile web add dsh-whale-soul
 
 The command above manages the web profile. For desktop, install the plugin from **Plugins** in the DSH desktop app; the standard CLI cannot manage the reserved desktop profile.
 
-These registry commands install the published release. To install a local 0.2.3 archive, use: `dsh plugin --profile web add /absolute/dsh-whale-soul-0.2.3.tgz`.
+These registry commands install the published release. To install a local 0.3.0 archive, use: `dsh plugin --profile web add /absolute/dsh-whale-soul-0.3.0.tgz`.
 
 Only the `whale-soul` preset is registered. Sessions that reference a retired preset must select the current preset in the host before resuming. This change does not rewrite session history or stored memories.
 
@@ -60,6 +61,7 @@ Memory data errors are repaired automatically by an independent Agent against th
 ## Use
 
 - Choose **Whale Chan** and chat normally. She can still do normal Agent work: files, shell, web, schedules, skills, and so on.
+- Use `/whale-remember-session` with a conversation ID or DSH session reference to import lasting memories. Name a topic to restrict the selection, or omit it for automatic selection. See [examples and source rules](docs/session-memory.md).
 - Configure `individualKey` on the persona plugin row to keep separate named individuals in one memory space. Omit it or use `default` to continue the original individual. [Individual identity](docs/individuals.md) explains Session switching and recovery.
 - Configure `stabilityMode` on the `dsh-whale-soul/persona` plugin row. [Stability rules](docs/stability.md) describe the four modes and persistent maturity.
 - Run `/whale-context en` to inspect Whale Soul's estimated share of the current retained context, split into persona core, growth, memory/recall, runtime hints and tools. Both whole-context and within-Whale percentages are shown. The local command makes no model call and does not add its output to model context or memory; counts use DSH's heuristic and are not billing tokens.
