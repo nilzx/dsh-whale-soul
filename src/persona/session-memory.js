@@ -86,9 +86,11 @@ Merge overlapping candidates about the SAME independently correctable fact or pr
 export function createSessionMemorySelectionAssessor(options) {
   return createStructuredAssessor({ ...options, timeoutMs: 60_000, maxInputUtf16: 64_000, maxInputBytes: 256_000,
     maxOutputTokens: 2048, maxOutputUtf16: 8192,
-    system: `Select final memories after grounding. Return ONLY JSON {"keep_ids":["item ID",...],"already_saved":[{"id":"item ID","record_ids":["existing record ID",...]}]}. When focus is nonempty, keep only items DIRECTLY answering the named subjects and obey every explicit exclusion. Mere association, shared project membership or a workflow dependency does not bring another topic into scope. Omit collateral design, unrelated preferences and unconfirmed suggestions. Omit all transient/non-retention examples even inside "do not remember X" preferences, and omit generic memory-selection/control discussion. With no focus, select useful lasting memories, including explicit names and preferred address. Remove semantic duplicates: where two items cover the same fact or procedure, keep the one with the clearest supported and most useful detail. Compare existing_memories semantically: information covered by the UNION of several existing records is already_saved, even if recombined as one workflow. List every supporting existing record in record_ids. A mixed item that repeats existing content and also contains a different new topic should be omitted; independently retained new-topic items can be kept. Preserve distinct independently correctable facts. Every selected item belongs either in keep_ids or already_saved, never both. Do not invent IDs.`,
+    system: `Select and group final memories after grounding. Return ONLY JSON {"keep_ids":["primary item ID",...],"merge_groups":[{"keep_id":"primary item ID","member_ids":["primary item ID","related item ID",...]}],"already_saved":[{"id":"item ID","record_ids":["existing record ID",...]}]}. merge_groups joins complementary pieces into ONE stored memory: a procedure with its schedule, stop conditions and rationale; an experience with its feedback, meaning and emotional response; an export requirement with its verification. Keep the broadest primary item in keep_ids and include it in member_ids. Do NOT also keep the secondary members. Do not merge unrelated independently changeable preferences, identity and project overview, or different procedures just because they share a project. When focus is nonempty, keep only items DIRECTLY answering the named subjects and obey every explicit exclusion. Mere association does not bring another topic into scope. Omit collateral design, unrelated preferences and unconfirmed suggestions. Omit all transient/non-retention examples even inside "do not remember X" preferences, and omit generic memory-selection/control discussion. With no focus, select useful lasting memories, including explicit names and preferred address. Pure semantic duplicates can simply be omitted. Compare existing_memories semantically: information covered by the UNION of several existing records is already_saved, even if recombined as one workflow. List every supporting existing record in record_ids. A mixed item repeating existing content and adding a different topic should be omitted; independently retained new-topic items can be kept. Every item belongs to at most one merge group and cannot be both kept and already_saved. Do not invent IDs.`,
     projectInput: value => value, validateVerdict: value => {
       if (!Array.isArray(value.keep_ids) || value.keep_ids.some(id => typeof id !== 'string')) failure('INVALID_SESSION_MEMORY_KEEP_IDS')
+      if (value.merge_groups !== undefined && (!Array.isArray(value.merge_groups) || value.merge_groups.some(group => typeof group.keep_id !== 'string' ||
+        !Array.isArray(group.member_ids) || group.member_ids.length < 2 || group.member_ids.some(id => typeof id !== 'string')))) failure('INVALID_SESSION_MEMORY_MERGE_GROUPS')
       if (value.already_saved !== undefined) {
         if (!Array.isArray(value.already_saved) || value.already_saved.some(item => typeof item.id !== 'string' ||
           !Array.isArray(item.record_ids) || !item.record_ids.length || item.record_ids.some(id => typeof id !== 'string'))) failure('INVALID_SESSION_MEMORY_EXISTING_MATCH')
@@ -265,7 +267,23 @@ export class SessionMemory {
         if (!item || keep.has(match.id) || match.record_ids.some(id => !existing.some(record => record.meta.record_id === id))) failure('SESSION_MEMORY_UNKNOWN_CANDIDATE')
         return { status: 'already_saved', record_id: match.record_ids[0], existing_record_ids: match.record_ids, title: item.title }
       })
-      selected = selected.filter(item => keep.has(item.id))
+      const merged = new Map(), grouped = new Set()
+      for (const group of verdict.merge_groups ?? []) {
+        if (!keep.has(group.keep_id) || !group.member_ids.includes(group.keep_id)) failure('SESSION_MEMORY_UNKNOWN_CANDIDATE')
+        const members = group.member_ids.map(id => {
+          const item = selected.find(item => item.id === id)
+          if (!item || grouped.has(id) || id !== group.keep_id && keep.has(id)) failure('SESSION_MEMORY_UNKNOWN_CANDIDATE')
+          grouped.add(id); return item
+        })
+        const references = [...new Map(members.flatMap(item => item.references).map(reference => [reference.message.ref, reference])).values()]
+        const gist = [...new Set(members.map(item => item.gist))].join('\n')
+        const primary = selected.find(item => item.id === group.keep_id)
+        const level = detail === 'summary' ? 'summary' : 'detail'
+        const combinedGist = gist.length <= 1000 ? gist : primary.gist
+        merged.set(group.keep_id, { ...primary, gist: combinedGist, detail_level: level, references,
+          detail: level === 'summary' ? combinedGist : [...references].sort((a, b) => userMessages.indexOf(a.message) - userMessages.indexOf(b.message)).map(reference => reference.quote).join('\n') })
+      }
+      selected = selected.filter(item => keep.has(item.id)).map(item => merged.get(item.id) ?? item)
     }
     const results = [...alreadySaved]
     for (const item of selected) {
