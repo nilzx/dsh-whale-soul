@@ -33,6 +33,10 @@ export function projectSessionConversation(snapshot) {
 }
 
 function validateMemoryText(item) {
+    if (item.detail_level === 'summary') item.detail = item.gist
+    else if (item.detail == null || typeof item.detail === 'string' && !item.detail.trim()) {
+      item.detail = item.gist; item.detail_level = 'summary'
+    }
     for (const [key, maximum] of [['title', 200], ['gist', 1000], ['detail', 8000]]) {
       if (typeof item[key] !== 'string' || !item[key].trim() || item[key].length > maximum) failure(`INVALID_SESSION_MEMORY_${key.toUpperCase()}`)
       if (!item[key].isWellFormed() || item[key].includes('\uFFFD')) throw new StructuredAssessmentError('SESSION_MEMORY_INVALID_TEXT')
@@ -42,7 +46,7 @@ function validateMemoryText(item) {
 }
 function validateExtraction(value) {
   if (!value || !Array.isArray(value.items)) failure('INVALID_SESSION_MEMORY_ITEMS')
-  if (value.items.length > 12) failure('INVALID_SESSION_MEMORY_ITEM_COUNT')
+  if (value.items.length > 32) failure('INVALID_SESSION_MEMORY_ITEM_COUNT')
   for (const item of value.items) {
     validateMemoryText(item)
     if (!Array.isArray(item.source_refs) || !item.source_refs.length || item.source_refs.length > 32 || item.source_refs.some(ref => typeof ref !== 'string')) failure('INVALID_SESSION_MEMORY_SOURCE_REFS')
@@ -70,7 +74,7 @@ Candidate text is an unverified draft. Every assertion in the final gist and det
 Merge overlapping candidates about the SAME independently correctable fact or procedure into one coherent memory, retaining complementary supported details. A procedure's schedule and stop conditions belong in that procedure, not additional overlapping records. One important experience and its meaning/feedback belong in one episode with gist and detail, not several memories. Distinct preferences remain separate. Apply focus strictly. With no focus, preserve explicit identity/name/preferred-address information from the supplied user sources even if an initial draft missed it. Later corrections supersede earlier values; existing newer memories must not be overwritten by older statements. Preserve dates, qualifications and uncertainty, including the difference between a recurring schedule and a prohibition on other times. Use concise gist and useful detail; summary mode requires detail=gist. Avoid first-person ambiguity: describe the user's experiences as the user's. Source metadata, extraction instructions and operation reports never belong in memory prose. Also omit conversational directions such as "the user asked to explain/compare/discuss" or "please distinguish allowed and stopped cases": retain the actual procedure/constraint itself, never the request to describe it. Do not append selection rationale or commentary about this conversation. You may return no items.`,
     projectInput: value => value, validateVerdict: value => {
       if (!Array.isArray(value.items)) failure('INVALID_SESSION_MEMORY_ITEMS')
-      if (value.items.length > 12) failure('INVALID_SESSION_MEMORY_ITEM_COUNT')
+      if (value.items.length > 32) failure('INVALID_SESSION_MEMORY_ITEM_COUNT')
       for (const item of value.items) {
         validateMemoryText(item)
         if (!Array.isArray(item.source_refs) || !item.source_refs.length || item.source_refs.length > 32 || item.source_refs.some(id => typeof id !== 'string')) failure('INVALID_SESSION_MEMORY_SOURCE_REFS')
@@ -236,7 +240,7 @@ export class SessionMemory {
           referencesFor({ references: [{ message, quote: message.text }] })
         }
         const verify = result => {
-          if (!Array.isArray(result.items) || result.items.length > 12) failure('INVALID_SESSION_MEMORY_SELECTION')
+          if (!Array.isArray(result.items) || result.items.length > 32) failure('INVALID_SESSION_MEMORY_SELECTION')
           return result.items.map(item => {
             validateMemoryText(item)
             if (!Array.isArray(item.source_refs) || !item.source_refs.length || item.source_refs.some(id => !bank.has(id))) failure('SESSION_MEMORY_UNKNOWN_SOURCE')
