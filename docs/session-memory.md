@@ -2,7 +2,7 @@
 
 [中文](session-memory.zh-CN.md)
 
-Development feature: this skill is included in the source preview and will ship in the next release after 0.2.3.
+Development preview: this skill is not included in the published 0.2.3 package. Release readiness is still under review.
 
 In a Whale Chan session, invoke `/whale-remember-session` and identify the source conversation with a DSH session reference or session ID. Say “the current conversation” to process the session you are in.
 
@@ -18,9 +18,11 @@ When you name a topic, extraction is restricted to that topic. Without a topic, 
 
 The default detail mode is automatic. Simple preferences and broad conclusions receive concise summaries. Procedures, decision rationale and significant experiences can retain useful detail and essential conditions. You can explicitly ask for summaries or detailed retention. The summary layer remains short; detail is loaded through normal recall when needed.
 
-The tool reads user and assistant text through DSH's session service. It does not import system instructions, tool logs or reasoning. Long conversations are processed in small chunks. Before saving, candidate prose is reconciled against verified source excerpts, then checked separately for direct topic relevance and duplicates. Unsupported details are removed, and assistant suggestions stay distinct from adopted user plans. Existing memories are supplied as context for avoiding redundant or outdated facts; importing does not overwrite them.
+The tool reads user and assistant text through DSH's session service. It does not import system instructions, tool logs or reasoning. Long conversations are processed in small chunks. Before saving, candidate prose is reconciled against verified source excerpts, then checked separately for direct topic relevance and duplicates. These checks aim to remove unsupported details and distinguish assistant suggestions from adopted user plans. Existing memories are supplied as context for avoiding redundant or outdated facts; importing does not overwrite them.
 
-Sources retain the actual session, message and time in normal V2 evidence metadata. Assistant-derived conclusions retain a different attribution from user statements. Memory prose contains the actual content rather than a transcript wrapper or extraction receipt. Repeating the same selection reuses an existing matching memory. Importing does not change persona traits or maturity.
+Sources retain the actual session, message and time in normal V2 evidence metadata. Assistant-derived conclusions retain a different attribution from user statements. Memory prose contains the actual content rather than a transcript wrapper or extraction receipt. An exact matching memory can be reused on a repeat import; semantic duplicate detection remains imperfect. Importing does not change persona traits or maturity.
+
+Known preview limitations from a 14-round Web test: overlapping memories can still be saved, an unconfirmed assistant suggestion can be phrased as a settled plan, and one generated detail contained replacement characters. Source validation can also fail transiently. These findings are unresolved; the preview is not ready for release.
 
 Sessions in the current workspace can be selected by ID. To select a conversation from another workspace, include its exact ID or DSH session reference in your request. Ambiguous targets should be clarified before extraction. The host must provide its `sessionQuery` and `skills` services; unavailable history or a model error is reported without claiming that memories were saved.
 
