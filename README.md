@@ -8,6 +8,8 @@ An in-character **Whale Chan (鲸鱼娘)** Agent mode for [DeepSeek Harness](htt
 
 [中文文档](README.zh-CN.md)
 
+Development preview: use `/whale-remember-session` to extract lasting memories from a selected conversation, with optional topic restrictions and automatic summary/detail selection. See [conversation memory](docs/session-memory.md); this is not included in npm 0.2.3.
+
 > 0.2.3 — fixes memory writes and startup on Windows when directory synchronization is refused, and cleans failed lock candidates. See the [0.2.3 release notes](docs/release-0.2.3.md). The [0.2.2 linked-directory fix](docs/release-0.2.2.md) is included.
 
 > 0.2.1 — automatic memory repair. The default persona uses V2 memory API 1.3 and full transfer format 3, with independent personality growth and portable local data. Read the [0.2.1 upgrade guide](docs/release-0.2.1.md) before updating from 0.1.x. The 0.1.5 migration and Electron desktop smoke checks passed for 0.2.0. One focused Electron repair test with synthetic corruption has passed for 0.2.1. Broader corruption cases, long-term growth and optional body journeys remain separate validation scopes.

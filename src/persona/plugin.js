@@ -22,12 +22,13 @@ import { observeSessionIdentityBoundary } from './session-fence.js'
 import { installMemoryMaintenanceHost } from './memory-maintenance-host.js'
 import { installSessionDispatch } from './session-dispatch.js'
 import { assertMemoryProvider } from '../memory/v2/provider.js'
+import { SessionMemory, registerSessionMemorySkill } from './session-memory.js'
 
 export const name = 'whale-soul-persona'
 export const inject = ['whaleMemory', 'systemPrompt', 'tools', 'llm', 'sandboxPolicy', 'fs', 'subprocess', 'sandbox', 'agents']
 const runtimes = new WeakMap()
 export const runtimeFor = (ctx) => runtimes.get(ctx)
-const serviceTools = ['soul_recall', 'soul_remember', 'soul_forget', 'soul_agreement_accept', 'soul_view_image', 'soul_meme_save', 'soul_meme_recall', 'soul_meme_use', 'soul_react',
+const serviceTools = ['soul_recall', 'soul_remember', 'soul_remember_session', 'soul_forget', 'soul_agreement_accept', 'soul_view_image', 'soul_meme_save', 'soul_meme_recall', 'soul_meme_use', 'soul_react',
   'ask_user_question', 'todo_write', 'web_search', 'web_fetch', 'job_list', 'job_output', 'job_kill']
 
 /** Keep host/plugin startup independent from a pending automatic memory repair. */
@@ -189,18 +190,23 @@ export async function installPersonaPlugin(ctx, config = {}, host) {
     },
   }).await()
   checkStartup()
-  let images
+  let images, sessionMemory
   runtime = new PersonaRuntime({ ...config, individualKey, root, memoryProvider, repairMemory, llm: { prepareCall: (...args) => ctx.get('llm').prepareCall(...args) }, createAssembler: () => new host.BlockAssembler(),
     getMemoryMaintenanceHost: () => memoryMaintenance,
     isMemoryProviderCurrent: () => { const current = ctx.get('whaleMemory'); return (current?.[original] ?? current) === providerIdentity },
     sessionHost: { scopeChainOf: host.scopeChainOf, resolveDshHome: host.privateRootBindings.resolveDshHome, observer, z: host.z, ownsAgent, isAgentLoopRequest: host.isAgentLoopRequest,
       createUserMessage: host.createUserMessage, joinContextSections: host.joinContextSections },
-    additionalEvidenceAllowed: (id, context, meta) => images?.evidenceAllowed(id, context, meta) ?? false,
+    additionalEvidenceResolver: (id, context) => sessionMemory?.resolveEvidence(id, context),
+    additionalEvidenceAllowed: (id, context, meta) => images?.evidenceAllowed(id, context, meta) === true || sessionMemory?.evidenceAllowed(id, context, meta) === true,
     onDream: (phase, payload) => ctx.emit(`whale-soul/dream-${phase}`, payload) })
   runtimes.set(ctx, runtime)
   ctx.effect(() => () => runtime.dispose(), 'whale-soul.persona.runtime()')
   await runtime.ready()
   checkStartup()
+  sessionMemory = new SessionMemory({ runtime, getSessionQuery: () => ctx.get('sessionQuery'),
+    llm: { prepareCall: (...args) => ctx.get('llm').prepareCall(...args) }, createAssembler: () => new host.BlockAssembler() })
+  ctx.effect(() => () => sessionMemory.dispose(), 'whale-soul.session-memory()')
+  registerSessionMemorySkill(ctx, sessionMemory)
   memoryMaintenance = installMemoryMaintenanceHost(ctx, { runtime, ownsAgent, scopeChainOf: host.scopeChainOf, config })
   ctx.effect(() => () => memoryMaintenance.dispose(), 'whale-soul.persona.memory-maintenance()')
   const dispatch = installSessionDispatch(ctx, { runtime, ownsAgent, scopeChainOf: host.scopeChainOf, resolveDshHome: host.privateRootBindings.resolveDshHome,

@@ -54,7 +54,7 @@ export class PersonaRuntime {
     this.coreInstructions = options.coreInstructions ?? getWhaleCorePrompt()
     this.memoryProvider = assertMemoryProvider(options.memoryProvider ?? createLocalMemoryProvider())
     const storageOptions = { root: options.root, memory_space_id: options.memorySpaceId ?? 'owner',
-      evidenceResolver: (id) => this.agreements?.resolveEvidence(id) ?? this.state?.resolveMemoryEvidence(id), faultInjector: (phase, data) => {
+      evidenceResolver: (id, context) => this.agreements?.resolveEvidence(id) ?? this.state?.resolveMemoryEvidence(id) ?? options.additionalEvidenceResolver?.(id, context), faultInjector: (phase, data) => {
         options.faultInjector?.(phase, data)
         if (phase === 'after_prepare') { this.#assertLive(); check(this.#operation.getStore()); check(this.#lifetime.signal); this.#sessionBoundary.getStore()?.checkSync() }
       } }
