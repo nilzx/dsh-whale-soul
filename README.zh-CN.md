@@ -8,6 +8,8 @@
 
 [English README](README.md)
 
+> 0.3.1 — 修复鲸鱼娘在Windows和Linux上的启动失败，统一使用DSH官方文件权限与各平台沙箱。详见[更新说明](docs/release-0.3.1.zh-CN.md)。
+
 > 0.3.0：新增`/whale-remember-session`，从指定会话提取持久记忆，可限定主题并自动判断概要或细节。详见[更新说明](docs/release-0.3.0.zh-CN.md)与[会话记忆用法](docs/session-memory.zh-CN.md)。
 
 > 0.2.3：修复Windows拒绝同步目录时记忆写入失败、会话启动卡住的问题，并清理失败的锁候选目录。详见[0.2.3更新说明](docs/release-0.2.3.zh-CN.md)。同时包含[0.2.2软链接目录修复](docs/release-0.2.2.zh-CN.md)。
@@ -50,7 +52,7 @@ dsh plugin --profile web add dsh-whale-soul
 
 以上命令管理 Web profile。桌面端请在 DSH 桌面应用的 **Plugins** 中安装；标准 CLI 不能管理保留的 `desktop` profile。
 
-以上仓库命令安装已发布版本。也可安装本地构建包：`dsh plugin --profile web add /绝对路径/dsh-whale-soul-0.3.0.tgz`。
+以上仓库命令安装已发布版本。也可安装本地构建包：`dsh plugin --profile web add /绝对路径/dsh-whale-soul-0.3.1.tgz`。
 
 仅注册 `whale-soul` 预设。历史会话若引用已移除的预设，恢复前需在宿主中改选当前预设；此变更不改写会话历史或已存记忆。
 
