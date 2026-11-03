@@ -61,6 +61,7 @@ dsh plugin --profile web add dsh-whale-soul
 ## 使用
 
 - 选择 **鲸鱼娘**（英文界面显示 Whale Chan），正常聊天即可。文件、shell、网页、定时、skills 这些 Agent 能力都还在。
+- 文件和命令访问遵循DSH配置的权限与各平台沙箱。人格启动无需先执行命令沙箱探测，沙箱运行器不可用时会在执行命令时报告。
 - 输入`/whale-remember-session`并提供会话ID或DSH会话引用，即可提取持久记忆；指定主题时只记相关内容，不指定时自主筛选。详见[示例与来源规则](docs/session-memory.zh-CN.md)。
 - 在人格插件行配置`individualKey`可在同一记忆空间保留多个独立个体；省略或设置`default`继续原个体。会话切换与恢复见[个体身份](docs/individuals.zh-CN.md)。
 - 在`dsh-whale-soul/persona`插件行配置`stabilityMode`，四档及持久成熟度见[稳定性规则](docs/stability.zh-CN.md)。

@@ -61,6 +61,7 @@ Memory data errors are repaired automatically by an independent Agent against th
 ## Use
 
 - Choose **Whale Chan** and chat normally. She can still do normal Agent work: files, shell, web, schedules, skills, and so on.
+- File and shell access follows DSH's configured permissions and platform sandbox. Persona startup does not require a shell sandbox probe; an unavailable runner is reported when a command is executed.
 - Use `/whale-remember-session` with a conversation ID or DSH session reference to import lasting memories. Name a topic to restrict the selection, or omit it for automatic selection. See [examples and source rules](docs/session-memory.md).
 - Configure `individualKey` on the persona plugin row to keep separate named individuals in one memory space. Omit it or use `default` to continue the original individual. [Individual identity](docs/individuals.md) explains Session switching and recovery.
 - Configure `stabilityMode` on the `dsh-whale-soul/persona` plugin row. [Stability rules](docs/stability.md) describe the four modes and persistent maturity.

@@ -1,6 +1,4 @@
 import { normalizeIndividualKey } from '../memory/v2/persona-ledger.js'
-import { protectMigrationSources } from './source-protection.js'
-import { fileURLToPath } from 'node:url'
 import { mkdirSync } from 'node:fs'
 import { resolveMemoryRoot } from '../paths.js'
 import { preparePersonaMemory } from './auto-upgrade.js'
@@ -8,8 +6,6 @@ import { repairPersonaMemory } from './memory-repair.js'
 import { runMemoryRepairAgent } from './memory-repair-agent.js'
 import { inspectMemoryRoot } from '../memory/v2/root-format.js'
 import { MemoryStoreV2 } from '../memory/v2/store.js'
-import { createHostProtection } from './host-policy.js'
-import { createHostPrivateRoots } from './host-private-roots.js'
 import FileImage from './file-image.js'
 import { PersonaRuntime } from './runtime.js'
 export { PersonaRuntime } from './runtime.js'
@@ -163,17 +159,12 @@ export async function installPersonaPlugin(ctx, config = {}, host) {
   } catch (cause) { checkStartup(); await repairMemory(cause) }
   checkStartup()
   mkdirSync(root, { recursive: true, mode: 0o700 })
-  const resolvePrivateRoots = protectMigrationSources(createHostPrivateRoots(ctx, host.privateRootBindings), root)
-  const protection = createHostProtection(ctx, { protectedRoots: [fileURLToPath(new URL('../..', import.meta.url)), root],
-    resolvePrivateRoots, writableRoots: host.writableRoots, readTools: ['read', 'read_image', 'glob', 'grep'], serviceTools })
-  protection.install()
-  ctx.effect(() => () => protection.dispose(), 'whale-soul.persona.protection()')
-  await protection.initialize()
-  checkStartup()
-  const capabilityContext = protection.capabilityContext
+  // Keep the role's shell local while inheriting the official host fs,
+  // subprocess and sandbox services on every supported platform.
+  const capabilityContext = ctx.isolate('shell')
   for (const [plugin, options] of [[host.BashSandbox, {}], [host.FsTools, { readImage: false }], [host.BashTools, {}],
     [host.FsSearchTools, { sampleOverCapGlobResults: false }]]) {
-    if (!plugin) throw new Error('whale-soul: official protected tool bindings required')
+    if (!plugin) throw new Error('whale-soul: official tool bindings required')
     await capabilityContext.plugin(plugin, options).await()
     checkStartup()
   }
@@ -181,13 +172,7 @@ export async function installPersonaPlugin(ctx, config = {}, host) {
   await capabilityContext.plugin(FileImage, {
     ownsAgent: (agent) => host.scopeChainOf(agent).includes(host.scopeOf(ctx)) &&
       ctx.get('agents')?.get(agent.id) === agent,
-    captureBoundary: (exec) => {
-      const snapshot = resolvePrivateRoots()
-      return () => {
-        try { return runtime?.checkSession(exec.agent) === true && snapshot.isCurrent() && protection.status.initialized && protection.status.readIsolation && protection.policy.guard(exec) === undefined }
-        catch { return false }
-      }
-    },
+    captureBoundary: (exec) => () => runtime?.checkSession(exec.agent) === true,
   }).await()
   checkStartup()
   let images, sessionMemory
@@ -277,25 +262,22 @@ export async function installPersonaPlugin(ctx, config = {}, host) {
   }), 'whale-soul.persona.events()')
   for (const definition of createPersonaTools(runtime)) ctx.effect(() => ctx.tools.register(definition), `whale-soul.persona.tool(${definition.name})`)
   for (const definition of createPersonaImageTools(images)) ctx.effect(() => ctx.tools.register(definition), `whale-soul.persona.tool(${definition.name})`)
-  return { runtime, images, protection, capabilityContext, assetRoute, dispatch, memoryMaintenance }
+  return { runtime, images, capabilityContext, assetRoute, dispatch, memoryMaintenance }
 }
 
 export async function apply(ctx, config = {}) {
   let zod
   try { zod = await import('zod') } catch { throw new Error('whale-soul: session identity protection requires the host zod package (>=4.4.3 <5)') }
-  const [llm, prompt, sandbox, scope, bashSandbox, fsTools, bashTools, fsSearchTools, home, credentials, persistence, storageJson, storage, attachments] = await Promise.all([
-    '@deepseek-ai/dsh-llm', '@deepseek-ai/dsh-system-prompt', '@deepseek-ai/dsh-sandbox', '@deepseek-ai/dsh-scope',
+  const [llm, prompt, scope, bashSandbox, fsTools, bashTools, fsSearchTools, home] = await Promise.all([
+    '@deepseek-ai/dsh-llm', '@deepseek-ai/dsh-system-prompt', '@deepseek-ai/dsh-scope',
     '@deepseek-ai/dsh-bash-sandbox', '@deepseek-ai/dsh-tool-fs', '@deepseek-ai/dsh-tool-bash', '@deepseek-ai/dsh-tool-fs-search',
-    '@deepseek-ai/dsh-home-paths', '@deepseek-ai/dsh-credentials-local', '@deepseek-ai/dsh-session-persistence-jsonl',
-    '@deepseek-ai/dsh-storage-json', '@deepseek-ai/dsh-storage', '@deepseek-ai/dsh-attachment-local',
+    '@deepseek-ai/dsh-home-paths',
   ].map((specifier) => import(specifier)))
   startPersonaPlugin(ctx, config, { BlockAssembler: llm.BlockAssembler, isAgentLoopRequest: llm.isAgentLoopRequest,
-    createUserMessage: llm.createUserMessage, createToolResultMessage: llm.createToolResultMessage, joinContextSections: prompt.joinContextSections, writableRoots: sandbox.writableRoots,
+    createUserMessage: llm.createUserMessage, createToolResultMessage: llm.createToolResultMessage, joinContextSections: prompt.joinContextSections,
     scopeOf: scope.scopeOf, scopeChainOf: scope.scopeChainOf, z: zod.z, BashSandbox: bashSandbox.default,
     FsTools: fsTools, BashTools: bashTools, FsSearchTools: fsSearchTools, privateRootBindings: {
-      resolveDshHome: home.resolveDshHome, LocalCredentialProvider: credentials.LocalCredentialProvider, resolveCredentialSpec: credentials.resolveSpec,
-      SessionPersistencePlugin: persistence, StorageJsonPlugin: storageJson, JsonStorageBackend: storageJson.JsonStorageBackend,
-      storageBackendServiceKey: storage.storageBackendServiceKey, LocalAttachmentStore: attachments.LocalAttachmentStore,
+      resolveDshHome: home.resolveDshHome,
     } })
 }
 

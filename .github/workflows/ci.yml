@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
   pull_request:
@@ -19,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
         node-version: ['22.x', '24.x']
     steps:
       - name: Check out the repository
@@ -30,8 +31,13 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
 
+      - name: Install the supported host for persona startup tests
+        run: npm install --prefix "${{ runner.temp }}/whale-host" --ignore-scripts --no-audit --no-fund @deepseek-ai/dsh@0.2.1-rc.3
+
       - name: Run tests
         run: npm test
+        env:
+          DSH_RUNTIME_MODULES: ${{ runner.temp }}/whale-host/node_modules
 
       - name: Inspect the package contents
         run: npm run pack:check
