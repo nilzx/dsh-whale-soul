@@ -8,6 +8,8 @@ An in-character **Whale Chan (鲸鱼娘)** Agent mode for [DeepSeek Harness](htt
 
 [中文文档](README.zh-CN.md)
 
+> 0.3.2 — fixes Whale Chan on DSH `0.2.2-rc.2`, where the new runtime-context framing failed the snapshot check before reaching the model. See the [release notes](docs/release-0.3.2.md).
+
 > 0.3.1 — fixes Whale Chan startup on Windows and Linux by using DSH's official file permissions and platform sandbox. See the [release notes](docs/release-0.3.1.md).
 
 > 0.3.0 — use `/whale-remember-session` to retain useful memories from a selected conversation, with optional topic restrictions and automatic summary/detail selection. See the [release notes](docs/release-0.3.0.md) and [conversation memory guide](docs/session-memory.md).
@@ -35,7 +37,7 @@ An in-character **Whale Chan (鲸鱼娘)** Agent mode for [DeepSeek Harness](htt
 
 ## Requirements
 
-- DSH `0.2.1-rc.3` (the bundle declares this compatibility).
+- DSH `0.2.1-rc.3` or `0.2.2-rc.2` (the bundle declares both as compatible).
 - Node.js `>=22.12.0`.
 
 ## Install
@@ -52,7 +54,7 @@ dsh plugin --profile web add dsh-whale-soul
 
 The command above manages the web profile. For desktop, install the plugin from **Plugins** in the DSH desktop app; the standard CLI cannot manage the reserved desktop profile.
 
-These registry commands install the published release. To install a local 0.3.1 archive, use: `dsh plugin --profile web add /absolute/dsh-whale-soul-0.3.1.tgz`.
+These registry commands install the published release. To install a local 0.3.2 archive, use: `dsh plugin --profile web add /absolute/dsh-whale-soul-0.3.2.tgz`.
 
 Only the `whale-soul` preset is registered. Sessions that reference a retired preset must select the current preset in the host before resuming. This change does not rewrite session history or stored memories.
 

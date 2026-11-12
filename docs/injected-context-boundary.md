@@ -14,6 +14,10 @@ An expired, revoked, purged, changed or unrecognized retained plugin snapshot fa
 
 Unknown plugin-labelled snapshots are preserved and rejected rather than automatically attributed or removed. A process restart, registry budget, unknown history or unrecoverable proof can therefore still require a fresh Session. This is a bounded active-projection cleanup, not deletion of stored conversation or evidence history. The final main guard remains active after cleanup, including changes between prepare and actual adapter entry.
 
+## Host snapshot text
+
+Snapshot text belongs to the host, not to this plugin, and its framing has changed across releases. Up to DSH `0.2.1` the loop admitted the `joinContextSections()` rendering; since `0.2.2` it wraps the same section bodies in a `<system-reminder>` block introduced by a one-line sentence, and `joinContextSections()` renders a different string. Exactness therefore binds the reminder wrapper and the exact section body, accepts either known single-line intro (and a reworded one), and keeps accepting the earlier rendering so a Session restored from before the upgrade keeps withdrawal authority. A cleanup append writes the current framing, and an entirely withdrawn snapshot becomes the host's cleared marker. Any other text stays unverified and is reported, never rewritten.
+
 Production `apply()` imports the official functions directly. Factory callers of `installPersonaPlugin` must include `createUserMessage` and `joinContextSections` in addition to the main-request brand binding. Direct `PersonaRuntime` callers may omit the surface functions and retain guard-only behavior, explicitly without its continuing-session guarantee.
 
 The regression baseline uses actual rc.3 Session, AgentLoop, Scope and LLM dispatch, with a deterministic local adapter and no real model. Native revoke/purge, revoked native data inside a combined owner section, and a growth-head change after prepare all reproduced old adapter-entry failures. A full-preset zero-memory-budget case separately proves that old selected excerpts can leak through operation sections alone. Keep these failing counterexamples and the original continuous-main2 assertion when integrating the fix.
@@ -22,4 +26,4 @@ A verified newly admitted image-only message starts a new text-operation epoch w
 
 The replacement-budget unit fixture uses an explicitly host-marked component envelope over two actual Session objects; it is not a second successful AgentLoop turn. Continuing-chat acceptance is proved separately by actual official main dispatch and full-preset tests, with the final guard enabled throughout.
 
-中文摘要：最终门阀覆盖本插件注入的普通记忆、人工引用、成长及保存回执，核验完整来源和当前消息。宿主只替换此前真实核验过的活动surface条目，移除失效的本插件内容、保留其他上下文和所有原始历史；未知来源不清而拒绝。具备官方构造绑定时可恢复同会话连续聊天；无绑定、重启或未知旧历史仍可能需要新会话，不宣称彻底删除原聊天内容。
+中文摘要：最终门阀覆盖本插件注入的普通记忆、人工引用、成长及保存回执，核验完整来源和当前消息；接受0.2.1的纯文本快照与0.2.2起的system-reminder包装，替换时写入当前包装格式。宿主只替换此前真实核验过的活动surface条目，移除失效的本插件内容、保留其他上下文和所有原始历史；未知来源不清而拒绝。具备官方构造绑定时可恢复同会话连续聊天；无绑定、重启或未知旧历史仍可能需要新会话，不宣称彻底删除原聊天内容。

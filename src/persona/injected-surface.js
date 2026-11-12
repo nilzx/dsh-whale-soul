@@ -6,6 +6,42 @@ const fail = (code) => { throw new MemoryError(code) }
 const same = (left, right) => digest(left) === digest(right)
 
 /**
+ * Runtime-context framing. The loop writes a snapshot as one reminder block
+ * whose body is the section texts in order; the intro line is host-owned
+ * wording. Exactness therefore binds the wrapper and the body, and accepts any
+ * single-line intro so a reworded host does not fail closed.
+ */
+const REMINDER_OPEN = '<system-reminder>\n'
+const REMINDER_CLOSE = '\n</system-reminder>'
+const CLEARED_SNAPSHOT = '<system-reminder>\nCurrent runtime context: none. Earlier runtime-context snapshots no longer apply.\n</system-reminder>'
+const WITHDRAWAL_INTRO = 'The following information describes your current session. It replaces earlier versions of this context, including any retained in conversation summaries.'
+const escapeClosingTag = (body) => body.replace(/<\/system-reminder\s*>/gi, (tag) => `<\\${tag.slice(1)}`)
+const snapshotBody = (sections) => escapeClosingTag(sections.map((section) => section.text).join('\n\n'))
+
+/**
+ * Exact snapshot text in either host dialect: the public `joinContextSections`
+ * rendering (`Current runtime context. …`) and the reminder framing written by
+ * the loop since DSH 0.2.2. Anything else is unverified.
+ */
+function exactSnapshotText(sections, text, joinContextSections) {
+  if (typeof text !== 'string') return false
+  if (text === joinContextSections(sections)) return true
+  const body = snapshotBody(sections)
+  if (!body) return text === CLEARED_SNAPSHOT
+  if (!text.startsWith(REMINDER_OPEN) || !text.endsWith(REMINDER_CLOSE)) return false
+  const inner = text.slice(REMINDER_OPEN.length, -REMINDER_CLOSE.length)
+  const split = inner.indexOf('\n\n')
+  if (split <= 0) return false
+  const intro = inner.slice(0, split)
+  return !intro.includes('\n') && inner.slice(split + 2) === body
+}
+
+/** Replacement text a cleanup append carries: same framing, supersession intro. */
+function replacementText(sections) {
+  return sections.length ? `${REMINDER_OPEN}${WITHDRAWAL_INTRO}\n\n${snapshotBody(sections)}${REMINDER_CLOSE}` : CLEARED_SNAPSHOT
+}
+
+/**
  * Current-content binding requires the exact official main envelope and active
  * Session object. Exact restored host snapshots gain withdrawal authority only.
  */
@@ -33,7 +69,7 @@ export function createInjectedSurfaceController({ session, checkBoundary, isAgen
   }
   const exactMessage = (message) => message?.source?.kind === 'runtime-context' && message.source.form === 'snapshot' &&
     Array.isArray(message.source.sections) && message.content?.length === 1 && message.content[0].type === 'text' &&
-    message.content[0].text === joinContextSections(message.source.sections)
+    exactSnapshotText(message.source.sections, message.content[0].text, joinContextSections)
   const activeMessages = () => {
     const found = new Map()
     for (const seq of nodes()) {
@@ -108,7 +144,7 @@ export function createInjectedSurfaceController({ session, checkBoundary, isAgen
       for (const plan of plans) {
         check(signal)
         if (!same(nodes(), expectedNodes) || session.eventAt(plan.seq) !== plan.entry.event || digest(plan.entry.event) !== plan.entry.eventHash) fail('INJECTED_SURFACE_CHANGED')
-        const text = joinContextSections(plan.retained) || 'Previous memory and growth sections from this plugin have been withdrawn.'
+        const text = replacementText(plan.retained)
         const replacement = createUserMessage({ source: { ...plan.entry.source, sections: plan.retained }, content: [{ type: 'text', text }] })
         if (replacement?.role !== 'user' || replacement.source?.kind !== 'runtime-context' || !same(replacement.source.sections, plan.retained) ||
           replacement.content?.length !== 1 || replacement.content[0].type !== 'text' || replacement.content[0].text !== text) fail('INJECTED_SURFACE_REPLACEMENT_UNCONFIRMED')
